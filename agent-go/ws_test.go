@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -134,8 +135,20 @@ func TestWSClient_HandshakeAndHeartbeat(t *testing.T) {
 		if hello["agent_version"] != AgentVersion {
 			t.Fatalf("agent_version : attendu %q, reçu %v", AgentVersion, hello["agent_version"])
 		}
-		if caps, ok := hello["capabilities"].([]any); !ok || len(caps) != 0 {
-			t.Fatalf("capabilities : attendu [], reçu %v", hello["capabilities"])
+		// La capability "console" n'est annoncée que sur Windows (ConPTY).
+		// Sur Linux/macOS, la liste doit être vide. Cf. console_{windows,other}.go.
+		caps, ok := hello["capabilities"].([]any)
+		if !ok {
+			t.Fatalf("capabilities : type inattendu %T (%v)", hello["capabilities"], hello["capabilities"])
+		}
+		if runtime.GOOS == "windows" {
+			if len(caps) != 1 || caps[0] != "console" {
+				t.Fatalf("capabilities Windows : attendu [console], reçu %v", caps)
+			}
+		} else {
+			if len(caps) != 0 {
+				t.Fatalf("capabilities %s : attendu [], reçu %v", runtime.GOOS, caps)
+			}
 		}
 	case <-ctx.Done():
 		t.Fatal("timeout en attendant hello")

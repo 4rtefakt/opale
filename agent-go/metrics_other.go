@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux && !darwin
 
 package main
 
@@ -7,8 +7,8 @@ import (
 	"runtime"
 )
 
-// CollectMetrics — stub non-Windows. Permet de compiler/tester l'agent
-// sur macOS/Linux. La vraie collecte se fait dans metrics_windows.go.
+// CollectMetrics — stub pour OS non supportés (BSD, Solaris…). Les
+// implémentations réelles sont dans metrics_{windows,linux,darwin}.go.
 func CollectMetrics() (*CheckinPayload, error) {
 	host, _ := os.Hostname()
 	return &CheckinPayload{
