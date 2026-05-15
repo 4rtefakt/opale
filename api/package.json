@@ -17,7 +17,7 @@
     "@fastify/websocket": "^11",
     "fastify": "^5",
     "fastify-plugin": "^5",
-    "jose": "^5",
+    "jose": "^6",
     "pg": "^8",
     "sql.js": "^1.10",
     "ssh2": "^1",
