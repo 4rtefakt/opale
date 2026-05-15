@@ -232,7 +232,7 @@ export default async function devicesRoute(fastify) {
     )
     if (!rows.length) return reply.code(404).send({ error: 'Poste introuvable' })
     const { displayName } = fastify.getUserIdentity(req)
-    logAudit(fastify.db, fastify.log, { action: 'device_deleted', byUser: displayName, target: rows[0].hostname })
+    await logAudit(fastify.db, fastify.log, { action: 'device_deleted', byUser: displayName, target: rows[0].hostname })
     reply.code(204).send()
   })
 
