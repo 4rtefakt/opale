@@ -21,11 +21,83 @@
 <meta name="twitter:image" content="https://opale.pages.dev/og.png" />
 <title>Opale — your whole fleet, polished.</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><radialGradient id='g' cx='35%25' cy='35%25' r='65%25'><stop offset='0%25' stop-color='%2322d3ee'/><stop offset='40%25' stop-color='%231D9E75'/><stop offset='70%25' stop-color='%23a78bfa'/><stop offset='100%25' stop-color='%230c4c3c'/></radialGradient></defs><rect width='64' height='64' rx='14' fill='%230a0c10'/><circle cx='32' cy='32' r='22' fill='url(%23g)'/></svg>" />
+<script>
+/* Auto-Pride : turn the page rainbow during Pride Month (June, getMonth() === 5)
+   or when "?pride" is in the URL (testing / explicit sharing). Runs synchronously
+   in <head> before <style> applies, so no flash of un-Pride content. */
+(function () {
+  try {
+    if (new Date().getMonth() === 5 || location.search.indexOf('pride') !== -1) {
+      document.documentElement.classList.add('pride');
+    }
+  } catch (_) {}
+})();
+</script>
 <style>
   /* ─── opal animatable angles (custom-property typed for transitions) ─── */
   @property --opal-angle    { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
   @property --opal-angle-2  { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
   @property --text-angle    { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+
+  /* ─── Pride Month palette cycle ─────────────────────────────────────────
+     Registers the opal palette vars as <color> so CSS interpolates between
+     keyframes. Animation only runs when <html> has the .pride class — added
+     by the inline script in <head> during June or when "?pride" is in URL.
+     Outside Pride Month, the @property initial-values match the default opal
+     teal palette, so the page renders identically to before. */
+  @property --c1 { syntax: '<color>'; inherits: true; initial-value: #0c4c3c; }
+  @property --c2 { syntax: '<color>'; inherits: true; initial-value: #1D9E75; }
+  @property --c3 { syntax: '<color>'; inherits: true; initial-value: #22d3ee; }
+  @property --c4 { syntax: '<color>'; inherits: true; initial-value: #7dd3fc; }
+  @property --c5 { syntax: '<color>'; inherits: true; initial-value: #a78bfa; }
+  @property --c6 { syntax: '<color>'; inherits: true; initial-value: #f0abfc; }
+  @property --c7 { syntax: '<color>'; inherits: true; initial-value: #fbbf24; }
+
+  @keyframes pride-palette {
+    /* Rainbow Pride */
+    0%, 14% {
+      --c1: #e40303; --c2: #ff8c00; --c3: #ffed00;
+      --c4: #008026; --c5: #004dff; --c6: #750787; --c7: #e40303;
+    }
+    /* Trans */
+    18%, 31% {
+      --c1: #5BCEFA; --c2: #F5A9B8; --c3: #FFFFFF;
+      --c4: #FFFFFF; --c5: #F5A9B8; --c6: #5BCEFA; --c7: #5BCEFA;
+    }
+    /* Bisexual */
+    35%, 48% {
+      --c1: #D60270; --c2: #D60270; --c3: #9B4F96;
+      --c4: #9B4F96; --c5: #0038A8; --c6: #0038A8; --c7: #D60270;
+    }
+    /* Pansexual */
+    52%, 64% {
+      --c1: #FF218C; --c2: #FF218C; --c3: #FFD800;
+      --c4: #FFD800; --c5: #21B1FF; --c6: #21B1FF; --c7: #FF218C;
+    }
+    /* Lesbian */
+    68%, 81% {
+      --c1: #D52D00; --c2: #FF9A56; --c3: #FFFFFF;
+      --c4: #FFFFFF; --c5: #D162A4; --c6: #A30262; --c7: #D52D00;
+    }
+    /* Non-binary */
+    85%, 97% {
+      --c1: #FCF434; --c2: #FCF434; --c3: #FFFFFF;
+      --c4: #9C59D1; --c5: #9C59D1; --c6: #2C2C2C; --c7: #FCF434;
+    }
+    /* Loop back to rainbow */
+    100% {
+      --c1: #e40303; --c2: #ff8c00; --c3: #ffed00;
+      --c4: #008026; --c5: #004dff; --c6: #750787; --c7: #e40303;
+    }
+  }
+  html.pride { animation: pride-palette 60s linear infinite; }
+  html.pride .eyebrow::before {
+    content: '🏳️‍🌈 ';
+    margin-right: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html.pride { animation: none; }
+  }
 
   *,*::before,*::after { box-sizing: border-box; }
   html,body { margin: 0; padding: 0; }
@@ -348,43 +420,125 @@
   .btn .arrow { transition: transform .15s; }
   .btn:hover .arrow { transform: translateX(3px); }
 
-  .hero-stats {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 0;
-    max-width: 640px;
-    margin: 60px auto 0;
-    border: 0.5px solid var(--line);
-    background: rgba(17,20,28,0.5);
-    backdrop-filter: blur(8px);
-    border-radius: 14px;
+  /* ─── hero one-liner installer ─── */
+  .hero-oneliner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 680px;
+    margin: 56px auto 14px;
+    padding: 12px 14px 12px 20px;
+    background: rgba(11,13,18,0.82);
+    border: 0.5px solid var(--line-hi);
+    border-radius: 12px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    font-family: var(--font-mono);
+    box-shadow:
+      0 32px 80px -30px rgba(0,0,0,0.7),
+      inset 0 0 60px rgba(29,158,117,0.04);
+    position: relative;
     overflow: hidden;
+    text-align: left;
   }
-  .hero-stats > div {
-    padding: 18px 8px;
-    text-align: center;
-    border-right: 0.5px solid var(--line);
+  .hero-oneliner::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(115deg,
+      transparent 40%,
+      rgba(159,225,203,0.06) 50%,
+      rgba(125,211,252,0.05) 55%,
+      transparent 65%);
+    transform: translateX(-110%);
+    pointer-events: none;
+    animation: oneliner-sweep 7s ease-in-out infinite;
   }
-  .hero-stats > div:last-child { border-right: none; }
-  .hero-stats strong {
-    display: block;
-    font-size: clamp(1.6rem, 3.2vw, 2.2rem);
-    font-weight: 700;
+  @keyframes oneliner-sweep {
+    0%, 100% { transform: translateX(-110%); }
+    50%      { transform: translateX(110%); }
+  }
+  .hero-oneliner .prompt {
+    color: var(--emerald-2);
+    font-weight: 600;
+    font-size: 15px;
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .hero-oneliner .cmd {
+    flex: 1;
+    min-width: 0;
     color: var(--ink);
-    letter-spacing: -0.02em;
-    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    user-select: all;
+    -webkit-user-select: all;
+    background: none;
+    border: 0;
+    padding: 0;
   }
-  .hero-stats span {
-    display: block;
+  .hero-oneliner .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(17,20,28,0.7);
+    border: 0.5px solid var(--line-hi);
+    border-radius: 8px;
+    color: var(--ink-2);
+    font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--ink-3);
-    margin-top: 4px;
-    letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: background .15s, color .15s, border-color .15s, transform .12s;
+    flex-shrink: 0;
   }
-  @media (max-width: 540px) {
-    .hero-stats { grid-template-columns: 1fr; }
-    .hero-stats > div { border-right: none; border-bottom: 0.5px solid var(--line); }
-    .hero-stats > div:last-child { border-bottom: none; }
+  .hero-oneliner .copy-btn:hover {
+    background: rgba(29,158,117,0.14);
+    border-color: rgba(29,158,117,0.32);
+    color: var(--ink);
+    transform: translateY(-1px);
+  }
+  .hero-oneliner .copy-btn.copied {
+    background: rgba(29,158,117,0.20);
+    border-color: rgba(29,158,117,0.45);
+    color: var(--emerald-2);
+  }
+  .hero-oneliner .copy-btn svg { flex-shrink: 0; }
+  .hero-oneliner-note {
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: 0.06em;
+    margin: 10px 0 0;
+    text-transform: uppercase;
+  }
+  .hero-oneliner-note .sep { opacity: 0.4; margin: 0 8px; }
+  @media (max-width: 560px) {
+    .hero-oneliner {
+      flex-wrap: wrap;
+      padding: 14px 16px;
+      margin-top: 40px;
+    }
+    .hero-oneliner .cmd {
+      font-size: 12.5px;
+      white-space: normal;
+      word-break: break-all;
+      flex-basis: 100%;
+      order: 2;
+    }
+    .hero-oneliner .prompt { order: 1; }
+    .hero-oneliner .copy-btn {
+      order: 3;
+      margin-left: auto;
+    }
+    .hero-oneliner .copy-btn .label { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hero-oneliner::before { animation: none; opacity: 0; }
   }
 
   /* ─── section frame ─── */
@@ -1177,11 +1331,15 @@
         View on GitHub <span aria-hidden="true">↗</span>
       </a>
     </div>
-    <div class="hero-stats" role="list">
-      <div role="listitem"><strong>1</strong><span>VM · 1 binary</span></div>
-      <div role="listitem"><strong>15<small style="font-size:0.55em;color:var(--ink-3);font-weight:500;"> min</small></strong><span>agent checkin cadence</span></div>
-      <div role="listitem"><strong>0€</strong><span>SaaS subscription</span></div>
+    <div class="hero-oneliner" role="region" aria-label="One-line installer">
+      <span class="prompt" aria-hidden="true">$</span>
+      <code class="cmd" id="oneliner-cmd">curl -fsSL https://opale.pages.dev/install.sh | bash</code>
+      <button type="button" class="copy-btn" data-target="oneliner-cmd" aria-label="Copy install command to clipboard">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <span class="label">copy</span>
+      </button>
     </div>
+    <p class="hero-oneliner-note">Interactive<span class="sep">·</span>prompts for domain &amp; secrets<span class="sep">·</span>~60 seconds</p>
   </div>
 </header>
 
@@ -1873,6 +2031,35 @@ cp .env.example .env       <span class="out"># fill in the required values</span
     schedule(addActivity, 8000,  2000);
     schedule(swapRow,    13000,  4000);
   }
+
+  // ── copy-to-clipboard buttons ──
+  document.querySelectorAll('.copy-btn[data-target]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const target = document.getElementById(btn.dataset.target);
+      if (!target) return;
+      const text = target.textContent.trim();
+      const label = btn.querySelector('.label');
+      const original = label ? label.textContent : '';
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        // fallback for older browsers / non-secure contexts
+        const r = document.createRange();
+        r.selectNodeContents(target);
+        const sel = getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        try { document.execCommand('copy'); } catch {}
+        sel.removeAllRanges();
+      }
+      btn.classList.add('copied');
+      if (label) label.textContent = 'copied!';
+      setTimeout(() => {
+        btn.classList.remove('copied');
+        if (label) label.textContent = original;
+      }, 1800);
+    });
+  });
 
   // ── footer year ──
   const y = document.getElementById('year');
