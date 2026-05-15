@@ -15,6 +15,15 @@
 
 ## Quick start
 
+One-liner (interactive — asks for domain + Entra credentials, generates
+secrets, starts the stack):
+
+```bash
+curl -fsSL https://opale.pages.dev/install.sh | bash
+```
+
+Or step-by-step if you'd rather see every command:
+
 ```bash
 git clone https://github.com/4rtefakt/opale.git && cd opale
 cp .env.example .env                                # fill in the required values
