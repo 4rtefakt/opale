@@ -1,6 +1,7 @@
-//go:build !windows
+//go:build !windows && !linux && !darwin
 
 package main
 
-// Stub : pas de signaux santé hors Windows pour le moment.
+// Stub pour OS non supportés (BSD, Solaris…). Les implémentations réelles
+// sont dans health_{windows,linux,darwin}.go.
 func collectHealth() *HealthSignals { return nil }

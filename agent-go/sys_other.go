@@ -1,7 +1,8 @@
-//go:build !windows
+//go:build !windows && !linux && !darwin
 
 package main
 
-// Stubs : la collecte HW/perf n'est portée que sur Windows pour le moment.
-func collectSystemInfo() *SystemInfo  { return nil }
-func collectSystemPerf() *SystemPerf  { return nil }
+// Stubs pour OS non supportés (BSD, Solaris…). Les implémentations réelles
+// sont dans sysinfo_{windows,linux,darwin}.go et sysperf_{windows,linux,darwin}.go.
+func collectSystemInfo() *SystemInfo { return nil }
+func collectSystemPerf() *SystemPerf { return nil }
