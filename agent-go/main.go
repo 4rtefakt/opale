@@ -17,6 +17,10 @@ func main() {
 	version := flag.Bool("version", false, "Affiche la version et quitte")
 	selftest := flag.Bool("self-test", false, "Vérifie que la config, le réseau et le service sont OK puis quitte")
 	showPins := flag.Bool("show-pins", false, "Affiche les pins SPKI embarqués puis quitte")
+	installSvc := flag.Bool("install-service", false, "Installe l'agent comme service systemd (Linux) ou launchd (macOS)")
+	uninstallSvc := flag.Bool("uninstall-service", false, "Désinstalle le service systemd / launchd")
+	installToken := flag.String("token", "", "Token d'enrôlement (à utiliser avec --install-service)")
+	installURL := flag.String("url", "", "URL serveur RMM (à utiliser avec --install-service)")
 	flag.Parse()
 
 	if *version {
@@ -37,6 +41,20 @@ func main() {
 	}
 	if *selftest {
 		os.Exit(RunSelfTest())
+	}
+	if *installSvc {
+		if err := InstallService(*installToken, *installURL); err != nil {
+			fmt.Fprintln(os.Stderr, "install-service :", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *uninstallSvc {
+		if err := UninstallService(); err != nil {
+			fmt.Fprintln(os.Stderr, "uninstall-service :", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// En mode interactif --debug, formater les logs pour humains en plus

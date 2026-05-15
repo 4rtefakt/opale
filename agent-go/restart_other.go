@@ -1,10 +1,10 @@
-//go:build !windows
+//go:build !windows && !linux && !darwin
 
 package main
 
-// Stub — restartService n'a pas de sens hors Windows. Présent pour permettre
-// de compiler/tester l'agent localement.
+// Stub pour OS non supportés. Les implémentations réelles sont dans
+// restart_{windows,linux,darwin}.go.
 func restartService() error {
-	logf("restartService : no-op (build non-Windows)")
+	logf("restartService : no-op (OS non supporté)")
 	return nil
 }
