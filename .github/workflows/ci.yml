@@ -46,6 +46,13 @@ jobs:
           --health-retries 10
     env:
       PG_TEST_URL: postgres://postgres:postgres@localhost:5432/opale_test
+      # Fournit des IDs Entra factices pour que le plugin auth puisse
+      # vérifier l'issuer/audience des JWT signés par setupTestJwks (qui
+      # utilise les mêmes valeurs par défaut). Sans ça, le plugin construit
+      # un issuer `.../undefined/v2.0` qui ne matche pas → 401 systématique
+      # sur les tests d'auth qui ne setent pas eux-mêmes les env vars.
+      ENTRA_TENANT_ID: test-tenant
+      ENTRA_CLIENT_ID: test-client
     steps:
       - uses: actions/checkout@v4
 

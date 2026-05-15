@@ -38,10 +38,22 @@ CREATE TABLE IF NOT EXISTS remote_sessions (
 -- La table sera supprimable plus tard quand le nouveau schéma aura prouvé
 -- sa stabilité (migration de cleanup dédiée).
 DO $$ BEGIN
+  -- Migration déjà appliquée : la table archive existe. Drop d'un éventuel
+  -- ssh_sessions recréé entre-temps par une re-exécution de la migration 003
+  -- (CREATE TABLE IF NOT EXISTS qui ne sait pas que la table a été archivée).
+  -- Cette branche garantit l'idempotence quand on rejoue toutes les migrations
+  -- de 0 sur un schéma déjà migré (cf. CI validate-sql-migrations).
   IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'ssh_sessions_archive_pre046'
+  ) THEN
+    DROP TABLE IF EXISTS ssh_sessions;
+
+  ELSIF EXISTS (
     SELECT 1 FROM information_schema.tables
     WHERE table_schema = 'public' AND table_name = 'ssh_sessions'
   ) THEN
+    -- Premier passage de la migration : archive les rows historiques.
     INSERT INTO remote_sessions (id, device_id, transport, by_entra_id, by_name, ip, started_at, ended_at)
     SELECT id, device_id, 'ssh', by_entra_id, by_name, ip, started_at, ended_at
     FROM ssh_sessions
