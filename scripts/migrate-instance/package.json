@@ -1,0 +1,17 @@
+{
+  "name": "opale-migrate-instance",
+  "version": "1.0.0",
+  "description": "Outil de migration data inter-instances Opale (source DB → target DB).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node migrate.js",
+    "check": "node --check migrate.js && node --check tables.js"
+  },
+  "dependencies": {
+    "pg": "^8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,236 @@
+# Opale — CI : lint API, tests agent Go, validation des migrations SQL,
+# build de l'image Docker. Déclenché sur chaque push (sauf tags, gérés par
+# release.yml) et sur chaque pull request.
+#
+# Aucune publication ici : pas de push GHCR, pas de release. Strictement
+# vérification statique + tests + smoke tests.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['**']
+  pull_request:
+
+# Annule les runs CI obsolètes si on push à nouveau sur la même branche / PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1) API : install des deps, syntax check de tous les .js, puis suite
+  #    `node --test` (helpers + libs pures + smoke d'intégration DB).
+  #    Un service Postgres 16 est démarré pour les tests qui acquièrent
+  #    un schéma random via tests/helpers/db.js — cohérent avec le service
+  #    PG utilisé en `validate-sql-migrations`. Les suites pures (lib/*)
+  #    n'ont pas besoin du service mais tournent sans coût.
+  # ─────────────────────────────────────────────────────────────────────────
+  lint-and-test-api:
+    name: Lint & test API
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: opale_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_TEST_URL: postgres://postgres:postgres@localhost:5432/opale_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install API dependencies
+        working-directory: api
+        run: npm ci
+
+      - name: Syntax check (node --check) on all api/*.js
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r -d '' f; do
+            if ! node --check "$f"; then
+              echo "::error file=$f::node --check failed"
+              fail=1
+            fi
+          done < <(find api -type f -name '*.js' -not -path 'api/node_modules/*' -print0)
+          exit "$fail"
+
+      - name: Run API test suite (node --test)
+        working-directory: api
+        run: npm test
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2) Agent Go : matrice cross-OS/arch. `go vet` et `go build` valident
+  #    que le code compile pour chaque cible. `go test` ne tourne que sur
+  #    le host (linux/amd64) — les binaires de tests cross-compilés ne sont
+  #    pas exécutables sur un runner ubuntu.
+  # ─────────────────────────────────────────────────────────────────────────
+  test-agent-go:
+    name: Test agent Go (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, linux, darwin]
+        goarch: [amd64, arm64]
+    defaults:
+      run:
+        working-directory: agent-go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: agent-go/go.mod
+          cache-dependency-path: agent-go/go.sum
+
+      - name: go vet
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go vet ./...
+
+      - name: go build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build ./...
+
+      - name: go test (host only — linux/amd64)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: go test ./...
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3) Migrations SQL : applique 001..NNN dans l'ordre sur un Postgres 16
+  #    propre, puis rejoue tout une seconde fois pour vérifier
+  #    l'idempotence (pattern `IF NOT EXISTS` / `ON CONFLICT DO NOTHING`).
+  # ─────────────────────────────────────────────────────────────────────────
+  validate-sql-migrations:
+    name: Validate SQL migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: opale_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: opale_ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: First pass — apply all migrations in order
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(api/migrations/0*.sql)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no migrations found under api/migrations/"
+            exit 1
+          fi
+          for m in "${files[@]}"; do
+            echo "→ $m"
+            psql -v ON_ERROR_STOP=1 -f "$m"
+          done
+
+      - name: Second pass — re-apply (idempotency check)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for m in api/migrations/0*.sql; do
+            echo "→ $m (re-run)"
+            psql -v ON_ERROR_STOP=1 -f "$m"
+          done
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 4) Parité i18n : vérifie que fr.js et en.js ont exactement les mêmes
+  #    clés. Fail dès qu'une clé est ajoutée d'un côté sans l'autre.
+  # ─────────────────────────────────────────────────────────────────────────
+  front-i18n-parity:
+    name: Front i18n parity (fr ↔ en)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check locale key parity (fr.js ↔ en.js)
+        run: node --no-warnings scripts/check-locales-parity.mjs
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 5) Image Docker : build l'image complète, vérifie que l'entrypoint
+  #    parse, et que les 5 vendors front sont présents (cf. setup.sh).
+  # ─────────────────────────────────────────────────────────────────────────
+  validate-docker-build:
+    name: Validate Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: opale:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — entrypoint parses
+        run: docker run --rm opale:ci node --check index.js
+
+      - name: Verify vendored frontend dependencies
+        run: |
+          docker run --rm --entrypoint sh opale:ci -c '
+            set -e
+            for f in \
+              front/msal-browser.min.js \
+              front/tabler-icons-webfont/tabler-icons.min.css \
+              front/tabler-icons-webfont/fonts/tabler-icons.woff2 \
+              front/xterm.js \
+              front/chart.umd.min.js; do
+              if [ ! -f "$f" ]; then
+                echo "MISSING vendor: $f"
+                exit 1
+              fi
+              echo "OK: $f"
+            done
+          '

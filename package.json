@@ -1,0 +1,9 @@
+{
+  "name": "opale",
+  "scripts": {
+    "check:locales": "node --no-warnings scripts/check-locales-parity.mjs"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  }
+}

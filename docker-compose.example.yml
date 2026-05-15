@@ -1,0 +1,109 @@
+# Opale — compose de référence pour self-hosters.
+#
+# Pour déployer : copier ce fichier en docker-compose.yml (ou utiliser
+# `docker compose -f docker-compose.example.yml up -d`), créer .env à
+# partir de .env.example, puis lire INSTALL.md.
+#
+# La compose embarque PostgreSQL pour faciliter le bootstrap. Pour une
+# prod sérieuse, pointez POSTGRES_HOST vers un cluster managé et retirez
+# le service `db` ci-dessous.
+
+services:
+  api:
+    # Build par défaut depuis le Dockerfile racine de ce repo.
+    # Pour utiliser une image pré-construite (cf. PR7 / GHCR) :
+    #   image: ghcr.io/4rtefakt/opale:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: opale:latest
+    container_name: opale-api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "3010:3010"   # binder en 127.0.0.1:3010 si reverse proxy local
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # ─ Front (HTML/JS/CSS + branding) ────────────────────────────────
+      # Monté en lecture seule pour permettre le hot-update du front sans
+      # rebuilder l'image API : `rsync front/ <serveur>:/opt/.../front/`
+      # puis `docker compose restart api` (pour vider le cache @fastify/static).
+      # Le sous-dossier `front/branding/` est déjà dans cet arbre, pas
+      # besoin de mount séparé.
+      - ./front:/app/front:ro
+
+      # ─ Agent Go : binaires + clés privées (REQUIS si vous servez les
+      #   binaires depuis cette instance — typique pour l'auto-update).
+      #   Préparez ces fichiers AVANT le premier démarrage :
+      #     mkdir -p agent-go/dist agent-go/keys
+      #     openssl genpkey -algorithm ed25519 -out agent-go/keys/signing.key
+      #     openssl pkey -in agent-go/keys/signing.key -pubout > agent-go/keys/signing.pub
+      #     openssl genrsa -out agent-go/keys/laps.key 4096
+      #     openssl rsa -in agent-go/keys/laps.key -pubout > agent-go/keys/laps.pub
+      #   Puis (re)compilez l'agent : node agent-go/build.js --token … --url …
+      - ./agent-go/dist:/app/agent-go/dist:ro
+      - ./agent-go/keys/signing.key:/app/agent-go/keys/signing.key:ro
+      - ./agent-go/keys/laps.key:/app/agent-go/keys/laps.key:ro
+
+  db:
+    image: postgres:16-alpine
+    container_name: opale-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 001 est appliqué automatiquement par l'image Postgres au premier
+      # démarrage. Les migrations 002+ sont appliquées manuellement,
+      # cf. INSTALL.md §5.
+      - ./api/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout:  5s
+      retries:  5
+
+  # ─── Reverse proxy (exemple Caddy) ──────────────────────────────────────
+  # Décommentez et adaptez si vous voulez gérer le TLS dans la même compose.
+  # Sinon utilisez un proxy externe (nginx, Traefik, ou le proxy de votre
+  # hébergeur) et reverse-proxiez localhost:3010.
+  #
+  # caddy:
+  #   image: caddy:2-alpine
+  #   container_name: opale-proxy
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #
+  # Caddyfile minimal (à placer à côté de ce fichier) :
+  #   rmm.example.com {
+  #       reverse_proxy api:3010
+  #   }
+
+  # ─── Reverse proxy (exemple nginx) ──────────────────────────────────────
+  # Alternative à Caddy si vous gérez vos certificats à la main.
+  #
+  # nginx:
+  #   image: nginx:1.27-alpine
+  #   container_name: opale-proxy
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - /etc/letsencrypt:/etc/letsencrypt:ro
+
+volumes:
+  pgdata:
+  # caddy_data:
+  # caddy_config:

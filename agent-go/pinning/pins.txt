@@ -1,0 +1,16 @@
+# SPKI SHA-256 pins acceptés par l'agent pour valider le certificat TLS du serveur.
+#
+# Une ligne par pin (hex lowercase, 64 chars).
+# Lignes vides et commentaires ignorés.
+# Fichier vide / pas de ligne valide ⇒ pinning désactivé (fallback CA standard).
+#
+# Procédure de rotation :
+# 1. Avant renouvellement du cert : ajouter le NOUVEAU pin ici (en gardant l'ancien)
+# 2. Build + déploiement de l'agent via auto-update (ancien cert toujours actif)
+# 3. Une fois tous les agents à jour : renouveler le cert sur le serveur
+# 4. Optionnel : retirer l'ancien pin au build suivant
+#
+# Récupérer le pin courant pour <host> :
+#   echo | openssl s_client -servername <host> -connect <host>:443 2>/dev/null \
+#     | openssl x509 -pubkey -noout | openssl pkey -pubin -outform DER \
+#     | openssl dgst -sha256 -hex | awk '{print $NF}'

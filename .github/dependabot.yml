@@ -1,0 +1,61 @@
+# Opale — Dependabot config.
+#
+# Schedule weekly pour ne pas noyer le repo en PRs. Auto-merge volontairement
+# NON activé : les patches sont reviewés à la main, le maintainer décide.
+
+version: 2
+updates:
+  # ── API Fastify (Node 20) ──────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /api
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+      include: scope
+    labels:
+      - dependencies
+      - api
+
+  # ── Racine (ssh2 utilisé par les scripts de déploiement) ────────────────
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: deps
+      include: scope
+    labels:
+      - dependencies
+
+  # ── Agent Go ────────────────────────────────────────────────────────────
+  - package-ecosystem: gomod
+    directory: /agent-go
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+      include: scope
+    labels:
+      - dependencies
+      - agent-go
+
+  # ── GitHub Actions (workflows ci.yml + release.yml) ─────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+      include: scope
+    labels:
+      - dependencies
+      - ci

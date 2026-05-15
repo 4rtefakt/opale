@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+
+  <!-- Fond sombre arrondi -->
+  <rect width="512" height="512" rx="96" fill="#0f1117"/>
+
+  <!-- Lueur bleue centrale -->
+  <radialGradient id="glow" cx="50%" cy="50%" r="44%">
+    <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.20"/>
+    <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+  </radialGradient>
+  <rect width="512" height="512" rx="96" fill="url(#glow)"/>
+
+  <!-- Moniteur (sans pied, centré — coins à ~166px du centre, safe zone 205px) -->
+  <rect x="130" y="148" width="252" height="196" rx="14"
+    fill="#1a1d27" stroke="#3b82f6" stroke-width="9"/>
+
+  <!-- Écran intérieur -->
+  <rect x="143" y="162" width="226" height="168" rx="10" fill="#0a0d14"/>
+
+  <!-- Grille de fond -->
+  <line x1="143" y1="225" x2="369" y2="225" stroke="#1e2235" stroke-width="1.5"/>
+  <line x1="143" y1="248" x2="369" y2="248" stroke="#1e2235" stroke-width="1.5"/>
+
+  <!-- Ligne de pulse -->
+  <polyline
+    points="151,200  178,200  192,162  207,238  220,200  238,200  252,182  264,200  286,200  299,180  312,200  361,200"
+    fill="none" stroke="#3b82f6" stroke-width="8"
+    stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Dot vert statut -->
+  <circle cx="353" cy="177" r="10" fill="#22c55e"/>
+  <circle cx="353" cy="177" r="5.5" fill="#4ade80"/>
+
+  <!-- TDV dans l'écran -->
+  <text x="256" y="284"
+    text-anchor="middle"
+    fill="#ffffff"
+    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+    font-size="58"
+    font-weight="800"
+    letter-spacing="5">TDV</text>
+
+  <!-- RMM dans l'écran -->
+  <text x="256" y="312"
+    text-anchor="middle"
+    fill="#3b82f6"
+    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+    font-size="23"
+    font-weight="600"
+    letter-spacing="11">RMM</text>
+
+</svg>
