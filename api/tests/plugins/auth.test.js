@@ -146,10 +146,15 @@ test('authenticate — Bearer JWT audience invalide → 401', { skip: SKIP }, as
 
 test('authenticate — Bearer JWT signature trafiquée → 401', { skip: SKIP }, async () => {
   const token = await jwt.sign({ oid: 'oid-x', name: 'X', preferred_username: 'x@x' })
-  // Flip un char à la fin de la signature.
+  // Flip un char au MILIEU de la signature plutôt qu'à la fin : le dernier
+  // char base64url d'une signature HMAC-SHA256 (256 bits) ne porte que 4
+  // bits utiles + 2 bits ignorés au décodage, ce qui rendait le test flaky
+  // ~6% du temps quand le flip ne touchait que les bits ignorés.
   const segs = token.split('.')
-  const lastChar = segs[2].slice(-1)
-  segs[2] = segs[2].slice(0, -1) + (lastChar === 'A' ? 'B' : 'A')
+  const sig = segs[2]
+  const mid = Math.floor(sig.length / 2)
+  const orig = sig[mid]
+  segs[2] = sig.slice(0, mid) + (orig === 'A' ? 'B' : 'A') + sig.slice(mid + 1)
   const tampered = segs.join('.')
   const res = await fastify.inject({
     method: 'GET', url: '/whoami',
