@@ -82,7 +82,9 @@ test('GET /env.js — body contient window.ENV = ', { skip: SKIP }, async () => 
 test('GET /env.js — ENV contient les clés attendues', { skip: SKIP }, async () => {
   const res = await fastify.inject({ method: 'GET', url: '/env.js' })
   // Extraire le JSON depuis "(typeof window !== 'undefined' ? window : self).ENV = {...};"
-  const match = res.body.match(/\.ENV\s*=\s*(\{[\s\S]+\});?\s*$/)
+  // Non-greedy + anchor sur `};\n` pour ne pas déborder sur la 2e
+  // assignation (window.OPALE) ajoutée après l'objet ENV.
+  const match = res.body.match(/\.ENV\s*=\s*(\{[\s\S]+?\});\s*\n/)
   assert.ok(match, 'impossible de parser le JSON ENV depuis le body')
   const env = JSON.parse(match[1])
   assert.ok('ENTRA_TENANT_ID' in env, 'ENTRA_TENANT_ID manquant')
@@ -93,7 +95,9 @@ test('GET /env.js — ENV contient les clés attendues', { skip: SKIP }, async (
 
 test('GET /env.js — ENTRA_CLIENT_ID = valeur env', { skip: SKIP }, async () => {
   const res = await fastify.inject({ method: 'GET', url: '/env.js' })
-  const match = res.body.match(/\.ENV\s*=\s*(\{[\s\S]+\});?\s*$/)
+  // Non-greedy + anchor sur `};\n` pour ne pas déborder sur la 2e
+  // assignation (window.OPALE) ajoutée après l'objet ENV.
+  const match = res.body.match(/\.ENV\s*=\s*(\{[\s\S]+?\});\s*\n/)
   const env = JSON.parse(match[1])
   assert.equal(env.ENTRA_CLIENT_ID, 'test-client-env')
 })
@@ -102,7 +106,9 @@ test('GET /env.js — ENTRA_CLIENT_ID = valeur env', { skip: SKIP }, async () =>
 
 test('GET /env.js — BRANDING contient product_name (default si settings vide)', { skip: SKIP }, async () => {
   const res = await fastify.inject({ method: 'GET', url: '/env.js' })
-  const match = res.body.match(/\.ENV\s*=\s*(\{[\s\S]+\});?\s*$/)
+  // Non-greedy + anchor sur `};\n` pour ne pas déborder sur la 2e
+  // assignation (window.OPALE) ajoutée après l'objet ENV.
+  const match = res.body.match(/\.ENV\s*=\s*(\{[\s\S]+?\});\s*\n/)
   const env = JSON.parse(match[1])
   assert.ok(typeof env.BRANDING.product_name === 'string', 'BRANDING.product_name devrait être une string')
   // Défaut = 'Opale' quand la table settings est vide.
@@ -119,7 +125,9 @@ test('GET /env.js — BRANDING reflète settings DB', { skip: SKIP }, async () =
   fastify.invalidateBrandingCache()
 
   const res = await fastify.inject({ method: 'GET', url: '/env.js' })
-  const match = res.body.match(/\.ENV\s*=\s*(\{[\s\S]+\});?\s*$/)
+  // Non-greedy + anchor sur `};\n` pour ne pas déborder sur la 2e
+  // assignation (window.OPALE) ajoutée après l'objet ENV.
+  const match = res.body.match(/\.ENV\s*=\s*(\{[\s\S]+?\});\s*\n/)
   const env = JSON.parse(match[1])
   assert.equal(env.BRANDING.org_name, 'Test Org Name')
 })
