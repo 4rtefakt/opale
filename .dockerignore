@@ -1,0 +1,12 @@
+node_modules
+api/node_modules
+.git
+.claude
+.env
+agent/dist
+# Sécurité : la clé privée de signature ne doit JAMAIS finir dans l'image,
+# elle est montée en volume au runtime.
+agent-go/keys/signing.key
+# Le binaire compilé est aussi monté en volume pour permettre des updates
+# sans rebuild.
+agent-go/dist

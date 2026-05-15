@@ -1,0 +1,35 @@
+services:
+  api:
+    build: { context: ., dockerfile: api/Dockerfile }
+    restart: unless-stopped
+    env_file: .env
+    ports: ["3010:3010"]
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./front:/app/front:ro
+      # Agent Go : binaire et clé privée de signature montés à part pour
+      # éviter qu'un rebuild ne nécessite de re-builder l'image API.
+      - ./agent-go/dist:/app/agent-go/dist:ro
+      - ./agent-go/keys/signing.key:/app/agent-go/keys/signing.key:ro
+      - ./agent-go/keys/laps.key:/app/agent-go/keys/laps.key:ro
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./api/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

@@ -1,0 +1,201 @@
+# Opale — pipeline de release. Déclenché sur push d'un tag `vX.Y.Z`.
+#
+# Produit :
+#   • Binaires agent Go cross-compilés pour {windows,linux,darwin} ×
+#     {amd64,arm64}, avec sha256 sidecar.
+#   • Image Docker multi-arch (linux/amd64 + linux/arm64) publiée sur
+#     ghcr.io/<owner>/opale:{X.Y.Z, X.Y, latest}.
+#   • Une GitHub Release avec notes auto-générées + binaires en assets.
+#
+# ─── Choix : binaires NON SIGNÉS (cf. PR7 §C, Option 2) ───────────────────
+#
+# Les binaires des Releases sont une convenience pour bootstrap/démo. La
+# distribution réelle aux postes Windows passe par `/api/agent/binary` de
+# l'instance, où chaque déploiement signe ses propres binaires avec sa
+# propre clé ed25519 (cf. INSTALL.md).
+#
+# Ne pas réintroduire de clé centrale `OPALE_SIGNING_KEY` dans les Secrets
+# du repo : si elle fuit, il faut re-pousser une nouvelle clé publique
+# dans tous les agents déployés (donc rebuild + redéploiement complet).
+# Trade-off conscient documenté dans le README de chaque Release.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1) Build agent Go pour 6 cibles (3 OS × 2 arch). Pas de -ldflags
+  #    branding spécifique : binaires génériques, le branding est injecté
+  #    par chaque instance via `agent-go/build.js --brand=…` au moment du
+  #    déploiement.
+  # ─────────────────────────────────────────────────────────────────────────
+  build-agent-binaries:
+    name: Build agent (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, linux, darwin]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: agent-go/go.mod
+          cache-dependency-path: agent-go/go.sum
+
+      - name: Build binary
+        working-directory: agent-go
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p ../release-dist
+          ext=""
+          [ "$GOOS" = "windows" ] && ext=".exe"
+          out="opale-agent-${GOOS}-${GOARCH}${ext}"
+          go build -trimpath -ldflags="-s -w" -o "../release-dist/$out" .
+          (cd ../release-dist && sha256sum "$out" > "$out.sha256")
+          ls -la "../release-dist/"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: release-dist/opale-agent-*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2) Image Docker multi-arch publiée sur GHCR sous l'owner du repo.
+  #    Reste compatible avec un transplant ultérieur (cf. plan §0.bis W2) :
+  #    `${{ github.repository_owner }}` suit automatiquement.
+  # ─────────────────────────────────────────────────────────────────────────
+  build-and-push-docker:
+    name: Build & push Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `flavor: latest=auto` (défaut de docker/metadata-action) ne tag
+      # `:latest` que pour les versions stables (pas de pré-release).
+      # `type=semver,pattern={{version}}` produit `1.2.3`,
+      # `{{major}}.{{minor}}` produit `1.2`. On évite `{{major}}` pour
+      # ne pas écraser une `1.x` stable depuis une version expérimentale.
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/opale
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build & push (multi-arch)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3) Crée la GitHub Release : récupère les artifacts du job 1, génère les
+  #    notes depuis l'historique git, attache les binaires + sha256.
+  # ─────────────────────────────────────────────────────────────────────────
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-agent-binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Historique complet pour `git log prev..tag`.
+
+      - name: Download all agent binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: release-dist
+          pattern: agent-*
+          merge-multiple: true
+
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # Tag précédent (par date de création), en excluant le tag courant.
+          prev=$(git tag --sort=-creatordate | grep -vx "${tag}" | head -n1 || true)
+
+          {
+            echo "## Changes"
+            echo
+            if [ -n "$prev" ]; then
+              echo "Since \`${prev}\`:"
+              echo
+              git log --pretty=format:'- %s (%h)' "${prev}..${tag}"
+              echo
+            else
+              echo "Initial release."
+            fi
+            echo
+            echo "## Agent binaries"
+            echo
+            echo "| Target | SHA-256 |"
+            echo "|---|---|"
+            for sf in release-dist/*.sha256; do
+              base=$(basename "${sf%.sha256}")
+              hash=$(awk '{print $1}' "$sf")
+              echo "| \`${base}\` | \`${hash}\` |"
+            done
+            echo
+            echo "> ⚠️  These agent binaries are **unsigned** — provided as a"
+            echo "> convenience for bootstrap and demo only. For production,"
+            echo "> each Opale instance signs its own binaries with its"
+            echo "> own ed25519 key (see [INSTALL.md](INSTALL.md))."
+            echo ">"
+            echo "> Auto-update is served by your instance's"
+            echo "> \`/api/agent/binary\` endpoint, **not** from GitHub Releases."
+            echo
+            echo "## Container image"
+            echo
+            echo "\`\`\`"
+            echo "docker pull ghcr.io/${{ github.repository_owner }}/opale:${tag#v}"
+            echo "\`\`\`"
+          } > RELEASE_NOTES.md
+
+          echo "──── notes ────"
+          cat RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file RELEASE_NOTES.md \
+            release-dist/opale-agent-*

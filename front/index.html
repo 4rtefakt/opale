@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Opale</title>
+<link rel="icon" type="image/svg+xml" href="/branding/icon.svg">
+<!-- Tabler Icons — self-host via setup.sh avant mise en production -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<link rel="stylesheet" href="/styles/main.css">
+<script src="/env.js"></script>
+<script>
+  // Hydrate les éléments [data-brand="<champ>"] depuis window.ENV.BRANDING.
+  // Champs supportés : org_name, product_name, tagline, default_role_label.
+  document.addEventListener('DOMContentLoaded', () => {
+    const b = window.ENV && window.ENV.BRANDING
+    if (!b) return
+    if (b.product_name) document.title = b.product_name
+    document.querySelectorAll('[data-brand]').forEach(el => {
+      const k = el.getAttribute('data-brand')
+      if (b[k]) el.textContent = b[k]
+    })
+  })
+</script>
+<script src="/msal-browser.min.js"></script>
+</head>
+<body>
+
+<!-- CHARGEMENT -->
+<div id="view-loading" class="view-loading">
+  <div class="loading-spinner"></div>
+</div>
+
+<!-- ECRAN LOGIN -->
+<div id="view-login" style="display:none;align-items:center;justify-content:center;min-height:100vh;background:var(--bg-tertiary)">
+  <div style="text-align:center">
+    <img src="/branding/icon.svg" alt="" style="width:56px;height:56px;margin-bottom:14px">
+    <div style="font-size:20px;font-weight:500;margin-bottom:6px;color:var(--text-primary)" data-brand="product_name">Opale</div>
+    <div style="font-size:13px;color:var(--text-tertiary);margin-bottom:28px"><span data-brand="org_name">Your Organization</span> — <span data-brand="tagline">Open RMM platform</span></div>
+    <button id="btn-login" class="btn btn-primary" style="font-size:13px;padding:9px 20px">
+      <i class="ti ti-brand-azure"></i> Se connecter avec Microsoft 365
+    </button>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" class="app" style="display:none">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="logo" style="display:flex;align-items:center;gap:10px">
+      <img src="/branding/icon.svg" alt="" style="width:28px;height:28px;flex-shrink:0">
+      <div style="min-width:0">
+        <div class="logo-name" data-brand="product_name">Opale</div>
+        <div class="logo-sub" data-brand="org_name">Your Organization</div>
+      </div>
+    </div>
+
+    <span class="nav-section" data-module="core">Général</span>
+    <a class="nav-item" href="#/dashboard" data-module="core"><i class="ti ti-layout-dashboard"></i> Dashboard</a>
+    <a class="nav-item" href="#/alertes" data-module="monitoring"><i class="ti ti-bell"></i> Alertes
+      <span class="nav-badge" id="badge-alertes" style="display:none"></span>
+    </a>
+    <a class="nav-item" href="#/tickets" data-module="tickets"><i class="ti ti-ticket"></i> Tickets
+      <span class="nav-badges">
+        <span class="nav-badge" id="badge-proposals" title="Propositions à valider" style="display:none"></span>
+        <span class="nav-badge nav-badge-warn" id="badge-tickets" title="Tickets ouverts non assignés" style="display:none"></span>
+      </span>
+    </a>
+
+    <span class="nav-section" data-module="inventory">Parc</span>
+    <a class="nav-item" href="#/postes" data-module="inventory"><i class="ti ti-device-laptop"></i> Postes</a>
+    <a class="nav-item" href="#/conformite" data-module="monitoring"><i class="ti ti-shield-check"></i> Conformité</a>
+    <a class="nav-item" href="#/reseau" data-module="monitoring"><i class="ti ti-network"></i> Réseau</a>
+    <a class="nav-item" href="#/stock" data-module="inventory"><i class="ti ti-package"></i> Stock consommable</a>
+    <a class="nav-item" href="#/users" data-module="core"><i class="ti ti-users"></i> Utilisateurs</a>
+    <a class="nav-item" href="#/groupes" data-module="groups"><i class="ti ti-circles"></i> Groupes</a>
+
+    <span class="nav-section" data-module="inventory">Outils</span>
+    <a class="nav-item" href="#/packages" data-module="inventory"><i class="ti ti-rocket"></i> Déploiement</a>
+    <a class="nav-item" href="#/scripts" data-module="inventory"><i class="ti ti-terminal-2"></i> Scripts</a>
+    <a class="nav-item" href="#/onboarding" data-module="onboarding"><i class="ti ti-checklist"></i> Onboarding</a>
+    <a class="nav-item" href="#/rapports" data-module="monitoring"><i class="ti ti-chart-bar"></i> Rapports</a>
+
+    <span class="nav-section" data-module="core">Config</span>
+    <a class="nav-item" href="#/audit" data-module="core"><i class="ti ti-history"></i> Audit</a>
+    <a class="nav-item" href="#/parametres" data-module="core"><i class="ti ti-settings"></i> Paramètres</a>
+
+    <div class="sidebar-footer" id="sidebar-user-btn" onclick="toggleUserMenu()" title="Menu utilisateur">
+      <div class="avatar" id="sidebar-avatar">?</div>
+      <div style="flex:1;min-width:0">
+        <div class="avatar-name" id="sidebar-name">—</div>
+        <div class="avatar-role" id="sidebar-role" data-brand="default_role_label">IT</div>
+      </div>
+      <div id="user-menu" class="user-menu hidden">
+        <button class="user-menu-item" onclick="window.auth.logout()">
+          <i class="ti ti-logout"></i> Déconnexion
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div class="main" id="main-area">
+    <div id="view-dashboard" class="view"></div>
+    <div id="view-postes"    class="view"></div>
+    <div id="view-conformite" class="view"></div>
+    <div id="view-reseau"    class="view"></div>
+    <div id="view-alertes"   class="view"></div>
+    <div id="view-tickets"   class="view"></div>
+    <div id="view-stock"     class="view"></div>
+    <div id="view-users"     class="view"></div>
+    <div id="view-scripts"   class="view"></div>
+    <div id="view-onboarding" class="view"></div>
+    <div id="view-rapports"  class="view"></div>
+    <div id="view-audit"     class="view"></div>
+    <div id="view-parametres" class="view"></div>
+    <div id="view-packages"  class="view"></div>
+    <div id="view-groupes"   class="view"></div>
+    <div id="view-404" class="view" style="display:none">
+      <div class="empty-state" style="height:100%">
+        <i class="ti ti-mood-confuzed"></i>
+        <p>Page introuvable</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- MODAL -->
+<div id="modal-overlay" class="hidden">
+  <div id="modal-content"></div>
+</div>
+
+<!-- TOAST -->
+<div id="toast" class="toast hidden"></div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1884 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<meta name="theme-color" content="#0a0c10" />
+<meta name="description" content="Opale — self-hosted RMM, inventory, ticketing, scripts and browser SSH for small organisations. AGPL-3.0, GDPR-native, one VM, one binary." />
+<meta property="og:title" content="Opale — your whole fleet, polished." />
+<meta property="og:description" content="Self-hosted RMM, inventory, ticketing, scripts and browser SSH for small organisations. AGPL-3.0, GDPR-native." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://opale.pages.dev/" />
+<meta property="og:image" content="https://opale.pages.dev/og.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:type" content="image/png" />
+<meta property="og:image:alt" content="Opale wordmark in iridescent opal shimmer on a dark background" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Opale — your whole fleet, polished." />
+<meta name="twitter:description" content="Self-hosted RMM, inventory, ticketing, scripts and browser SSH for small organisations. AGPL-3.0, GDPR-native." />
+<meta name="twitter:image" content="https://opale.pages.dev/og.png" />
+<title>Opale — your whole fleet, polished.</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><radialGradient id='g' cx='35%25' cy='35%25' r='65%25'><stop offset='0%25' stop-color='%2322d3ee'/><stop offset='40%25' stop-color='%231D9E75'/><stop offset='70%25' stop-color='%23a78bfa'/><stop offset='100%25' stop-color='%230c4c3c'/></radialGradient></defs><rect width='64' height='64' rx='14' fill='%230a0c10'/><circle cx='32' cy='32' r='22' fill='url(%23g)'/></svg>" />
+<style>
+  /* ─── opal animatable angles (custom-property typed for transitions) ─── */
+  @property --opal-angle    { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+  @property --opal-angle-2  { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+  @property --text-angle    { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+
+  *,*::before,*::after { box-sizing: border-box; }
+  html,body { margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+
+  :root {
+    --bg:           #0a0c10;
+    --bg-soft:      #0d1018;
+    --panel:        #11141c;
+    --panel-hi:     #161a25;
+    --line:         rgba(255,255,255,0.07);
+    --line-hi:      rgba(255,255,255,0.14);
+    --ink:          #f1efe9;
+    --ink-2:        #b4b2a9;
+    --ink-3:        #76746c;
+    --emerald:      #1D9E75;
+    --emerald-2:    #9FE1CB;
+    --amber:        #BA7517;
+    --amber-2:      #FAC775;
+    --red:          #E24B4A;
+
+    /* opal palette — Mediterranean opal: deep emerald base, with cyan,
+       violet, soft pink and warm gold flashes */
+    --c1: #0c4c3c;
+    --c2: #1D9E75;
+    --c3: #22d3ee;
+    --c4: #7dd3fc;
+    --c5: #a78bfa;
+    --c6: #f0abfc;
+    --c7: #fbbf24;
+
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* ─────────────────────────────────────────────────────────────
+     SIGNATURE EFFECT — page-wide opal play-of-color
+     ─────────────────────────────────────────────────────────────
+     1. .opal-base   — deep dark base
+     2. .opal-conic  — slowly rotating conic gradient, blurred
+     3. .opal-conic-2— counter-rotating second layer for that
+                       "two-band shimmer" you get on real opal
+     4. .opal-light  — radial spotlight that follows the cursor
+     5. .opal-grain  — SVG noise texture (data-uri) for stone feel
+  */
+  .opal-stage {
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    pointer-events: none;
+    overflow: hidden;
+    isolation: isolate;
+    background:
+      radial-gradient(ellipse at 50% -10%, #0f1a22 0%, var(--bg) 55%),
+      var(--bg);
+  }
+  .opal-conic, .opal-conic-2 {
+    position: absolute;
+    inset: -25%;
+    border-radius: 50%;
+    will-change: transform, --opal-angle, --opal-angle-2;
+    mix-blend-mode: screen;
+  }
+  .opal-conic {
+    background: conic-gradient(
+      from var(--opal-angle) at 40% 50%,
+      var(--c1) 0deg,
+      var(--c2) 40deg,
+      var(--c3) 95deg,
+      var(--c4) 145deg,
+      var(--c5) 195deg,
+      var(--c6) 240deg,
+      var(--c7) 290deg,
+      var(--c2) 335deg,
+      var(--c1) 360deg
+    );
+    filter: blur(110px) saturate(1.15);
+    opacity: 0.38;
+    animation: opal-rotate 38s linear infinite;
+  }
+  .opal-conic-2 {
+    inset: -35%;
+    background: conic-gradient(
+      from var(--opal-angle-2) at 65% 60%,
+      transparent 0deg,
+      var(--c3) 30deg,
+      transparent 90deg,
+      var(--c5) 150deg,
+      transparent 220deg,
+      var(--c7) 280deg,
+      transparent 340deg
+    );
+    filter: blur(140px) saturate(1.3);
+    opacity: 0.22;
+    animation: opal-rotate-back 56s linear infinite;
+  }
+  @keyframes opal-rotate     { to { --opal-angle:   360deg; } }
+  @keyframes opal-rotate-back{ to { --opal-angle-2: -360deg; } }
+
+  /* cursor-tracked spotlight — JS sets --mx / --my */
+  .opal-light {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      560px circle at var(--mx, 50vw) var(--my, 30vh),
+      rgba(159, 225, 203, 0.18),
+      rgba(125, 211, 252, 0.08) 30%,
+      transparent 60%
+    );
+    transition: background-position 200ms ease-out;
+  }
+
+  /* grain — fine SVG noise so the shimmer reads as polished stone, not just CSS */
+  .opal-grain {
+    position: absolute;
+    inset: 0;
+    opacity: 0.18;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.45 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  }
+
+  /* a soft vignette so the page edges feel deeper, like the dashboard */
+  .opal-vignette {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at 50% 35%, transparent 30%, rgba(0,0,0,0.55) 85%);
+  }
+
+  /* ─── topbar ─── */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 28px;
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    background: linear-gradient(180deg, rgba(10,12,16,0.78), rgba(10,12,16,0.4));
+    border-bottom: 0.5px solid var(--line);
+  }
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    text-decoration: none; color: var(--ink); font-weight: 600; letter-spacing: -0.01em;
+  }
+  .brand-mark {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: conic-gradient(from var(--text-angle), var(--c2), var(--c3), var(--c5), var(--c6), var(--c7), var(--c2));
+    animation: opal-text 7s linear infinite;
+    box-shadow: 0 0 0 0.5px var(--line-hi), 0 8px 24px -8px var(--c2);
+  }
+  .nav-links {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 14px;
+  }
+  .nav-links a {
+    color: var(--ink-2);
+    text-decoration: none;
+    padding: 8px 12px;
+    border-radius: 8px;
+    transition: color .15s, background .15s;
+  }
+  .nav-links a:hover { color: var(--ink); background: var(--panel); }
+  .nav-cta {
+    color: var(--ink) !important;
+    background: rgba(29,158,117,0.12);
+    border: 0.5px solid rgba(29,158,117,0.35);
+    padding: 7px 14px !important;
+  }
+  .nav-cta:hover { background: rgba(29,158,117,0.20) !important; }
+
+  @media (max-width: 720px) {
+    .topbar { padding: 12px 18px; }
+    .nav-links a:not(.nav-cta) { display: none; }
+  }
+
+  /* ─── hero ─── */
+  .hero {
+    position: relative;
+    min-height: calc(100vh - 60px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 24px 120px;
+    overflow: hidden;
+  }
+  #fleet-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    opacity: 0.55;
+    pointer-events: none;
+  }
+  .hero-inner {
+    position: relative;
+    z-index: 1;
+    max-width: 1080px;
+    text-align: center;
+    width: 100%;
+  }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: 6px 14px;
+    border: 0.5px solid var(--line-hi);
+    background: rgba(17,20,28,0.6);
+    backdrop-filter: blur(8px);
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-2);
+    letter-spacing: 0.02em;
+  }
+  .eyebrow .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--emerald);
+    box-shadow: 0 0 0 0 rgba(29,158,117,0.6);
+    animation: pulse 2.4s ease-out infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(29,158,117,0.6); }
+    70%  { box-shadow: 0 0 0 8px rgba(29,158,117,0); }
+    100% { box-shadow: 0 0 0 0 rgba(29,158,117,0); }
+  }
+
+  .hero-title {
+    font-size: clamp(5rem, 18vw, 16rem);
+    font-weight: 800;
+    line-height: 0.88;
+    letter-spacing: -0.045em;
+    margin: 28px 0 10px;
+    /* The wordmark IS the opal — same conic palette, sharper movement */
+    background: conic-gradient(
+      from var(--text-angle),
+      var(--c2) 0deg,
+      var(--c3) 60deg,
+      var(--c4) 120deg,
+      var(--c5) 180deg,
+      var(--c6) 230deg,
+      var(--c7) 280deg,
+      var(--c2) 340deg,
+      var(--c2) 360deg
+    );
+    background-size: 220% 220%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    animation: opal-text 9s linear infinite;
+    filter: drop-shadow(0 12px 60px rgba(29,158,117,0.25));
+    position: relative;
+  }
+  @keyframes opal-text { to { --text-angle: 360deg; } }
+
+  /* a faint white core under the wordmark so it doesn't disappear on light strokes */
+  .hero-title::before {
+    content: 'Opale';
+    position: absolute;
+    inset: 0;
+    color: rgba(255,255,255,0.04);
+    -webkit-text-fill-color: rgba(255,255,255,0.04);
+    background: none;
+    z-index: -1;
+  }
+
+  .hero-sub {
+    font-size: clamp(1.2rem, 2.6vw, 1.9rem);
+    font-weight: 500;
+    color: var(--ink);
+    margin: 8px auto 18px;
+    letter-spacing: -0.015em;
+    max-width: 760px;
+  }
+  .hero-desc {
+    font-size: clamp(0.95rem, 1.4vw, 1.05rem);
+    color: var(--ink-2);
+    max-width: 620px;
+    margin: 0 auto 36px;
+  }
+  .hero-cta {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 12px;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: transform .12s ease, box-shadow .2s ease, background .15s;
+    border: 0.5px solid transparent;
+    cursor: pointer;
+  }
+  .btn-primary {
+    background: var(--ink);
+    color: #0a0c10;
+    box-shadow: 0 10px 30px -10px rgba(255,255,255,0.35), inset 0 0 0 0.5px rgba(255,255,255,0.8);
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 14px 40px -8px rgba(255,255,255,0.45); }
+  .btn-ghost {
+    background: rgba(17,20,28,0.6);
+    color: var(--ink);
+    border-color: var(--line-hi);
+    backdrop-filter: blur(8px);
+  }
+  .btn-ghost:hover { background: rgba(22,26,37,0.9); border-color: rgba(255,255,255,0.25); }
+  .btn .arrow { transition: transform .15s; }
+  .btn:hover .arrow { transform: translateX(3px); }
+
+  .hero-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+    max-width: 640px;
+    margin: 60px auto 0;
+    border: 0.5px solid var(--line);
+    background: rgba(17,20,28,0.5);
+    backdrop-filter: blur(8px);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .hero-stats > div {
+    padding: 18px 8px;
+    text-align: center;
+    border-right: 0.5px solid var(--line);
+  }
+  .hero-stats > div:last-child { border-right: none; }
+  .hero-stats strong {
+    display: block;
+    font-size: clamp(1.6rem, 3.2vw, 2.2rem);
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .hero-stats span {
+    display: block;
+    font-size: 12px;
+    color: var(--ink-3);
+    margin-top: 4px;
+    letter-spacing: 0.03em;
+  }
+  @media (max-width: 540px) {
+    .hero-stats { grid-template-columns: 1fr; }
+    .hero-stats > div { border-right: none; border-bottom: 0.5px solid var(--line); }
+    .hero-stats > div:last-child { border-bottom: none; }
+  }
+
+  /* ─── section frame ─── */
+  section { position: relative; padding: 100px 24px; }
+  .container { max-width: 1180px; margin: 0 auto; }
+  .section-head { text-align: center; margin-bottom: 56px; max-width: 720px; margin-left: auto; margin-right: auto; }
+  .section-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--emerald-2);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+  .section-head h2 {
+    font-size: clamp(2rem, 4vw, 3.2rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.05;
+    margin: 0 0 16px;
+  }
+  .section-head p {
+    color: var(--ink-2);
+    font-size: clamp(1rem, 1.4vw, 1.1rem);
+  }
+
+  /* ─── features grid ─── */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--line);
+    border: 0.5px solid var(--line);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  @media (max-width: 920px) { .feature-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { .feature-grid { grid-template-columns: 1fr; } }
+
+  .feature {
+    background: var(--bg-soft);
+    padding: 28px 26px;
+    position: relative;
+    transition: background .25s;
+    overflow: hidden;
+  }
+  /* feature hover: a slow opal sweep across the card */
+  .feature::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    background: linear-gradient(115deg,
+      transparent 30%,
+      rgba(159,225,203,0.08) 45%,
+      rgba(125,211,252,0.06) 55%,
+      transparent 70%);
+    transform: translateX(-100%);
+    transition: transform .9s cubic-bezier(.2,.7,.2,1);
+    pointer-events: none;
+  }
+  .feature:hover { background: var(--panel-hi); }
+  .feature:hover::after { transform: translateX(100%); }
+
+  .feature-icon {
+    width: 36px; height: 36px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, var(--c2), var(--c3));
+    display: grid; place-items: center;
+    box-shadow: 0 8px 24px -10px var(--c2), inset 0 0 0 0.5px rgba(255,255,255,0.18);
+    margin-bottom: 18px;
+    color: #0a0c10;
+  }
+  .feature-icon svg { width: 20px; height: 20px; stroke-width: 2; }
+  .feature h3 { font-size: 1.05rem; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .feature p { color: var(--ink-2); font-size: 14px; line-height: 1.55; margin: 0; }
+  .feature .tag {
+    display: inline-block; margin-top: 14px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--ink-3); letter-spacing: 0.04em;
+  }
+  .feature-opt {
+    position: absolute;
+    top: 18px; right: 18px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 0.5px solid var(--line-hi);
+    background: rgba(10,12,16,0.70);
+    z-index: 1;
+    opacity: 0.7;
+    transition: opacity .15s, color .15s, border-color .15s;
+    cursor: help;
+  }
+  .feature:hover .feature-opt {
+    opacity: 1;
+    color: var(--emerald-2);
+    border-color: rgba(159,225,203,0.30);
+  }
+
+  /* ─── terminal showcase ─── */
+  .terminal-section .container { max-width: 980px; }
+  .terminal {
+    background: #0b0d12;
+    border: 0.5px solid var(--line-hi);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow:
+      0 40px 100px -30px rgba(0,0,0,0.7),
+      0 0 0 0.5px rgba(255,255,255,0.04),
+      inset 0 0 60px rgba(29,158,117,0.04);
+  }
+  .terminal-head {
+    display: flex; align-items: center;
+    padding: 10px 14px;
+    background: #0d1018;
+    border-bottom: 0.5px solid var(--line);
+    gap: 8px;
+  }
+  .terminal-head .dot {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #2a2e3a;
+  }
+  .terminal-head .dot.r { background: #f87171; }
+  .terminal-head .dot.y { background: #fbbf24; }
+  .terminal-head .dot.g { background: #4ade80; }
+  .terminal-head .title {
+    margin-left: 14px;
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--ink-3);
+  }
+  .terminal-body {
+    margin: 0; padding: 22px 24px;
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--ink-2);
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .terminal-body .prompt   { color: var(--emerald-2); }
+  .terminal-body .cmd      { color: var(--ink); }
+  .terminal-body .flag     { color: var(--c4); }
+  .terminal-body .out      { color: var(--ink-3); }
+  .terminal-body .ok       { color: var(--emerald); }
+  .terminal-body .warn     { color: var(--amber-2); }
+  .terminal-body .red      { color: var(--red); }
+  .terminal-body .caret::after {
+    content: '▍';
+    color: var(--emerald-2);
+    animation: blink 1s steps(2) infinite;
+    margin-left: 1px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ─── architecture diagram ─── */
+  .arch-section { padding-bottom: 60px; }
+  .arch {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr 1fr;
+    gap: 14px;
+    margin-top: 40px;
+  }
+  @media (max-width: 880px) { .arch { grid-template-columns: 1fr; } }
+  .arch-box {
+    background: var(--bg-soft);
+    border: 0.5px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+    position: relative;
+  }
+  .arch-box .label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .arch-box .title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+  .arch-box .sub { color: var(--ink-2); font-size: 13px; }
+  .arch-box.center {
+    background: linear-gradient(180deg, rgba(29,158,117,0.10), rgba(17,20,28,0.6));
+    border-color: rgba(29,158,117,0.35);
+    box-shadow: 0 0 0 0.5px rgba(29,158,117,0.2), inset 0 0 40px rgba(29,158,117,0.06);
+  }
+  .arch-pill {
+    display: inline-block;
+    font-family: var(--font-mono); font-size: 11px;
+    padding: 2px 8px; border-radius: 999px;
+    background: rgba(159,225,203,0.10);
+    color: var(--emerald-2);
+    margin: 2px 4px 2px 0;
+  }
+
+  /* ─── stack ─── */
+  .stack-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-top: 16px;
+  }
+  @media (max-width: 800px) { .stack-grid { grid-template-columns: repeat(2, 1fr); } }
+  .stack-row {
+    background: var(--bg-soft);
+    border: 0.5px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .stack-row .k {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--ink-3); letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .stack-row .v { font-size: 14px; color: var(--ink); }
+
+  /* ─── audience ─── */
+  .audience-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--line);
+    border: 0.5px solid var(--line);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  @media (max-width: 760px) { .audience-grid { grid-template-columns: 1fr; } }
+  .audience-col { background: var(--bg-soft); padding: 32px; }
+  .audience-col h3 {
+    font-size: 1.1rem; font-weight: 600; margin: 0 0 16px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .audience-col h3 .pill {
+    font-family: var(--font-mono); font-size: 10px;
+    padding: 2px 8px; border-radius: 999px;
+    font-weight: 500; letter-spacing: 0.05em;
+  }
+  .audience-col.yes h3 .pill { background: rgba(29,158,117,0.15); color: var(--emerald-2); }
+  .audience-col.no  h3 .pill { background: rgba(226,75,74,0.15); color: #fca5a5; }
+  .audience-col ul { list-style: none; padding: 0; margin: 0; color: var(--ink-2); font-size: 14.5px; }
+  .audience-col li {
+    padding: 10px 0;
+    border-bottom: 0.5px solid var(--line);
+    display: flex; gap: 10px; align-items: flex-start;
+  }
+  .audience-col li:last-child { border-bottom: none; }
+  .audience-col li::before {
+    content: ''; flex: 0 0 14px; height: 14px; margin-top: 3px;
+    border-radius: 4px;
+    background: rgba(29,158,117,0.18);
+    box-shadow: inset 0 0 0 0.5px rgba(29,158,117,0.4);
+  }
+  .audience-col.no li::before {
+    background: rgba(226,75,74,0.15);
+    box-shadow: inset 0 0 0 0.5px rgba(226,75,74,0.35);
+  }
+
+  /* ─── install ─── */
+  .install-section .container { max-width: 880px; }
+  .install-block {
+    background: var(--bg-soft);
+    border: 0.5px solid var(--line-hi);
+    border-radius: 14px;
+    padding: 0;
+    overflow: hidden;
+    box-shadow: 0 30px 80px -30px rgba(0,0,0,0.6);
+  }
+  .install-block pre {
+    margin: 0;
+    padding: 24px 26px;
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    line-height: 1.85;
+    color: var(--ink);
+    background: #0b0d12;
+    border-top: 0.5px solid var(--line);
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .install-block pre:first-of-type { border-top: none; }
+  .install-block .step-label {
+    padding: 14px 26px 4px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--ink-3); letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .install-block .out { color: var(--ink-3); }
+  .install-block .ok  { color: var(--emerald-2); }
+
+  /* ─── footer ─── */
+  footer {
+    border-top: 0.5px solid var(--line);
+    padding: 60px 24px 40px;
+    margin-top: 60px;
+  }
+  .footer-grid {
+    max-width: 1180px; margin: 0 auto;
+    display: flex; flex-wrap: wrap;
+    gap: 28px 60px; justify-content: space-between;
+  }
+  .footer-grid .col h4 {
+    font-size: 12px; font-family: var(--font-mono);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-3); margin: 0 0 14px;
+  }
+  .footer-grid .col a {
+    display: block; color: var(--ink-2);
+    text-decoration: none; font-size: 14px; margin-bottom: 8px;
+    transition: color .15s;
+  }
+  .footer-grid .col a:hover { color: var(--ink); }
+  .footer-bottom {
+    max-width: 1180px; margin: 40px auto 0;
+    padding-top: 24px;
+    border-top: 0.5px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 16px;
+    color: var(--ink-3); font-size: 13px;
+  }
+
+  /* ─── product mock (CSS-only dashboard preview) ─── */
+  .mock-section { padding: 30px 24px 80px; }
+  .mock-section .container { max-width: 1180px; }
+  .mock-frame {
+    background: var(--bg-soft);
+    border: 0.5px solid var(--line-hi);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow:
+      0 60px 140px -50px rgba(0,0,0,0.85),
+      0 0 0 0.5px rgba(255,255,255,0.04),
+      inset 0 0 80px rgba(29,158,117,0.03);
+  }
+  .mock-chrome {
+    display: flex; align-items: center;
+    padding: 10px 14px;
+    background: #0a0c12;
+    border-bottom: 0.5px solid var(--line);
+  }
+  .mock-chrome .dots { display: flex; gap: 7px; }
+  .mock-chrome .dots span {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #2a2e3a;
+  }
+  .mock-chrome .dots span:nth-child(1) { background: #f87171; }
+  .mock-chrome .dots span:nth-child(2) { background: #fbbf24; }
+  .mock-chrome .dots span:nth-child(3) { background: #4ade80; }
+  .mock-chrome .url {
+    margin-left: 16px;
+    padding: 4px 12px;
+    border-radius: 6px;
+    background: #11141c;
+    font-family: var(--font-mono); font-size: 11.5px;
+    color: var(--ink-3); letter-spacing: 0.02em;
+  }
+  .mock-body {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    min-height: 480px;
+  }
+  .mock-sidebar {
+    border-right: 0.5px solid var(--line);
+    background: #0a0d13;
+    padding: 14px 0 14px;
+    font-size: 12.5px;
+  }
+  .mock-brand {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 16px 14px;
+    border-bottom: 0.5px solid var(--line);
+    margin-bottom: 10px;
+    font-weight: 600; font-size: 13px;
+  }
+  .mock-brand .brand-mark {
+    width: 16px; height: 16px; border-radius: 4px;
+    background: conic-gradient(from var(--text-angle), var(--c2), var(--c3), var(--c5), var(--c6), var(--c7), var(--c2));
+    animation: opal-text 7s linear infinite;
+  }
+  .mock-sec-label {
+    font-family: var(--font-mono); font-size: 9.5px;
+    color: var(--ink-3); letter-spacing: 0.13em;
+    text-transform: uppercase;
+    padding: 8px 16px 2px;
+  }
+  .mock-nav {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 16px;
+    color: var(--ink-2);
+    border-right: 2px solid transparent;
+  }
+  .mock-nav.active {
+    color: var(--ink);
+    background: rgba(29,158,117,0.05);
+    border-right-color: var(--emerald);
+    font-weight: 500;
+  }
+  .mock-nav .ico {
+    width: 12px; height: 12px;
+    opacity: 0.7;
+    flex-shrink: 0;
+  }
+  .mock-nav .badge {
+    margin-left: auto;
+    font-family: var(--font-mono); font-size: 10px;
+    padding: 1px 7px; border-radius: 999px;
+    background: rgba(226,75,74,0.22);
+    color: #fca5a5;
+  }
+  .mock-nav .badge.amber { background: rgba(186,117,23,0.22); color: var(--amber-2); }
+  .mock-main { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .mock-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  .mock-stat {
+    background: var(--bg);
+    border: 0.5px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    min-width: 0;
+  }
+  .mock-stat .k { font-size: 10.5px; color: var(--ink-3); margin-bottom: 4px; letter-spacing: 0.02em; }
+  .mock-stat .v { font-size: 22px; font-weight: 600; color: var(--ink); letter-spacing: -0.02em; line-height: 1.1; }
+  .mock-stat .v.emerald { color: var(--emerald-2); }
+  .mock-stat .v.amber   { color: var(--amber-2); }
+  .mock-stat .v small   { font-size: 13px; color: var(--ink-3); font-weight: 500; }
+  .mock-stat .sub { font-size: 10.5px; color: var(--ink-3); margin-top: 4px; }
+  .mock-stat .bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,0.05); margin-top: 8px; overflow: hidden; }
+  .mock-stat .bar > div { height: 100%; background: var(--emerald); border-radius: 2px; }
+  .mock-stat .bar > div.amber  { background: var(--amber); }
+  .mock-stat.hl {
+    background: linear-gradient(180deg, rgba(29,158,117,0.10), rgba(29,158,117,0.02));
+    border-color: rgba(29,158,117,0.30);
+  }
+  .mock-list {
+    background: var(--bg);
+    border: 0.5px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .mock-list-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 0.5px solid var(--line);
+    font-size: 12px; font-weight: 500;
+  }
+  .mock-list-head .link { color: var(--ink-3); font-size: 11px; font-weight: 400; }
+  .mock-row {
+    display: grid;
+    grid-template-columns: 140px 110px 1fr 60px 14px;
+    gap: 14px;
+    align-items: center;
+    padding: 9px 14px;
+    font-size: 12px;
+    border-bottom: 0.5px solid var(--line);
+  }
+  .mock-row:last-child { border-bottom: none; }
+  .mock-row .host { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink); }
+  .mock-row .who  { color: var(--ink-2); font-family: var(--font-mono); font-size: 11px; }
+  .mock-row .rbar { height: 4px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; }
+  .mock-row .rbar > div { height: 100%; background: var(--emerald); border-radius: 2px; }
+  .mock-row .rbar > div.warning  { background: var(--amber); }
+  .mock-row .rbar > div.critical { background: var(--red); }
+  .mock-row .pct { font-family: var(--font-mono); font-size: 11.5px; text-align: right; color: var(--ink-2); }
+  .mock-row .pct.critical { color: #fca5a5; }
+  .mock-row .pct.warning  { color: var(--amber-2); }
+  .mock-row .pulse-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--emerald);
+    box-shadow: 0 0 0 0 rgba(29,158,117,0.6);
+    animation: mock-pulse 2.4s ease-out infinite;
+  }
+  .mock-row .pulse-dot.warning  { background: var(--amber);   box-shadow: 0 0 0 0 rgba(186,117,23,0.6); animation-name: mock-pulse-amber; }
+  .mock-row .pulse-dot.critical { background: var(--red);     box-shadow: 0 0 0 0 rgba(226,75,74,0.6); animation-name: mock-pulse-red; }
+  @keyframes mock-pulse       { 0% { box-shadow: 0 0 0 0 rgba(29,158,117,0.55); } 70% { box-shadow: 0 0 0 7px rgba(29,158,117,0); } 100% { box-shadow: 0 0 0 0 rgba(29,158,117,0); } }
+  @keyframes mock-pulse-amber { 0% { box-shadow: 0 0 0 0 rgba(186,117,23,0.55); } 70% { box-shadow: 0 0 0 7px rgba(186,117,23,0); } 100% { box-shadow: 0 0 0 0 rgba(186,117,23,0); } }
+  @keyframes mock-pulse-red   { 0% { box-shadow: 0 0 0 0 rgba(226,75,74,0.55); } 70% { box-shadow: 0 0 0 7px rgba(226,75,74,0); } 100% { box-shadow: 0 0 0 0 rgba(226,75,74,0); } }
+  /* mock typing animation in counter */
+  .mock-stat .v[data-tick] { display: inline-block; }
+  @media (max-width: 920px) {
+    .mock-stats { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 720px) {
+    .mock-body { grid-template-columns: 1fr; min-height: 0; }
+    .mock-sidebar { display: none; }
+    .mock-row { grid-template-columns: 1fr 50px 14px; gap: 10px; }
+    .mock-row .who, .mock-row .rbar { display: none; }
+  }
+
+  /* ─── live state on the dashboard mock (subtle ticks, pulses, fresh activity) ─── */
+  .mock-stat .v.flash { animation: stat-flash 0.7s ease-out; }
+  @keyframes stat-flash {
+    0%   { color: var(--emerald-2); transform: scale(1); }
+    25%  { transform: scale(1.06); }
+    100% { transform: scale(1); }
+  }
+  .mock-row .pulse-dot,
+  .mock-row .rbar > div,
+  .mock-row .pct {
+    transition: background 0.35s, color 0.35s;
+  }
+  .mock-row.swap-warn {
+    background: rgba(186,117,23,0.07);
+    transition: background 0.4s;
+  }
+  .mock-row.swap-warn .pulse-dot {
+    background: var(--amber);
+    animation-name: mock-pulse-amber;
+  }
+  .mock-row.pulse-row {
+    box-shadow: inset 2px 0 0 var(--emerald-2);
+    transition: box-shadow 0.5s ease-out;
+  }
+  .mock-list-head .live-dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--emerald);
+    margin-right: 6px;
+    vertical-align: 1px;
+    animation: live-blink 2s ease-in-out infinite;
+  }
+  @keyframes live-blink {
+    0%, 100% { opacity: 1;   box-shadow: 0 0 6px var(--emerald); }
+    50%      { opacity: 0.4; box-shadow: 0 0 0 transparent; }
+  }
+  .mock-feed { display: flex; flex-direction: column; }
+  .mock-act {
+    display: grid;
+    grid-template-columns: 22px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 14px;
+    font-size: 12px;
+    border-bottom: 0.5px solid var(--line);
+    color: var(--ink-2);
+  }
+  .mock-act:last-child { border-bottom: none; }
+  .mock-act .kind {
+    width: 20px; height: 20px;
+    display: grid; place-items: center;
+    border-radius: 6px;
+    font-size: 11px; font-weight: 600;
+    font-family: var(--font-mono);
+  }
+  .mock-act .kind.ok       { background: rgba(29,158,117,0.16); color: var(--emerald-2); }
+  .mock-act .kind.warn     { background: rgba(186,117,23,0.20); color: var(--amber-2); }
+  .mock-act .kind.info     { background: rgba(125,211,252,0.14); color: var(--c4); }
+  .mock-act .kind.critical { background: rgba(226,75,74,0.18);  color: #fca5a5; }
+  .mock-act .text strong   { color: var(--ink); font-family: var(--font-mono); font-size: 11.5px; font-weight: 500; }
+  .mock-act .time          { color: var(--ink-3); font-size: 10.5px; font-family: var(--font-mono); }
+  .mock-act.fresh { animation: act-in 0.55s cubic-bezier(.2,.7,.2,1); }
+  @keyframes act-in {
+    from { opacity: 0; transform: translateY(-8px); background: rgba(29,158,117,0.07); }
+    to   { opacity: 1; transform: translateY(0);    background: transparent; }
+  }
+
+  /* ─── architecture wires (animated packets) ─── */
+  .arch {
+    display: grid;
+    grid-template-columns: 1fr 64px 1.25fr 64px 1fr;
+    align-items: stretch;
+    gap: 0;
+    margin-top: 40px;
+  }
+  .arch-wire {
+    position: relative;
+    min-height: 100%;
+    align-self: stretch;
+  }
+  .arch-wire::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    top: 50%;
+    height: 1px;
+    background: linear-gradient(90deg,
+      transparent,
+      rgba(159,225,203,0.10) 10%,
+      rgba(159,225,203,0.45) 50%,
+      rgba(125,211,252,0.45) 60%,
+      rgba(125,211,252,0.10) 90%,
+      transparent);
+    transform: translateY(-0.5px);
+  }
+  .wire-packet {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--pkg-color, var(--emerald-2));
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,0.12),
+      0 0 12px var(--pkg-color, var(--emerald-2));
+    transform: translate(-50%, -50%);
+    animation: wire-flow 4s linear infinite;
+    animation-delay: var(--pkg-delay, 0s);
+  }
+  .wire-packet.reverse { animation-direction: reverse; animation-duration: 5s; }
+  @keyframes wire-flow {
+    0%   { left: 0%;   opacity: 0; }
+    10%  { opacity: 1; }
+    90%  { opacity: 1; }
+    100% { left: 100%; opacity: 0; }
+  }
+  .wire-label {
+    position: absolute;
+    top: calc(50% - 24px);
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--ink-3);
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .wire-label.below { top: auto; bottom: calc(50% - 24px); }
+  @media (max-width: 880px) {
+    .arch {
+      grid-template-columns: 1fr;
+      gap: 0;
+    }
+    .arch-wire {
+      min-height: 60px;
+    }
+    .arch-wire::before {
+      left: 50%; right: auto;
+      top: 0; bottom: 0;
+      width: 1px; height: auto;
+      background: linear-gradient(180deg,
+        transparent,
+        rgba(159,225,203,0.4) 50%,
+        transparent);
+      transform: translateX(-0.5px);
+    }
+    .wire-packet { left: 50%; top: 0; animation: wire-flow-v 4s linear infinite; }
+    @keyframes wire-flow-v {
+      0%   { top: 0%;   opacity: 0; }
+      10%  { opacity: 1; }
+      90%  { opacity: 1; }
+      100% { top: 100%; opacity: 0; }
+    }
+    .wire-packet.reverse { animation-direction: reverse; }
+    .wire-label { display: none; }
+  }
+
+  /* ─── more-features toggle ─── */
+  .feature-grid.compact > article:nth-child(n+7) { display: none; }
+  .feature-more-wrap {
+    display: flex; justify-content: center;
+    margin-top: 28px;
+  }
+  .feature-more-wrap button {
+    background: rgba(17,20,28,0.6);
+    border: 0.5px solid var(--line-hi);
+    color: var(--ink);
+    backdrop-filter: blur(8px);
+    padding: 11px 22px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, transform .12s;
+  }
+  .feature-more-wrap button:hover {
+    background: rgba(22,26,37,0.9);
+    border-color: rgba(255,255,255,0.25);
+    transform: translateY(-1px);
+  }
+  .feature-more-wrap[hidden] { display: none; }
+
+  /* ─── status callout (honest expectations) ─── */
+  .status-section { padding: 40px 24px 60px; }
+  .status-section .container { max-width: 980px; }
+  .status-callout {
+    display: grid;
+    grid-template-columns: 44px 1fr;
+    gap: 22px;
+    padding: 26px 30px;
+    background: linear-gradient(180deg, rgba(186,117,23,0.07), rgba(186,117,23,0.02));
+    border: 0.5px solid rgba(186,117,23,0.30);
+    border-radius: 14px;
+    align-items: start;
+    box-shadow: inset 0 0 60px rgba(186,117,23,0.03);
+  }
+  .status-icon {
+    width: 44px; height: 44px;
+    display: grid; place-items: center;
+    border-radius: 11px;
+    background: rgba(186,117,23,0.15);
+    color: var(--amber-2);
+    font-size: 18px;
+    border: 0.5px solid rgba(186,117,23,0.30);
+  }
+  .status-body h3 {
+    font-size: 16px; font-weight: 600;
+    margin: 4px 0 12px;
+    letter-spacing: -0.005em;
+  }
+  .status-body p {
+    color: var(--ink-2); font-size: 14.5px;
+    margin: 0 0 12px; line-height: 1.65;
+  }
+  .status-body p:last-child { margin-bottom: 0; }
+  .status-body strong { color: var(--ink); font-weight: 600; }
+  .status-body a {
+    color: var(--amber-2); text-decoration: none;
+    border-bottom: 0.5px solid rgba(250,199,117,0.4);
+  }
+  .status-body a:hover { color: #fde68a; border-bottom-color: rgba(250,199,117,0.7); }
+  @media (max-width: 560px) {
+    .status-callout { grid-template-columns: 1fr; padding: 22px; gap: 14px; }
+  }
+
+  /* ─── reveals ─── */
+  .reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity .7s ease, transform .7s cubic-bezier(.2,.7,.2,1);
+  }
+  .reveal.in { opacity: 1; transform: none; }
+
+  /* ─── reduced motion ─── */
+  @media (prefers-reduced-motion: reduce) {
+    .opal-conic, .opal-conic-2, .hero-title, .brand-mark { animation: none !important; }
+    .opal-conic   { background: radial-gradient(circle at 40% 50%, var(--c2), var(--c1) 70%); }
+    .opal-conic-2 { background: radial-gradient(circle at 65% 60%, var(--c5), transparent 60%); }
+    .hero-title   {
+      background: linear-gradient(135deg, var(--c2), var(--c3), var(--c5));
+      -webkit-background-clip: text; background-clip: text;
+    }
+    #fleet-canvas { display: none; }
+    .reveal { opacity: 1; transform: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ─────────────────────────────────────────────────────────────
+     PAGE-WIDE OPAL EFFECT (the signature)
+     ───────────────────────────────────────────────────────────── -->
+<div class="opal-stage" aria-hidden="true">
+  <div class="opal-conic"></div>
+  <div class="opal-conic-2"></div>
+  <div class="opal-light"></div>
+  <div class="opal-grain"></div>
+  <div class="opal-vignette"></div>
+</div>
+
+<!-- ─── topbar ─── -->
+<nav class="topbar" aria-label="primary">
+  <a href="#top" class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span>Opale</span>
+  </a>
+  <div class="nav-links">
+    <a href="#features">Features</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#stack">Stack</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/4rtefakt/opale" class="nav-cta" rel="noopener">
+      GitHub <span aria-hidden="true">↗</span>
+    </a>
+  </div>
+</nav>
+
+<!-- ─── hero ─── -->
+<header class="hero" id="top">
+  <canvas id="fleet-canvas" aria-hidden="true"></canvas>
+  <div class="hero-inner">
+    <span class="eyebrow">
+      <span class="dot"></span>
+      AGPL-3.0 · self-hosted · GDPR-native
+    </span>
+    <h1 class="hero-title" data-text="Opale">Opale</h1>
+    <p class="hero-sub">One admin. One VM. Your whole fleet, polished.</p>
+    <div class="hero-cta">
+      <a href="#install" class="btn btn-primary">
+        Get started <span class="arrow" aria-hidden="true">→</span>
+      </a>
+      <a href="https://github.com/4rtefakt/opale" class="btn btn-ghost" rel="noopener">
+        View on GitHub <span aria-hidden="true">↗</span>
+      </a>
+    </div>
+    <div class="hero-stats" role="list">
+      <div role="listitem"><strong>1</strong><span>VM · 1 binary</span></div>
+      <div role="listitem"><strong>15<small style="font-size:0.55em;color:var(--ink-3);font-weight:500;"> min</small></strong><span>agent checkin cadence</span></div>
+      <div role="listitem"><strong>0€</strong><span>SaaS subscription</span></div>
+    </div>
+  </div>
+</header>
+
+<!-- ─── product mock (CSS-only preview, no real data) ─── -->
+<section class="mock-section">
+  <div class="container">
+    <div class="mock-frame reveal" role="img" aria-label="Opale dashboard preview — fictional data">
+      <div class="mock-chrome">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <div class="url">opale.local · /dashboard</div>
+      </div>
+      <div class="mock-body">
+        <aside class="mock-sidebar">
+          <div class="mock-brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <span>Opale</span>
+          </div>
+          <div class="mock-sec-label">General</div>
+          <div class="mock-nav active"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</div>
+          <div class="mock-nav"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>Alerts<span class="badge">8</span></div>
+          <div class="mock-nav"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Tickets<span class="badge amber">2</span></div>
+          <div class="mock-sec-label">Fleet</div>
+          <div class="mock-nav"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>Devices</div>
+          <div class="mock-nav"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>Compliance</div>
+          <div class="mock-nav"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2"/></svg>Users</div>
+          <div class="mock-sec-label">Tools</div>
+          <div class="mock-nav"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>Scripts</div>
+          <div class="mock-nav"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18"/></svg>Deploy</div>
+        </aside>
+        <main class="mock-main">
+          <div class="mock-stats">
+            <div class="mock-stat">
+              <div class="k">Active alerts</div>
+              <div class="v">8</div>
+              <div class="sub">3 critical · 5 warning</div>
+            </div>
+            <div class="mock-stat">
+              <div class="k">Devices online</div>
+              <div class="v">47<small> / 82</small></div>
+              <div class="bar"><div style="width: 57%"></div></div>
+            </div>
+            <div class="mock-stat">
+              <div class="k">Compliance</div>
+              <div class="v amber">89%</div>
+              <div class="bar"><div class="amber" style="width: 89%"></div></div>
+            </div>
+            <div class="mock-stat hl">
+              <div class="k">Time saved (30d)</div>
+              <div class="v emerald">24h</div>
+              <div class="sub">≈ €520 admin cost avoided</div>
+            </div>
+          </div>
+          <div class="mock-list">
+            <div class="mock-list-head">
+              <span>Devices needing attention</span>
+              <span class="link">See all →</span>
+            </div>
+            <div class="mock-row">
+              <span class="host">LAB-DESK-04</span>
+              <span class="who">a.smith</span>
+              <div class="rbar"><div class="critical" style="width: 97%"></div></div>
+              <span class="pct critical">97.5%</span>
+              <span class="pulse-dot critical"></span>
+            </div>
+            <div class="mock-row">
+              <span class="host">DEV-LAPTOP-12</span>
+              <span class="who">p.fischer</span>
+              <div class="rbar"><div class="warning" style="width: 95%"></div></div>
+              <span class="pct warning">94.9%</span>
+              <span class="pulse-dot warning"></span>
+            </div>
+            <div class="mock-row">
+              <span class="host">ENG-WS-08</span>
+              <span class="who">k.lee</span>
+              <div class="rbar"><div class="warning" style="width: 89%"></div></div>
+              <span class="pct warning">89.2%</span>
+              <span class="pulse-dot warning"></span>
+            </div>
+            <div class="mock-row">
+              <span class="host">HOST-OFFICE-21</span>
+              <span class="who">j.morgan</span>
+              <div class="rbar"><div style="width: 73%"></div></div>
+              <span class="pct">73.4%</span>
+              <span class="pulse-dot"></span>
+            </div>
+            <div class="mock-row">
+              <span class="host">MKT-LAPTOP-03</span>
+              <span class="who">m.chen</span>
+              <div class="rbar"><div style="width: 52%"></div></div>
+              <span class="pct">52.1%</span>
+              <span class="pulse-dot"></span>
+            </div>
+          </div>
+          <div class="mock-list">
+            <div class="mock-list-head">
+              <span>Recent activity</span>
+              <span class="link"><span class="live-dot"></span>live</span>
+            </div>
+            <div class="mock-feed" id="mock-feed">
+              <div class="mock-act"><span class="kind ok">&#10003;</span><span class="text">Checkin received · <strong>MKT-LAPTOP-03</strong></span><span class="time">just now</span></div>
+              <div class="mock-act"><span class="kind info">·</span><span class="text">Compliance changed · <strong>HOST-OFFICE-21</strong></span><span class="time">3m ago</span></div>
+              <div class="mock-act"><span class="kind warn">!</span><span class="text">Disk threshold · <strong>LAB-DESK-04</strong></span><span class="time">8m ago</span></div>
+              <div class="mock-act"><span class="kind ok">&#10003;</span><span class="text">Agent updated · <strong>DEV-LAPTOP-12</strong></span><span class="time">15m ago</span></div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── features ─── -->
+<section id="features">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="section-eyebrow">// Modular by design</div>
+      <h2>Pick what you need.<br/>Nine modules. All optional. One coherent UI.</h2>
+      <p>Built from the frustration of stitching together five SaaS tools to monitor a hundred laptops. Opale ships the lot in one container &mdash; enable what you need, hide what you don&rsquo;t.</p>
+    </div>
+
+    <div class="feature-grid compact reveal" id="feature-grid">
+
+      <article class="feature">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+        </div>
+        <h3>Inventory &amp; monitoring</h3>
+        <p>The core that everything else hangs off. Populate it however suits you: manual entry, optional Microsoft Intune sync, or the optional cross-platform Go agent (Windows, macOS, Linux) for hardware, disk, network and bandwidth telemetry every 15&nbsp;minutes.</p>
+        <span class="tag">intune · agent · ed25519 · all opt-in</span>
+      </article>
+
+      <article class="feature">
+        <span class="feature-opt" title="Module — disable in settings if you don't need it">opt.</span>
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="9"/></svg>
+        </div>
+        <h3>Alerts</h3>
+        <p>Disk thresholds, prolonged offline, non-compliant devices &mdash; computed live from device state. Web-Push to admins on critical changes, biometric unlock on mobile.</p>
+        <span class="tag">vapid push · service worker · webauthn</span>
+      </article>
+
+      <article class="feature">
+        <span class="feature-opt" title="Module — disable in settings if you don't need it">opt.</span>
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h3>Tickets</h3>
+        <p>Open / in-progress / resolved workflow, tags, Kanban view, links to devices. &ldquo;Proposed&rdquo; tickets land from a mail-to-AI ingestion pipe and wait for your review.</p>
+        <span class="tag">kanban · mail-to-AI · device-linked</span>
+      </article>
+
+      <article class="feature">
+        <span class="feature-opt" title="Module — disable in settings if you don't need it">opt.</span>
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+        </div>
+        <h3>Remote SSH in the browser</h3>
+        <p>Real terminal in a tab via WebSocket + xterm.js, over your existing mesh VPN. Netbird, Tailscale, ZeroTier &mdash; whatever you already trust.</p>
+        <span class="tag">xterm.js · ssh2 · mesh-vpn aware</span>
+      </article>
+
+      <article class="feature">
+        <span class="feature-opt" title="Module — disable in settings if you don't need it">opt.</span>
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+        </div>
+        <h3>CLI</h3>
+        <p><code style="font-family:var(--font-mono);color:var(--emerald-2);">opale</code> is a Go binary with Cobra, PKCE auth and shell completion. Devices, tickets, scripts, deployments &mdash; everything the UI does, scriptable.</p>
+        <span class="tag">cobra · pkce · bash/zsh/fish</span>
+      </article>
+
+      <article class="feature">
+        <span class="feature-opt" title="Module — disable in settings if you don't need it">opt.</span>
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10M7 12h10M7 16h6"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>
+        </div>
+        <h3>Scripts</h3>
+        <p>PowerShell library, queued execution at next checkin, results streamed back. Quick-script tray for the four commands you run twenty times a week.</p>
+        <span class="tag">powershell · queued · result diff</span>
+      </article>
+
+      <article class="feature">
+        <span class="feature-opt" title="Module — disable in settings if you don't need it">opt.</span>
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 1 1 8 0v4"/></svg>
+        </div>
+        <h3>LAPS-style recovery</h3>
+        <p>The agent rotates the local admin password, escrows it RSA-OAEP encrypted. Admins decrypt one-shot from the UI &mdash; the server never sees plaintext.</p>
+        <span class="tag">rsa-oaep · escrowed · one-shot decrypt</span>
+      </article>
+
+      <article class="feature">
+        <span class="feature-opt" title="Module — disable in settings if you don't need it">opt.</span>
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <h3>Onboarding</h3>
+        <p>Guided checklists for new device or new collaborator, with optional IdP group assignment when you wire one up. The thing you forget to do half the time.</p>
+        <span class="tag">checklist · idp groups · opt. · auditable</span>
+      </article>
+
+      <article class="feature">
+        <span class="feature-opt" title="Module — disable in settings if you don't need it">opt.</span>
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg>
+        </div>
+        <h3>Mobile PWA</h3>
+        <p>Installable on iOS and Android, WebAuthn unlock, push notifications. Tap an alert at 23:47, triage from bed, sleep again.</p>
+        <span class="tag">pwa · webauthn · offline-ready</span>
+      </article>
+
+    </div>
+    <div class="feature-more-wrap" id="feature-more-wrap">
+      <button type="button" id="show-more-features" aria-expanded="false" aria-controls="feature-grid">
+        Show 3 more <span aria-hidden="true">↓</span>
+      </button>
+    </div>
+  </div>
+</section>
+
+<!-- ─── terminal showcase ─── -->
+<section class="terminal-section">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="section-eyebrow">// CLI-first when you need it</div>
+      <h2>Terminal first. UI when it&rsquo;s nicer.</h2>
+      <p>Every UI action has a CLI counterpart with PKCE auth and shell completion. Script your fleet from anywhere.</p>
+    </div>
+
+    <div class="terminal reveal" role="img" aria-label="opale CLI screenshot">
+      <div class="terminal-head">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="title">~ &mdash; opale</span>
+      </div>
+<pre class="terminal-body"><span class="prompt">$</span> <span class="cmd">opale devices list</span> <span class="flag">--compliance=non-compliant</span> <span class="flag">--last-seen=&lt;7d</span>
+<span class="out">┌──────────────────────┬─────────────────────────┬──────────┬─────────┐</span>
+<span class="out">│</span> HOSTNAME             <span class="out">│</span> USER                    <span class="out">│</span> DISK %   <span class="out">│</span> STATUS  <span class="out">│</span>
+<span class="out">├──────────────────────┼─────────────────────────┼──────────┼─────────┤</span>
+<span class="out">│</span> LAB-DESK-04          <span class="out">│</span> a.smith                 <span class="out">│</span> <span class="red">97.5</span>     <span class="out">│</span> <span class="red">critical</span><span class="out">│</span>
+<span class="out">│</span> DESKTOP-OFFICE-21    <span class="out">│</span> j.morgan                <span class="out">│</span> 47.6     <span class="out">│</span> <span class="warn">warning</span> <span class="out">│</span>
+<span class="out">│</span> DEV-LAPTOP-12        <span class="out">│</span> p.fischer               <span class="out">│</span> <span class="warn">94.9</span>     <span class="out">│</span> <span class="warn">warning</span> <span class="out">│</span>
+<span class="out">└──────────────────────┴─────────────────────────┴──────────┴─────────┘</span>
+<span class="out">3 devices · 1 critical · 2 warning</span>
+
+<span class="prompt">$</span> <span class="cmd">opale scripts run</span> <span class="flag">--name=&quot;clear-temp&quot;</span> <span class="flag">--target=LAB-DESK-04</span>
+<span class="out">→ queued · result in ~15min · run id 4f2c8e</span>
+<span class="prompt">$</span> <span class="cmd">opale scripts wait</span> 4f2c8e
+<span class="ok">✓ exit 0 · 4.2 GB freed · 412 files removed</span>
+
+<span class="prompt">$</span> <span class="cmd">opale tickets create</span> <span class="flag">--device=LAB-DESK-04</span> <span class="flag">--tag=hardware</span> \
+    <span class="flag">--title=&quot;Disk filling too fast, replacement candidate&quot;</span>
+<span class="ok">✓ ticket #847 · status=open · assigned to you</span>
+<span class="prompt">$</span> <span class="caret"></span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ─── architecture ─── -->
+<section id="architecture" class="arch-section">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="section-eyebrow">// Architecture</div>
+      <h2>One container, one Postgres,<br/>a Windows agent that just runs.</h2>
+      <p>Single-tenant by design &mdash; one Opale instance per organisation. No multi-tenancy gymnastics, no shared blast radius.</p>
+    </div>
+
+    <div class="arch reveal">
+
+      <div class="arch-box">
+        <div class="label">Endpoints · optional</div>
+        <div class="title">Endpoint agent</div>
+        <div class="sub">Optional Go service for richer telemetry. Checks in every 15&nbsp;min, ed25519-signed auto-update. Windows, macOS and Linux &mdash; amd64 and arm64. Skip it entirely if Intune or manual entry is enough.</div>
+        <div style="margin-top: 14px;">
+          <span class="arch-pill">go</span>
+          <span class="arch-pill">cross-platform</span>
+          <span class="arch-pill">ed25519</span>
+        </div>
+      </div>
+
+      <div class="arch-wire" aria-hidden="true">
+        <span class="wire-label">checkin · 15min →</span>
+        <div class="wire-packet" style="--pkg-color: var(--emerald-2); --pkg-delay: 0s;"></div>
+        <div class="wire-packet" style="--pkg-color: var(--emerald-2); --pkg-delay: 1.3s;"></div>
+        <div class="wire-packet" style="--pkg-color: var(--emerald-2); --pkg-delay: 2.7s;"></div>
+        <div class="wire-packet reverse" style="--pkg-color: var(--c4); --pkg-delay: 0.8s;"></div>
+        <div class="wire-packet reverse" style="--pkg-color: var(--c4); --pkg-delay: 3.3s;"></div>
+        <span class="wire-label below">← signed binary</span>
+      </div>
+
+      <div class="arch-box center">
+        <div class="label">Server (one VM)</div>
+        <div class="title">Fastify API · PostgreSQL · WS proxy</div>
+        <div class="sub">Node ESM, raw SQL, no ORM. Serves the SPA, proxies SSH over WebSocket, signs agent binaries on the fly.</div>
+        <div style="margin-top: 14px;">
+          <span class="arch-pill">node</span>
+          <span class="arch-pill">fastify</span>
+          <span class="arch-pill">postgres</span>
+          <span class="arch-pill">ws · ssh2</span>
+        </div>
+      </div>
+
+      <div class="arch-wire" aria-hidden="true">
+        <span class="wire-label">JWT verify →</span>
+        <div class="wire-packet" style="--pkg-color: var(--c5); --pkg-delay: 0s;"></div>
+        <div class="wire-packet reverse" style="--pkg-color: var(--c3); --pkg-delay: 1s;"></div>
+        <div class="wire-packet" style="--pkg-color: var(--c5); --pkg-delay: 2.2s;"></div>
+        <div class="wire-packet reverse" style="--pkg-color: var(--c3); --pkg-delay: 3s;"></div>
+        <span class="wire-label below">← MDM sync · opt.</span>
+      </div>
+
+      <div class="arch-box">
+        <div class="label">Identity</div>
+        <div class="title">Your identity provider</div>
+        <div class="sub">SSO via standard OIDC, JWT verified server-side via JWKS &mdash; works with any compliant IdP. Intune compliance sync and Graph group assignment are <strong>fully optional</strong> add-ons.</div>
+        <div style="margin-top: 14px;">
+          <span class="arch-pill">oidc</span>
+          <span class="arch-pill">jwks</span>
+          <span class="arch-pill">intune · opt.</span>
+          <span class="arch-pill">graph · opt.</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ─── audience ─── -->
+<section>
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="section-eyebrow">// Who it&rsquo;s for</div>
+      <h2>Honest scope &mdash; not for everyone.</h2>
+      <p>One maintainer&rsquo;s tool, opened up. We tell you what it is and what it isn&rsquo;t.</p>
+    </div>
+
+    <div class="audience-grid reveal">
+      <div class="audience-col yes">
+        <h3>Built for <span class="pill">YES</span></h3>
+        <ul>
+          <li>Small structures, 10&ndash;300 endpoints, one or two IT people wearing too many hats</li>
+          <li>French / EU organisations under GDPR that want telemetry in-house, not in someone else&rsquo;s cloud</li>
+          <li>Mixed Windows / macOS / Linux fleets &mdash; bring whatever OIDC identity provider you already trust</li>
+          <li>Teams comfortable on a single VM with Docker Compose</li>
+          <li>Admins who&rsquo;d rather audit AGPL code than a vendor&rsquo;s SOC&nbsp;2 report</li>
+        </ul>
+      </div>
+      <div class="audience-col no">
+        <h3>Not designed for <span class="pill">NO</span></h3>
+        <ul>
+          <li>Multi-tenant SaaS deployment &mdash; one Opale = one organisation, by design</li>
+          <li>Mobile-only fleets &mdash; the agent covers desktops and laptops, not phones or tablets</li>
+          <li>Replacing a full ITSM &mdash; we cover the basics, not enterprise workflow</li>
+          <li>Organisations that need 24/7 commercial support and an SLA</li>
+          <li>Anyone who thinks AGPL-3.0 is &ldquo;too restrictive&rdquo; for their fork plans</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── stack ─── -->
+<section id="stack">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="section-eyebrow">// Stack</div>
+      <h2>Boring tech. On purpose.</h2>
+      <p>Things that will still run a decade from now. No build step on the front-end &mdash; the SPA is Vanilla JS that you can read.</p>
+    </div>
+
+    <div class="stack-grid reveal">
+      <div class="stack-row"><div class="k">backend</div><div class="v">Node · Fastify · ESM</div></div>
+      <div class="stack-row"><div class="k">database</div><div class="v">PostgreSQL · raw SQL</div></div>
+      <div class="stack-row"><div class="k">frontend</div><div class="v">Vanilla JS · no build step</div></div>
+      <div class="stack-row"><div class="k">auth</div><div class="v">OIDC · JWKS · any IdP</div></div>
+      <div class="stack-row"><div class="k">remote shell</div><div class="v">WebSocket · ssh2 · xterm.js</div></div>
+      <div class="stack-row"><div class="k">push</div><div class="v">Web Push · VAPID · SW</div></div>
+      <div class="stack-row"><div class="k">mobile</div><div class="v">PWA · WebAuthn</div></div>
+      <div class="stack-row"><div class="k">agent</div><div class="v">Go · cross-platform · ed25519</div></div>
+      <div class="stack-row"><div class="k">cli</div><div class="v">Go · Cobra · PKCE</div></div>
+      <div class="stack-row"><div class="k">packaging</div><div class="v">Docker Compose · single Dockerfile</div></div>
+      <div class="stack-row"><div class="k">license</div><div class="v">AGPL-3.0</div></div>
+      <div class="stack-row"><div class="k">support</div><div class="v">Issues only · no SLA</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── honest status ─── -->
+<section class="status-section">
+  <div class="container">
+    <div class="status-callout reveal">
+      <div class="status-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+      </div>
+      <div class="status-body">
+        <h3>Honest status &mdash; read before you deploy.</h3>
+        <p>Opale is <strong>experimental and maintained by one person</strong>. It runs in production for its original organisation, but the public release is recent and APIs may shift. There is <strong>no commercial support, no SLA, no roadmap promises</strong>. Issues are read, not contractually answered.</p>
+        <p>If you can&rsquo;t pin to a commit and read AGPL-licensed code when something breaks, this isn&rsquo;t the right tool for you &mdash; and that&rsquo;s deliberate. Contribute via <a href="https://github.com/4rtefakt/opale/issues" rel="noopener">issues</a> or <a href="https://github.com/4rtefakt/opale/blob/main/CONTRIBUTING.md" rel="noopener">PRs</a>; security reports via <a href="https://github.com/4rtefakt/opale/blob/main/SECURITY.md" rel="noopener">SECURITY.md</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── install ─── -->
+<section id="install" class="install-section">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="section-eyebrow">// Quick start</div>
+      <h2>Three commands.</h2>
+      <p>For TLS, Entra app registration and the Windows agent rollout, see <a href="https://github.com/4rtefakt/opale/blob/main/INSTALL.md" style="color:var(--emerald-2);text-decoration:none;border-bottom:0.5px solid var(--emerald);">INSTALL.md</a>.</p>
+    </div>
+
+    <div class="install-block reveal">
+      <div class="step-label">// clone &amp; configure</div>
+<pre>git clone https://github.com/4rtefakt/opale.git
+cd opale
+cp .env.example .env       <span class="out"># fill in the required values</span>
+./setup.sh                 <span class="out"># vendor front-end deps</span></pre>
+      <div class="step-label">// bring it up</div>
+<pre>docker compose -f docker-compose.example.yml up -d
+<span class="out"># API + Postgres now on :3010</span>
+<span class="ok"># → browse to http://localhost:3010</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ─── footer ─── -->
+<footer>
+  <div class="footer-grid">
+    <div class="col" style="max-width:300px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+        <span class="brand-mark" aria-hidden="true" style="width:24px;height:24px;border-radius:6px;"></span>
+        <strong style="font-size:15px;">Opale</strong>
+      </div>
+      <p style="color:var(--ink-3);font-size:13px;margin:0;line-height:1.6;">
+        Self-hosted RMM for small organisations.<br/>
+        AGPL-3.0 · GDPR-native · one maintainer.
+      </p>
+    </div>
+    <div class="col">
+      <h4>Project</h4>
+      <a href="https://github.com/4rtefakt/opale" rel="noopener">GitHub</a>
+      <a href="https://github.com/4rtefakt/opale/releases" rel="noopener">Releases</a>
+      <a href="https://github.com/4rtefakt/opale/blob/main/CONTRIBUTING.md" rel="noopener">Contributing</a>
+      <a href="https://github.com/4rtefakt/opale/blob/main/SECURITY.md" rel="noopener">Security</a>
+    </div>
+    <div class="col">
+      <h4>Docs</h4>
+      <a href="https://github.com/4rtefakt/opale/blob/main/INSTALL.md" rel="noopener">Install</a>
+      <a href="https://github.com/4rtefakt/opale/blob/main/docs/CLI.md" rel="noopener">CLI</a>
+      <a href="https://github.com/4rtefakt/opale/blob/main/docs/CONFIGURATION.md" rel="noopener">Configuration</a>
+      <a href="https://github.com/4rtefakt/opale/blob/main/docs/PRIVACY.md" rel="noopener">Privacy (GDPR)</a>
+    </div>
+    <div class="col">
+      <h4>License</h4>
+      <a href="https://github.com/4rtefakt/opale/blob/main/LICENSE" rel="noopener">AGPL-3.0</a>
+      <a href="https://github.com/4rtefakt/opale/blob/main/CODE_OF_CONDUCT.md" rel="noopener">Code of conduct</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© <span id="year">2026</span> 4rtefakt · Opale is provided as-is under AGPL-3.0.</span>
+    <span style="font-family:var(--font-mono);font-size:12px;color:var(--ink-3);">no telemetry · no analytics on this page</span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  'use strict';
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ── cursor-tracked opal spotlight ──
+  if (!reduceMotion) {
+    const root = document.documentElement;
+    let raf = 0, tx = innerWidth / 2, ty = innerHeight * 0.3, cx = tx, cy = ty;
+    addEventListener('pointermove', e => {
+      tx = e.clientX; ty = e.clientY;
+      if (!raf) raf = requestAnimationFrame(tick);
+    }, { passive: true });
+    function tick() {
+      cx += (tx - cx) * 0.10;
+      cy += (ty - cy) * 0.10;
+      root.style.setProperty('--mx', cx + 'px');
+      root.style.setProperty('--my', cy + 'px');
+      if (Math.abs(tx - cx) > 0.5 || Math.abs(ty - cy) > 0.5) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        raf = 0;
+      }
+    }
+  }
+
+  // ── reveal-on-scroll ──
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting) {
+        e.target.classList.add('in');
+        io.unobserve(e.target);
+      }
+    }
+  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.1 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  // ── fleet constellation behind hero ──
+  // Drifting device-nodes, lines drawn between near neighbours,
+  // occasional green pulse simulates a fresh checkin.
+  const canvas = document.getElementById('fleet-canvas');
+  if (canvas && !reduceMotion) {
+    const ctx = canvas.getContext('2d', { alpha: true });
+    let nodes = [], dpr = Math.min(devicePixelRatio || 1, 2), W = 0, H = 0, running = true;
+
+    function resize() {
+      const r = canvas.getBoundingClientRect();
+      W = r.width; H = r.height;
+      canvas.width  = Math.floor(W * dpr);
+      canvas.height = Math.floor(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const target = Math.min(78, Math.floor((W * H) / 16000));
+      nodes = Array.from({ length: target }, () => ({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        vx: (Math.random() - 0.5) * 0.18,
+        vy: (Math.random() - 0.5) * 0.18,
+        r: 0.9 + Math.random() * 1.2,
+        pulse: 0,
+        // 1 in 12 chance of being a "warning" amber node
+        kind: Math.random() < 0.083 ? 'warn' : 'ok',
+      }));
+    }
+    resize();
+    addEventListener('resize', resize, { passive: true });
+
+    // pause when hero leaves viewport
+    const heroEl = document.querySelector('.hero');
+    const visIo = new IntersectionObserver(([e]) => {
+      running = e.isIntersecting;
+      if (running) loop();
+    }, { threshold: 0 });
+    visIo.observe(heroEl);
+
+    // occasional green pulse — pick a random node
+    setInterval(() => {
+      if (!running) return;
+      const n = nodes[Math.floor(Math.random() * nodes.length)];
+      if (n) n.pulse = 1;
+    }, 1300);
+
+    const LINK_DIST = 130;
+    const LINK_DIST_SQ = LINK_DIST * LINK_DIST;
+
+    function loop() {
+      if (!running) return;
+      ctx.clearRect(0, 0, W, H);
+
+      // edges
+      for (let i = 0; i < nodes.length; i++) {
+        const a = nodes[i];
+        for (let j = i + 1; j < nodes.length; j++) {
+          const b = nodes[j];
+          const dx = a.x - b.x, dy = a.y - b.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < LINK_DIST_SQ) {
+            const t = 1 - d2 / LINK_DIST_SQ;
+            ctx.strokeStyle = 'rgba(159, 225, 203, ' + (0.06 * t).toFixed(3) + ')';
+            ctx.lineWidth = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+        }
+      }
+
+      // nodes
+      for (const n of nodes) {
+        n.x += n.vx; n.y += n.vy;
+        if (n.x < 0 || n.x > W) n.vx *= -1;
+        if (n.y < 0 || n.y > H) n.vy *= -1;
+        n.pulse *= 0.96;
+
+        // pulse halo
+        if (n.pulse > 0.04) {
+          const grad = ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, 18);
+          const col = n.kind === 'warn' ? '250, 199, 117' : '159, 225, 203';
+          grad.addColorStop(0, `rgba(${col}, ${(0.55 * n.pulse).toFixed(3)})`);
+          grad.addColorStop(1, `rgba(${col}, 0)`);
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, 18, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = n.kind === 'warn'
+          ? 'rgba(250, 199, 117, 0.85)'
+          : 'rgba(159, 225, 203, 0.85)';
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      requestAnimationFrame(loop);
+    }
+    loop();
+  }
+
+  // ── feature grid: show 3 more ──
+  const moreBtn = document.getElementById('show-more-features');
+  const grid    = document.getElementById('feature-grid');
+  const wrap    = document.getElementById('feature-more-wrap');
+  if (moreBtn && grid && wrap) {
+    moreBtn.addEventListener('click', () => {
+      grid.classList.remove('compact');
+      moreBtn.setAttribute('aria-expanded', 'true');
+      wrap.hidden = true;
+    });
+  }
+
+  // ── live dashboard mock (stat ticks, row swap, fresh activity) ──
+  const mockFrame = document.querySelector('.mock-frame');
+  const mockFeed  = document.getElementById('mock-feed');
+  if (mockFrame && mockFeed && !reduceMotion) {
+    let mockOn = false;
+    new IntersectionObserver(([e]) => { mockOn = e.isIntersecting; }, { threshold: 0.15 }).observe(mockFrame);
+
+    const stats = mockFrame.querySelectorAll('.mock-stat .v');
+    const rows  = [...mockFrame.querySelectorAll('.mock-row')];
+    const HOSTS = ['LAB-DESK-04', 'DEV-LAPTOP-12', 'ENG-WS-08', 'HOST-OFFICE-21', 'MKT-LAPTOP-03'];
+    const TIMES = ['just now', '3m ago', '8m ago', '15m ago'];
+    const pick  = a => a[Math.floor(Math.random() * a.length)];
+
+    let alerts = 8, online = 47, compliance = 89;
+    function flash(el, html) {
+      el.innerHTML = html;
+      el.classList.remove('flash');
+      void el.offsetWidth;
+      el.classList.add('flash');
+    }
+    function tickStat() {
+      const d = Math.random() < 0.5 ? 1 : -1;
+      const w = Math.random();
+      if (w < 0.40) { alerts     = Math.max(6,  Math.min(11, alerts     + d)); flash(stats[0], String(alerts)); }
+      else if (w < 0.75) { online     = Math.max(45, Math.min(50, online     + d)); flash(stats[1], online + '<small> / 82</small>'); }
+      else { compliance = Math.max(85, Math.min(93, compliance + d)); flash(stats[2], compliance + '%'); }
+    }
+
+    function pulseHost(hostname) {
+      const row = rows.find(r => r.querySelector('.host') && r.querySelector('.host').textContent === hostname);
+      if (!row) return;
+      row.classList.add('pulse-row');
+      setTimeout(() => row.classList.remove('pulse-row'), 1500);
+    }
+
+    const ACTS = [
+      () => { const h = pick(HOSTS); return { k: 'ok',       i: '✓', t: 'Checkin received · <strong>'        + h + '</strong>', host: h }; },
+      () => { const h = pick(HOSTS); return { k: 'info',     i: '·', t: 'Compliance changed · <strong>'      + h + '</strong>', host: h }; },
+      () => { const h = pick(HOSTS); return { k: 'ok',       i: '✓', t: 'Alert resolved · disk free · <strong>' + h + '</strong>', host: h }; },
+      () => { const h = pick(HOSTS); return { k: 'warn',     i: '!',      t: 'Disk threshold · <strong>'          + h + '</strong>', host: h }; },
+      () => ({                          k: 'info',     i: '·', t: 'Script completed · <strong>clear-temp</strong>' }),
+      () => { const h = pick(HOSTS); return { k: 'ok',       i: '✓', t: 'Agent updated · <strong>'           + h + '</strong>', host: h }; },
+      () => ({                          k: 'info',     i: '#',      t: 'Ticket created · <strong>#' + (849 + Math.floor(Math.random() * 9)) + '</strong>' }),
+      () => { const h = pick(HOSTS); return { k: 'critical', i: '!',      t: 'New critical alert · <strong>'      + h + '</strong>', host: h }; },
+    ];
+    function addActivity() {
+      const a = ACTS[Math.floor(Math.random() * ACTS.length)]();
+      const el = document.createElement('div');
+      el.className = 'mock-act fresh';
+      el.innerHTML = '<span class="kind ' + a.k + '">' + a.i + '</span><span class="text">' + a.t + '</span><span class="time">just now</span>';
+      mockFeed.insertBefore(el, mockFeed.firstChild);
+      const items = mockFeed.querySelectorAll('.mock-act');
+      items.forEach((it, idx) => { const tt = it.querySelector('.time'); if (tt) tt.textContent = TIMES[idx] || '30m+ ago'; });
+      if (items.length > 4) items[items.length - 1].remove();
+      if (a.host) pulseHost(a.host);
+    }
+
+    function swapRow() {
+      const healthy = rows.filter(r => {
+        const d = r.querySelector('.pulse-dot');
+        return d && !d.classList.contains('critical') && !d.classList.contains('warning');
+      });
+      if (!healthy.length) return;
+      const r = pick(healthy);
+      r.classList.add('swap-warn');
+      setTimeout(() => r.classList.remove('swap-warn'), 2800);
+    }
+
+    function schedule(fn, base, jitter) {
+      const step = () => { if (mockOn) fn(); setTimeout(step, base + Math.random() * jitter); };
+      setTimeout(step, base + Math.random() * jitter);
+    }
+    schedule(tickStat,    3500,  2000);
+    schedule(addActivity, 8000,  2000);
+    schedule(swapRow,    13000,  4000);
+  }
+
+  // ── footer year ──
+  const y = document.getElementById('year');
+  if (y) y.textContent = new Date().getFullYear();
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Opale</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<link rel="stylesheet" href="/styles/mobile.css">
+<script src="/env.js"></script>
+<script>
+  // Hydrate les éléments [data-brand="<champ>"] depuis window.ENV.BRANDING.
+  document.addEventListener('DOMContentLoaded', () => {
+    const b = window.ENV && window.ENV.BRANDING
+    if (!b) return
+    if (b.product_name) document.title = b.product_name
+    document.querySelectorAll('[data-brand]').forEach(el => {
+      const k = el.getAttribute('data-brand')
+      if (b[k]) el.textContent = b[k]
+    })
+  })
+</script>
+<script src="/msal-browser.min.js"></script>
+</head>
+<body>
+
+<!-- LOADING -->
+<div id="m-loading"><div class="m-spinner"></div></div>
+
+<!-- LOGIN -->
+<div id="m-login">
+  <div class="m-login-logo" data-brand="product_name">Opale</div>
+  <div class="m-login-sub" data-brand="org_name">Your Organization</div>
+  <button class="m-login-btn" id="m-btn-login">
+    <i class="ti ti-brand-azure"></i> Se connecter avec Microsoft 365
+  </button>
+</div>
+
+<!-- BIO LOCK -->
+<div id="m-bio-lock" style="display:none;flex-direction:column;align-items:center;justify-content:center;height:100dvh;gap:16px;background:var(--bg)">
+  <i class="ti ti-fingerprint" style="font-size:64px;color:var(--blue)"></i>
+  <div style="font-size:20px;font-weight:700;letter-spacing:1px" data-brand="product_name">Opale</div>
+  <div style="font-size:13px;color:var(--text-secondary)">Vérification requise</div>
+  <button id="m-bio-unlock-btn" class="m-login-btn" style="margin-top:8px">
+    <i class="ti ti-fingerprint"></i> Déverrouiller
+  </button>
+  <button onclick="window.auth.logout()" style="background:none;border:none;color:var(--text-tertiary);font-size:12px;cursor:pointer;padding:8px">
+    Déconnexion
+  </button>
+</div>
+
+<!-- APP -->
+<div id="m-app" style="display:none;flex-direction:column;height:100dvh;overflow:hidden">
+
+  <!-- Screens -->
+  <div id="m-screen-dashboard"  class="m-screen"></div>
+  <div id="m-screen-postes"     class="m-screen"></div>
+  <div id="m-screen-poste"      class="m-screen"></div>
+  <div id="m-screen-ssh"        class="m-screen"></div>
+  <div id="m-screen-tickets"    class="m-screen"></div>
+  <div id="m-screen-ticket"     class="m-screen"></div>
+  <div id="m-screen-menu"       class="m-screen"></div>
+  <div id="m-screen-settings"   class="m-screen"></div>
+  <div id="m-screen-scripts"    class="m-screen"></div>
+  <div id="m-screen-stock"      class="m-screen"></div>
+  <div id="m-screen-onboarding" class="m-screen"></div>
+  <div id="m-screen-rapports"   class="m-screen"></div>
+  <div id="m-screen-audit"      class="m-screen"></div>
+  <div id="m-screen-search"     class="m-screen"></div>
+  <div id="m-screen-alertes"    class="m-screen"></div>
+  <div id="m-screen-packages"   class="m-screen"></div>
+
+  <!-- Bottom nav -->
+  <nav id="m-bottom-nav">
+    <button class="m-nav-item" data-route="dashboard" onclick="mNavigateTo('dashboard')">
+      <i class="ti ti-layout-dashboard"></i>Dashboard
+    </button>
+    <button class="m-nav-item" data-route="postes" onclick="mNavigateTo('postes')">
+      <i class="ti ti-device-laptop"></i>Postes
+    </button>
+    <button class="m-nav-item" data-route="alertes" onclick="mNavigateTo('alertes')">
+      <i class="ti ti-bell"></i>Alertes
+      <span class="m-nav-badge" id="m-badge-crit" style="display:none"></span>
+    </button>
+    <button class="m-nav-item" data-route="tickets" onclick="mNavigateTo('tickets')">
+      <i class="ti ti-ticket"></i>Tickets
+    </button>
+    <button class="m-nav-item" data-route="menu" onclick="mNavigateTo('menu')">
+      <i class="ti ti-dots"></i>Plus
+    </button>
+  </nav>
+</div>
+
+<!-- Bottom sheet -->
+<div id="m-sheet-overlay" onclick="mCloseSheet()">
+  <div id="m-sheet" onclick="event.stopPropagation()">
+    <div class="m-sheet-handle"></div>
+    <div id="m-sheet-inner" style="padding:0 16px 8px"></div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="m-toast"></div>
+
+<script type="module" src="/mobile-app.js"></script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+# Dépendances
+node_modules/
+api/node_modules/
+
+# Environnement
+.env
+
+# Vendeurs front (télécharger via setup.sh)
+front/msal-browser.min.js
+front/xterm.js
+front/chart.umd.min.js
+front/tabler-icons-webfont/
+
+# Fichiers de travail / mockups
+mockups/
+mockup-mobile.html
+PROMPT.md
+
+# Netbird / infra locale
+netbird/
+
+# macOS
+.DS_Store
+
+# IDE / outils de dev locaux
+.claude/
+.vscode/
+.idea/
+
+# Agent Go — clé privée de signature et binaires compilés
+agent-go/keys/signing.key
+agent-go/keys/laps.key
+agent-go/dist/
+agent-go/rmm-agent
+
+# Surcharges privées spécifiques à une instance (seeds settings, assets de
+# marque privés, pins SPKI, overrides locaux). Le dossier instance-local/
+# n'est jamais committé ; chaque déploiement réel y met ses propres fichiers.
+instance-local/
+front/branding/icon.svg
+front/branding/favicon.ico
+front/branding/login-bg.svg
+
+# Installeurs générés par scripts/bulk-build-intune-installers.sh
+# (chacun contient un token agent en clair embarqué — ne JAMAIS committer)
+intune-installers/

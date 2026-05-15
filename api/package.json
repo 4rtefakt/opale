@@ -1,0 +1,27 @@
+{
+  "name": "opale-api",
+  "type": "module",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node --test --test-reporter=spec",
+    "test:watch": "node --test --watch",
+    "test:cover": "node --test --experimental-test-coverage --test-reporter=spec"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11",
+    "@fastify/rate-limit": "^10",
+    "@fastify/sensible": "^6.0.4",
+    "@fastify/static": "^9",
+    "@fastify/websocket": "^11",
+    "fastify": "^5",
+    "fastify-plugin": "^5",
+    "jose": "^5",
+    "pg": "^8",
+    "sql.js": "^1.10",
+    "ssh2": "^1",
+    "web-push": "^3",
+    "yauzl": "^3"
+  }
+}
