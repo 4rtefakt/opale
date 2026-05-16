@@ -199,7 +199,7 @@ export default {
   'tickets.mail_stats.errors':       '{n} errors',
   'tickets.mail_diag.title':         'Mail bridge activity',
   'tickets.mail_diag.config':        'Configuration',
-  'tickets.mail_diag.poll_enabled':  'Reading (Inbox poll)',
+  'tickets.mail_diag.poll_enabled':  'Reading (whole-mailbox poll)',
   'tickets.mail_diag.send_enabled':  'Outgoing replies',
   'tickets.mail_diag.mark_read_enabled': 'Mark as read in Outlook',
   'tickets.mail_diag.classifier':    'Ollama classifier',

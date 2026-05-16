@@ -44,6 +44,12 @@ async function graphGet(path) {
 // Exporté pour testabilité : c'est là que se cache le bug subtil (double
 // URL-encoding) qui a cassé la première mise en prod.
 //
+// On scanne `/users/{mailbox}/messages` (TOUTE la boîte) au lieu de
+// `/mailFolders/inbox/messages` : sinon les mails déplacés par les règles
+// Outlook vers des sous-dossiers ne seraient jamais ingérés. Les dossiers
+// système (Sent/Drafts/Deleted/Junk) sont filtrés au niveau applicatif via
+// `parentFolderId` (cf. listMessagesSince + getSystemFolderIds).
+//
 // $orderby=receivedDateTime asc : on lit dans l'ordre, pour pouvoir avancer
 // le curseur progressivement même si on s'arrête en cours de page.
 //
@@ -64,6 +70,9 @@ export function buildListMessagesPath(mailbox, sinceIso, { top = 50 } = {}) {
     'receivedDateTime',
     'hasAttachments',
     'internetMessageHeaders',
+    // Champs ajoutés pour pouvoir filtrer côté app les dossiers système :
+    'parentFolderId',
+    'isDraft',
   ].join(',')
 
   const params = new URLSearchParams()
@@ -72,19 +81,57 @@ export function buildListMessagesPath(mailbox, sinceIso, { top = 50 } = {}) {
   params.set('$select', select)
   if (sinceIso) params.set('$filter', `receivedDateTime gt ${sinceIso}`)
 
-  return `/users/${encodeMailbox(mailbox)}/mailFolders/inbox/messages?${params.toString()}`
+  return `/users/${encodeMailbox(mailbox)}/messages?${params.toString()}`
 }
 
+// Cache des IDs de dossiers système à exclure (Sent/Drafts/Deleted/Junk/
+// Outbox). Ces IDs varient par mailbox mais sont stables dans le temps —
+// TTL 1 h amplement suffisant. On les récupère via les "well-known names"
+// Graph qui servent de raccourcis indépendants de la locale.
+const SYSTEM_FOLDER_SHORTCUTS = ['sentitems', 'drafts', 'deleteditems', 'junkemail', 'outbox']
+const FOLDER_CACHE_TTL_MS = 60 * 60 * 1000
+const _systemFolderCache = new Map()  // mailbox → { ids: Set, fetchedAt }
+
+export async function getSystemFolderIds(mailbox, { now = Date.now } = {}) {
+  const cached = _systemFolderCache.get(mailbox)
+  if (cached && (now() - cached.fetchedAt) < FOLDER_CACHE_TTL_MS) return cached.ids
+
+  const ids = new Set()
+  for (const shortcut of SYSTEM_FOLDER_SHORTCUTS) {
+    try {
+      const folder = await graphGet(`/users/${encodeMailbox(mailbox)}/mailFolders/${shortcut}`)
+      if (folder?.id) ids.add(folder.id)
+    } catch {
+      // Dossier absent ou perm refusée → on tolère et on continue.
+      // Cas typique : `outbox` n'existe pas dans certaines configurations.
+    }
+  }
+  _systemFolderCache.set(mailbox, { ids, fetchedAt: now() })
+  return ids
+}
+
+// Pour les tests : forcer le re-fetch du cache.
+export function _resetSystemFolderCache() { _systemFolderCache.clear() }
+
 // Liste les mails reçus depuis `sinceIso` (exclusif) dans la boîte cible.
+// Scanne TOUS les dossiers, mais filtre les mails issus des dossiers système
+// (Sent/Drafts/Deleted/Junk/Outbox) au niveau applicatif après fetch.
 //
-// Champs sélectionnés : juste ce qu'il faut pour la classif Phase 2 + le
-// matching Phase 4. On évite `body` pour limiter la bande passante au polling
-// — `bodyPreview` (premiers 255 chars) suffit pour 95 % des cas.
-//
-// Pagination : on retourne la page brute Graph (`@odata.nextLink` inclus).
-// Le worker décide s'il pagine ou s'il garde la suite pour le prochain tick.
+// Pagination : on retourne la page brute Graph (`@odata.nextLink` inclus),
+// avec `value` filtré. Si tous les mails de la page tombent dans des
+// dossiers système, le worker recevra une page vide et avancera le curseur
+// au prochain tick.
 export async function listMessagesSince(mailbox, sinceIso, opts = {}) {
-  return graphGet(buildListMessagesPath(mailbox, sinceIso, opts))
+  const [page, excluded] = await Promise.all([
+    graphGet(buildListMessagesPath(mailbox, sinceIso, opts)),
+    getSystemFolderIds(mailbox).catch(() => new Set()),  // tolérer un échec du listing dossiers
+  ])
+  if (page?.value) {
+    page.value = page.value.filter(m =>
+      !m.isDraft && !excluded.has(m.parentFolderId)
+    )
+  }
+  return page
 }
 
 // Re-fetch un message complet (corps + headers complets) — utilisé Phase 2/3
