@@ -25,7 +25,8 @@ export default async function emailRoute(fastify) {
 
     const { rows } = await fastify.db.query(`
       SELECT id, internet_message_id, conversation_id, mailbox, direction,
-             from_address, subject, received_at, ticket_id, created_at
+             from_address, subject, received_at, ticket_id, proposal_id,
+             action, classifier_result, error_message, created_at
       FROM email_thread_mapping
       ${where}
       ORDER BY received_at DESC NULLS LAST, created_at DESC
@@ -98,5 +99,50 @@ export default async function emailRoute(fastify) {
       else if (byAction[r.action] !== undefined) byAction[r.action] = r.n
     }
     reply.send({ since, days, total, by_action: byAction })
+  })
+
+  // GET /api/email/diagnostic — vue d'ensemble pour la modale debug :
+  // config classifieur + dernières erreurs + comptage par mailbox.
+  // Permet à l'admin de comprendre "pourquoi le compteur est bas" sans
+  // ouvrir un terminal psql.
+  fastify.get('/diagnostic', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+    // Settings du pont (sans le secret OAuth, qu'on a pas ici de toute façon).
+    const { rows: setRows } = await fastify.db.query(
+      `SELECT key, value FROM settings WHERE key LIKE 'mail.%'`
+    )
+    const settings = Object.fromEntries(setRows.map(r => [r.key, r.value]))
+
+    // Dernières erreurs : mails dont la classif a fallback ou skip_error.
+    // On retourne juste les 10 plus récents pour un coup d'œil rapide.
+    const { rows: errors } = await fastify.db.query(`
+      SELECT id, mailbox, from_address, subject, received_at, action,
+             classifier_result, error_message
+      FROM email_thread_mapping
+      WHERE action = 'skipped_error'
+         OR (classifier_result->>'fallback')::boolean = true
+      ORDER BY processed_at DESC NULLS LAST, created_at DESC
+      LIMIT 10
+    `)
+
+    reply.send({
+      // Note : on n'expose volontairement PAS la liste complète des paires
+      // clé/valeur ; on filtre les clés non sensibles (URLs, noms, flags).
+      // Pas de secret côté Mail (l'auth Graph passe par ENTRA_CLIENT_SECRET
+      // chargé en env, jamais en DB).
+      config: {
+        inboxes:           settings['mail.inboxes']        || '',
+        poll_enabled:      settings['mail.poll_enabled']   === 'true',
+        send_enabled:      settings['mail.send_enabled']   === 'true',
+        sender_address:    settings['mail.sender_address'] || '',
+        mark_as_read_enabled: settings['mail.mark_as_read_enabled'] === 'true',
+        classifier: {
+          enabled:         settings['mail.classifier.enabled'] === 'true',
+          url:             settings['mail.classifier.url']     || '',
+          model:           settings['mail.classifier.model']   || '',
+          fallback_intent: settings['mail.classifier.fallback_intent'] || 'new_ticket',
+        },
+      },
+      recent_errors: errors,
+    })
   })
 }

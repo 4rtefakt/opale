@@ -193,8 +193,9 @@ export async function renderTickets(container, opts = {}) {
       </div>
     </div>
     <!-- Bandeau stats du pont mail (issue #8). Caché si l'API renvoie 0 :
-         ça évite d'afficher du vide quand le pont est désactivé. -->
-    <div id="tk-mail-stats" style="display:none;padding:6px 16px;font-size:12px;color:var(--text-secondary);border-bottom:0.5px solid var(--border);background:var(--bg-secondary)"></div>
+         ça évite d'afficher du vide quand le pont est désactivé.
+         Clickable → modale diagnostic (liste mails, erreurs, conf Ollama). -->
+    <div id="tk-mail-stats" onclick="openMailDiagnosticModal()" style="display:none;padding:6px 16px;font-size:12px;color:var(--text-secondary);border-bottom:0.5px solid var(--border);background:var(--bg-secondary);cursor:pointer" title="Cliquer pour le détail"></div>
     <div id="tk-main" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>`
 
   ensureKanbanStyles()
@@ -210,6 +211,7 @@ export async function renderTickets(container, opts = {}) {
   window.reopenTicket         = reopenTicket
   window.archiveTicket        = archiveTicket
   window.unarchiveTicket      = unarchiveTicket
+  window.openMailDiagnosticModal = openMailDiagnosticModal
   window.tkSetPriorityFilter  = tkSetPriorityFilter
   window.tkToggleTagFilter    = tkToggleTagFilter
   window.tkSetAssignedFilter  = tkSetAssignedFilter
@@ -1444,6 +1446,159 @@ async function tkRemoveChip(key) {
 // ─── Modal "Gérer les tags" ──────────────────────────────────────────────────
 
 // ─── Modal "Propositions" (tickets proposés à valider) ──────────────────────
+
+// Modale diagnostic du pont mail (issue #8). Affiche :
+//   - Conf classifieur (URL, modèle, enabled) + état du polling
+//   - Liste des derniers mails ingérés avec leur action + classif
+//   - Erreurs récentes (Ollama timeout, etc.)
+// Permet à l'admin de comprendre "pourquoi le compteur est bas" sans psql.
+async function openMailDiagnosticModal() {
+  showModal(`
+    <div class="modal-title">${t('tickets.mail_diag.title')}</div>
+    <div id="mail-diag-body" style="max-height:65vh;overflow-y:auto;margin-top:10px;font-size:13px">
+      <div style="text-align:center;color:var(--text-tertiary);padding:20px">${t('common.loading')}…</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal()">${t('btn.close')}</button>
+    </div>`)
+
+  // Fetch parallèle : 3 endpoints distincts, indépendants.
+  const [stats, recent, diag, status] = await Promise.all([
+    window.api.getEmailStats(7).catch(() => null),
+    window.api.getEmailRecent({ limit: 50 }).catch(() => []),
+    window.api.getEmailDiagnostic().catch(() => null),
+    window.api.getEmailStatus().catch(() => null),
+  ])
+
+  const body = document.getElementById('mail-diag-body')
+  if (!body) return  // modale fermée entretemps
+
+  body.innerHTML = `
+    ${renderMailDiagConfig(diag, status)}
+    ${renderMailDiagStats(stats)}
+    ${renderMailDiagRecent(recent)}
+    ${renderMailDiagErrors(diag?.recent_errors || [])}
+  `
+}
+
+function renderMailDiagConfig(diag, status) {
+  if (!diag) return ''
+  const c = diag.config || {}
+  const cls = c.classifier || {}
+  const mailboxes = status?.mailboxes || []
+
+  const dot = (on) => `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${on?'#0d9488':'#dc2626'};vertical-align:1px;margin-right:6px"></span>`
+
+  return `
+    <section style="margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">${t('tickets.mail_diag.config')}</div>
+      <div style="background:var(--bg-tertiary);border-radius:6px;padding:10px;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px">
+        <div>${dot(c.poll_enabled)} ${t('tickets.mail_diag.poll_enabled')}</div>
+        <div style="color:var(--text-secondary)">${c.inboxes || '(aucune)'}</div>
+        <div>${dot(c.send_enabled)} ${t('tickets.mail_diag.send_enabled')}</div>
+        <div style="color:var(--text-secondary)">${esc(c.sender_address) || '(non configuré)'}</div>
+        <div>${dot(c.mark_as_read_enabled)} ${t('tickets.mail_diag.mark_read_enabled')}</div>
+        <div style="color:var(--text-secondary)">${c.mark_as_read_enabled ? t('common.yes') : t('common.no')}</div>
+        <div>${dot(cls.enabled && cls.url && cls.model)} ${t('tickets.mail_diag.classifier')}</div>
+        <div style="color:var(--text-secondary)">${cls.enabled ? `${esc(cls.model || '(?)')} @ ${esc(cls.url || '(?)')}` : t('tickets.mail_diag.classifier_off')}</div>
+      </div>
+      ${mailboxes.length ? `
+        <div style="margin-top:8px;font-size:11px;color:var(--text-tertiary)">
+          ${mailboxes.map(m => `<div>${esc(m.address)} — ${t('tickets.mail_diag.cursor')}: ${m.cursor ? formatRelative(m.cursor) : '(init)'} · ${m.total_ingested} ${t('tickets.mail_diag.ingested')}</div>`).join('')}
+        </div>` : ''}
+    </section>`
+}
+
+function renderMailDiagStats(stats) {
+  if (!stats) return ''
+  const a = stats.by_action || {}
+  const items = [
+    ['proposal_created',           t('tickets.mail_diag.proposals'),      '#0d9488'],
+    ['proposal_created_no_match',  t('tickets.mail_diag.proposals_reply'),'#0d9488'],
+    ['message_appended',           t('tickets.mail_diag.appended'),       '#2563eb'],
+    ['skipped_other',              t('tickets.mail_diag.skipped_other'),  '#64748b'],
+    ['in_queue',                   t('tickets.mail_diag.in_queue'),       '#d97706'],
+    ['skipped_error',              t('tickets.mail_diag.errors'),         '#dc2626'],
+  ]
+  return `
+    <section style="margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">${t('tickets.mail_diag.activity', { n: stats.total, days: stats.days })}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${items.filter(([k]) => a[k]).map(([k, label, color]) => `
+          <div style="background:${color}20;color:${color};padding:4px 10px;border-radius:6px;font-size:12px;font-weight:500">
+            ${a[k]} · ${esc(label)}
+          </div>`).join('')}
+      </div>
+    </section>`
+}
+
+function renderMailDiagRecent(rows) {
+  if (!rows?.length) {
+    return `<section style="margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">${t('tickets.mail_diag.recent_title')}</div>
+      <div style="color:var(--text-tertiary);font-size:12px;padding:8px">${t('tickets.mail_diag.recent_empty')}</div>
+    </section>`
+  }
+
+  const actionLabel = {
+    proposal_created:           t('tickets.mail_diag.label_proposal'),
+    proposal_created_no_match:  t('tickets.mail_diag.label_proposal_reply'),
+    message_appended:           t('tickets.mail_diag.label_appended'),
+    skipped_other:              t('tickets.mail_diag.label_other'),
+    skipped_error:              t('tickets.mail_diag.label_error'),
+  }
+  const actionColor = {
+    proposal_created:           '#0d9488',
+    proposal_created_no_match:  '#0d9488',
+    message_appended:           '#2563eb',
+    skipped_other:              '#64748b',
+    skipped_error:              '#dc2626',
+  }
+
+  return `
+    <section style="margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">${t('tickets.mail_diag.recent_title')} (${rows.length})</div>
+      <div style="background:var(--bg-tertiary);border-radius:6px;overflow:hidden">
+        ${rows.map(r => {
+          const cls = r.classifier_result || {}
+          const isFallback = cls.fallback === true
+          const conf = typeof cls.confidence === 'number' ? Math.round(cls.confidence * 100) : null
+          const confBadge = isFallback
+            ? `<span style="background:var(--bg-secondary);color:var(--text-tertiary);padding:0 5px;border-radius:6px;font-size:10px">— sans classif</span>`
+            : (conf != null ? `<span style="background:${conf>=80?'#0d9488':conf>=50?'#d97706':'#dc2626'};color:#fff;padding:0 5px;border-radius:6px;font-size:10px">${conf}%</span>` : '')
+          const aColor = actionColor[r.action] || '#64748b'
+          return `
+            <div style="padding:8px 10px;border-bottom:0.5px solid var(--border);display:flex;gap:8px;align-items:flex-start">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:500;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.subject || '(sans sujet)')}</div>
+                <div style="font-size:11px;color:var(--text-tertiary);margin-top:2px">
+                  ${esc(r.from_address || '?')} · ${formatRelative(r.received_at)}
+                </div>
+              </div>
+              <div style="display:flex;gap:4px;align-items:center;flex-shrink:0">
+                ${confBadge}
+                <span style="background:${aColor}20;color:${aColor};padding:1px 6px;border-radius:6px;font-size:10px;font-weight:500">${esc(actionLabel[r.action] || r.action || '?')}</span>
+              </div>
+            </div>`
+        }).join('')}
+      </div>
+    </section>`
+}
+
+function renderMailDiagErrors(errors) {
+  if (!errors.length) return ''
+  return `
+    <section>
+      <div style="font-weight:600;margin-bottom:6px;color:#dc2626">${t('tickets.mail_diag.errors_title')} (${errors.length})</div>
+      <div style="background:#dc262610;border-radius:6px;padding:8px;font-size:11px;color:var(--text-secondary)">
+        ${errors.map(e => `
+          <div style="padding:4px 0;border-bottom:0.5px solid var(--border)">
+            <div style="color:var(--text-primary)">${esc(e.subject || '(sans sujet)')}</div>
+            <div style="color:var(--text-tertiary)">${esc(e.error_message || e.classifier_result?.reason || '(pas de détail)')}</div>
+          </div>`).join('')}
+      </div>
+    </section>`
+}
 
 async function openProposalsModal() {
   let list = []
