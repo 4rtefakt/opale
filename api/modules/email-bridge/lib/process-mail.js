@@ -21,6 +21,8 @@
 import { matchSender }   from './match-sender.js'
 import { matchThread }   from './match-thread.js'
 import { classifyWithOllama } from './classify.js'
+import { getMessage }    from './graph-mail.js'
+import { extractMailBodyText } from './body-text.js'
 
 // Extrait les headers RFC du payload Graph. `internetMessageHeaders` est une
 // liste [{name, value}], on construit un index lowercased.
@@ -118,7 +120,7 @@ async function appendMessageToTicket(client, { ticketId, authorName, content }) 
 }
 
 async function createProposal(client, {
-  graphMessage, mailbox, sender, intent, classifier,
+  graphMessage, mailbox, sender, intent, classifier, bodyText,
 }) {
   // Titre suggéré : le subject nettoyé des préfixes (Re:, TR:, Fwd:).
   const cleanSubject = (graphMessage.subject || '(sans sujet)')
@@ -126,11 +128,16 @@ async function createProposal(client, {
     .replace(/^\s*\[[^\]]+\]\s*/, '')  // tag externe éventuel
     .trim() || '(sans sujet)'
 
+  // Description : full body (signature strippée) si on a pu le récupérer,
+  // sinon fallback sur bodyPreview. Limite 4000 chars pour rester lisible
+  // dans la vue ticket — au-delà c'est rare et un lien vers le mail source
+  // serait mieux (Phase ultérieure).
+  const body = bodyText || graphMessage.bodyPreview || '(corps vide)'
   const description = [
     `De: ${sender.user_name || graphMessage.from?.emailAddress?.name || ''} <${graphMessage.from?.emailAddress?.address || ''}>`,
     `Sujet: ${graphMessage.subject || ''}`,
     '',
-    graphMessage.bodyPreview || '(aperçu vide)',
+    body,
   ].join('\n').slice(0, 4000)
 
   const { rows } = await client.query(`
@@ -212,6 +219,21 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
     intent = classifier.intent
   }
 
+  // Si on va créer un proposal/message (donc tout sauf 'other'), récupérer
+  // le body complet du mail via getMessage(). Pas avant : ça économise un
+  // appel Graph pour les ~80 % de mails classés 'other' (newsletters,
+  // notifications) où bodyPreview suffit largement.
+  let bodyText = null
+  if (intent !== 'other') {
+    try {
+      const full = await getMessage(mailbox, graphMessage.id)
+      bodyText = extractMailBodyText(graphMessage, full)
+    } catch (err) {
+      log?.warn({ err: err.message, internetMessageId },
+        'process: full body fetch failed, fallback sur bodyPreview')
+    }
+  }
+
   // ── Transaction : mapping + action ──────────────────────────────────────────
   // Stratégie : INSERT mapping en PREMIER avec ON CONFLICT DO NOTHING. Si
   // rowCount=0, un autre tick a gagné la course → ROLLBACK + skip. Sinon on
@@ -253,7 +275,7 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
 
     if (threadMatch?.ticket_id) {
       const authorName = sender.user_name || fromAddress || 'Email'
-      const content = graphMessage.bodyPreview || '(corps vide)'
+      const content = bodyText || graphMessage.bodyPreview || '(corps vide)'
       await appendMessageToTicket(client, {
         ticketId: threadMatch.ticket_id, authorName, content,
       })
@@ -264,7 +286,7 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
       action = 'skipped_other'
     } else if (intent === 'new_ticket' || intent === 'reply') {
       proposalId = await createProposal(client, {
-        graphMessage, mailbox, sender, intent, classifier,
+        graphMessage, mailbox, sender, intent, classifier, bodyText,
       })
       // intent='reply' sans match parent : on a quand même créé une
       // proposition (fallback). On distingue dans `action` pour qu'un

@@ -767,7 +767,7 @@ function renderDetail(tk, container) {
     </div>
     <div class="ticket-body-grid">
       <div class="ticket-thread-col">
-        ${tk.description ? `<div class="desc-box">${esc(tk.description)}</div>` : ''}
+        ${tk.description ? `<div class="desc-box" style="white-space:pre-wrap;line-height:1.5">${esc(tk.description)}</div>` : ''}
         <div class="messages" id="msg-thread">
           ${tk.messages.map(m => renderMsg(m)).join('')}
         </div>
@@ -868,7 +868,7 @@ function renderMsg(m) {
     <div class="msg-av">${esc(initials)}</div>
     <div class="msg-bubble">
       <div class="msg-author">${esc(m.author)}<span class="msg-time">${formatRelative(m.created_at)}</span></div>
-      <div class="msg-content ${m.type === 'resolution' ? 'resolution' : ''}">${esc(m.content)}</div>
+      <div class="msg-content ${m.type === 'resolution' ? 'resolution' : ''}" style="white-space:pre-wrap;line-height:1.5">${esc(m.content)}</div>
     </div>
   </div>`
 }
