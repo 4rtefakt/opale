@@ -1398,14 +1398,30 @@ function proposalCard(p) {
                   : p.suggested_priority === 'high'     ? '#d97706'
                   : p.suggested_priority === 'low'      ? '#64748b'
                   : '#0d9488'
+
+  // Confiance du classifieur (Phase 2 du pont mail, issue #8). Présente
+  // uniquement sur les propositions source='email' qui ont traversé Ollama.
+  // Stockée dans source_payload.classifier.{intent, confidence, reason}.
+  // Couleurs : ≥0.8 vert (auto-acceptable), 0.5-0.8 ambre (à vérifier),
+  // <0.5 rouge (probablement faux positif). Sert à calibrer un seuil
+  // d'auto-acceptation future.
+  const cls = p.source_payload?.classifier
+  let confBadge = ''
+  if (cls && typeof cls.confidence === 'number') {
+    const pct = Math.round(cls.confidence * 100)
+    const color = pct >= 80 ? '#0d9488' : pct >= 50 ? '#d97706' : '#dc2626'
+    const title = cls.reason ? `${cls.intent || ''} — ${cls.reason}` : (cls.intent || '')
+    confBadge = `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:8px;font-weight:500" title="${esc(title)}">${pct}%</span>`
+  }
   return `
     <div style="border:0.5px solid var(--border);border-radius:6px;padding:10px;background:var(--bg-secondary)">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
         <div style="flex:1;min-width:0">
           <div style="font-weight:500;font-size:13px">${esc(p.suggested_title)}</div>
-          <div style="font-size:11px;color:var(--text-tertiary);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap">
+          <div style="font-size:11px;color:var(--text-tertiary);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
             <span style="background:var(--bg-tertiary);padding:1px 6px;border-radius:8px"><i class="ti ti-bulb" style="font-size:10px"></i> ${esc(sourceLabel)}</span>
             <span style="color:${prioColor}">● ${prioLabel(p.suggested_priority)}</span>
+            ${confBadge}
             <span>${formatRelative(p.created_at)}</span>
           </div>
           ${p.suggested_description ? `<div style="margin-top:6px;font-size:12px;color:var(--text-secondary);white-space:pre-wrap;max-height:80px;overflow:auto">${esc(p.suggested_description)}</div>` : ''}
