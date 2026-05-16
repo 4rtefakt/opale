@@ -131,7 +131,16 @@ export default async function ticketsRoute(fastify) {
       params.push(entraId); i++
     }
 
-    if (status)    { conds.push(`t.status = $${i++}`);    params.push(status) }
+    // status='closed' (archives) doit être OPT-IN : sinon les tickets clos
+    // pollueraient le tab "Tous" et l'UX serait identique à avant. Quand
+    // aucun status n'est fourni, on exclut implicitement les clos.
+    if (status === 'closed') {
+      conds.push(`t.status = 'closed'`)
+    } else if (status) {
+      conds.push(`t.status = $${i++}`); params.push(status)
+    } else {
+      conds.push(`t.status <> 'closed'`)
+    }
     if (device_id) { conds.push(`t.device_id = $${i++}`); params.push(device_id) }
     if (q) {
       // Recherche : titre, description, ET messages (commentaires/résolutions)

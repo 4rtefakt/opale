@@ -80,6 +80,9 @@ class API {
   acceptProposal(id, body = {}) { return this._fetch(`/ticket-proposals/${id}/accept`, { method: 'POST', body }) }
   rejectProposal(id, reason)    { return this._fetch(`/ticket-proposals/${id}/reject`, { method: 'POST', body: { reason } }) }
 
+  // Pont mail (issue #8) — stats pour le bandeau en haut de la vue Tickets
+  getEmailStats(days = 7)       { return this._fetch(`/email/stats?days=${days}`) }
+
   // Snoozes d'alertes
   getSnoozes()              { return this._fetch('/alert-snoozes') }
   createSnooze(body)        { return this._fetch('/alert-snoozes', { method: 'POST', body }) }
