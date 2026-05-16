@@ -31,5 +31,37 @@ services:
       timeout: 5s
       retries: 5
 
+  # Classifieur du pont mail ↔ tickets (issue #8, module email-bridge).
+  # Modèle qwen2.5:3b : multilingue FR/EN, fiable en sortie JSON stricte,
+  # tient en RAM CPU (~3 GB). Volume persistant pour ne pas re-pull à chaque
+  # déploiement. Pas de port exposé : seule l'API y accède via DNS interne.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+
+  # One-shot : pull du modèle au premier démarrage. Idempotent (no-op si
+  # déjà présent). Pour changer de modèle :
+  #   1. OLLAMA_PULL_MODEL=<nouveau> docker compose run --rm ollama-init
+  #   2. UPDATE settings SET value='<nouveau>' WHERE key='mail.classifier.model';
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_started
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_PULL_MODEL: ${OLLAMA_PULL_MODEL:-qwen2.5:3b}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        ollama pull "$$OLLAMA_PULL_MODEL"
+    restart: "no"
+
 volumes:
   pgdata:
+  ollama_models:
