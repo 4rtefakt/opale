@@ -12,6 +12,7 @@
 import emailRoute from './routes/email.js'
 import { startMailPollWorker }       from './lib/poll-worker.js'
 import { startMailOutboundWorker }   from './lib/outbound-worker.js'
+import { startMailMarkReadWorker }   from './lib/mark-read-worker.js'
 
 export default {
   name: 'email-bridge',
@@ -28,5 +29,6 @@ export default {
   startWorkers(fastify) {
     startMailPollWorker(fastify.db, fastify.log)
     startMailOutboundWorker(fastify.db, fastify.log)
+    startMailMarkReadWorker(fastify.db, fastify.log)
   }
 }

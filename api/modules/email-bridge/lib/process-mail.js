@@ -78,7 +78,12 @@ async function getClassifierConfig(db) {
 }
 
 // Wrapper classifieur avec gestion d'erreur : retourne TOUJOURS un objet
-// {intent, confidence, reason}. Si désactivé / KO, applique le fallback.
+// {intent, confidence, reason, fallback?}. Si désactivé / KO, applique le
+// fallback ET marque `fallback: true` dans la sortie.
+//
+// IMPORTANT : `confidence: 0` sur un fallback ≠ "modèle dit 0%". Le front
+// (cf. proposalCard) doit différencier les deux pour ne pas afficher un
+// faux "0%" sur les propositions issues d'une erreur de classification.
 async function classifySafe(db, log, message, { classifierFn } = {}) {
   const cfg = await getClassifierConfig(db)
   const fallback = {
@@ -86,11 +91,13 @@ async function classifySafe(db, log, message, { classifierFn } = {}) {
             cfg.fallbackIntent === 'reply' ? 'reply' : 'new_ticket',
     confidence: 0,
     reason: 'classifier disabled — fallback',
+    fallback: true,
   }
   if (!cfg.enabled || !cfg.url || !cfg.model) return fallback
 
   try {
     const fn = classifierFn || classifyWithOllama
+    // Vraie classif : pas de flag fallback (= undefined → falsy côté front).
     return await fn(message, { url: cfg.url, model: cfg.model })
   } catch (err) {
     log?.warn({ err: err.message }, 'email-bridge: classifieur a échoué, fallback')

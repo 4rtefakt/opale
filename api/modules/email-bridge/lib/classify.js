@@ -61,10 +61,12 @@ export function validateClassifierOutput(raw) {
   return { intent, confidence, reason }
 }
 
-// Appel HTTP Ollama. Le timeout est court (10 s) — le classifieur doit
-// rester réactif, sinon on bloque le polling. En cas de timeout, le caller
-// applique le fallback_intent.
-export async function classifyWithOllama(message, { url, model, fetchImpl = fetch, timeoutMs = 10_000 } = {}) {
+// Appel HTTP Ollama. Le timeout est de 30 s : suffit pour le 1er chargement
+// du modèle en RAM (Ollama lazy-load à la première inférence, ce qui peut
+// prendre 5-15 s selon CPU) + l'inférence elle-même (~5 s sur qwen2.5:3b
+// CPU). Au-delà, on retombe sur le fallback côté caller — un timeout
+// chronique vaut mieux qu'un proposal silencieusement faux.
+export async function classifyWithOllama(message, { url, model, fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   if (!url)   throw new Error('classify: url manquante')
   if (!model) throw new Error('classify: model manquant')
 

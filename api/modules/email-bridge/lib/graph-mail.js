@@ -93,3 +93,33 @@ export async function listMessagesSince(mailbox, sinceIso, opts = {}) {
 export async function getMessage(mailbox, graphMessageId) {
   return graphGet(`/users/${encodeMailbox(mailbox)}/messages/${encodeURIComponent(graphMessageId)}`)
 }
+
+// Marque un mail comme lu côté Outlook via PATCH /messages/{id} (Phase 5a).
+// Nécessite Mail.ReadWrite (l'app n'a que Mail.Read par défaut → 403). Le
+// caller doit traiter l'erreur — on ne fait pas de fallback ici, parce que
+// le worker doit pouvoir distinguer "perm manquante" de "mail introuvable".
+export async function markMessageAsRead(mailbox, graphMessageId, { fetchImpl = fetch } = {}) {
+  if (!mailbox || !graphMessageId) {
+    throw new Error('markMessageAsRead: mailbox et graphMessageId requis')
+  }
+  const token = await getAppToken()
+  const url = `${GRAPH_BASE}/users/${encodeMailbox(mailbox)}/messages/${encodeURIComponent(graphMessageId)}`
+  const res = await fetchImpl(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ isRead: true }),
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    const snippet = body ? ` — ${body.slice(0, 200)}` : ''
+    const hint =
+      res.status === 403 ? ' (perm Mail.ReadWrite consentie ?)' :
+      res.status === 404 ? ' (mail supprimé/déplacé ?)' :
+      ''
+    throw new Error(`Graph PATCH isRead: ${res.status}${hint}${snippet}`)
+  }
+  return { ok: true, status: res.status }
+}
