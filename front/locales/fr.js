@@ -387,7 +387,7 @@ export default {
   'tickets.mail_stats.errors':       '{n} erreurs',
   'tickets.mail_diag.title':         'Activité du pont mail',
   'tickets.mail_diag.config':        'Configuration',
-  'tickets.mail_diag.poll_enabled':  'Lecture (poll Inbox)',
+  'tickets.mail_diag.poll_enabled':  'Lecture (poll boîte entière)',
   'tickets.mail_diag.send_enabled':  'Envoi sortant',
   'tickets.mail_diag.mark_read_enabled': 'Marquage "lu" Outlook',
   'tickets.mail_diag.classifier':    'Classifieur Ollama',
