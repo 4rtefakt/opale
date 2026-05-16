@@ -40,19 +40,19 @@ async function graphGet(path) {
   return res.json()
 }
 
-// Liste les mails reçus depuis `sinceIso` (exclusif) dans la boîte cible.
-//
-// Champs sélectionnés : juste ce qu'il faut pour la classif Phase 2 + le
-// matching Phase 4. On évite `body` pour limiter la bande passante au polling
-// — on le re-fetch au moment de classifier (Phase 2) si vraiment nécessaire.
-// En pratique, `bodyPreview` (premiers 255 chars) suffit pour 95 % des cas.
+// Construit le path Graph pour lister les messages reçus depuis `sinceIso`.
+// Exporté pour testabilité : c'est là que se cache le bug subtil (double
+// URL-encoding) qui a cassé la première mise en prod.
 //
 // $orderby=receivedDateTime asc : on lit dans l'ordre, pour pouvoir avancer
 // le curseur progressivement même si on s'arrête en cours de page.
 //
-// Pagination : on retourne la page brute Graph (`@odata.nextLink` inclus).
-// Le worker décide s'il pagine ou s'il garde la suite pour le prochain tick.
-export async function listMessagesSince(mailbox, sinceIso, { top = 50 } = {}) {
+// ATTENTION pour `$filter` : ne PAS pré-encoder `sinceIso`. URLSearchParams
+// encode déjà la query string entière — double-encoder transforme `:` en
+// `%253A` et Graph renvoie 400 "Invalid filter clause: Syntax error at
+// position 27". Bug observé en prod le 2026-05-16, fixé ici, testé en
+// regression dans email-graph-mail.test.js.
+export function buildListMessagesPath(mailbox, sinceIso, { top = 50 } = {}) {
   const select = [
     'id',
     'internetMessageId',
@@ -66,20 +66,25 @@ export async function listMessagesSince(mailbox, sinceIso, { top = 50 } = {}) {
     'internetMessageHeaders',
   ].join(',')
 
-  // $filter sur receivedDateTime avec un timestamp ISO. Graph veut le `Z` final.
-  // Si sinceIso est nul, on retourne les N plus récents (init premier run).
-  const filter = sinceIso
-    ? `receivedDateTime gt ${encodeURIComponent(sinceIso)}`
-    : null
-
   const params = new URLSearchParams()
   params.set('$top', String(Math.min(Math.max(top, 1), 100)))
   params.set('$orderby', 'receivedDateTime asc')
   params.set('$select', select)
-  if (filter) params.set('$filter', filter)
+  if (sinceIso) params.set('$filter', `receivedDateTime gt ${sinceIso}`)
 
-  const path = `/users/${encodeMailbox(mailbox)}/mailFolders/inbox/messages?${params.toString()}`
-  return graphGet(path)
+  return `/users/${encodeMailbox(mailbox)}/mailFolders/inbox/messages?${params.toString()}`
+}
+
+// Liste les mails reçus depuis `sinceIso` (exclusif) dans la boîte cible.
+//
+// Champs sélectionnés : juste ce qu'il faut pour la classif Phase 2 + le
+// matching Phase 4. On évite `body` pour limiter la bande passante au polling
+// — `bodyPreview` (premiers 255 chars) suffit pour 95 % des cas.
+//
+// Pagination : on retourne la page brute Graph (`@odata.nextLink` inclus).
+// Le worker décide s'il pagine ou s'il garde la suite pour le prochain tick.
+export async function listMessagesSince(mailbox, sinceIso, opts = {}) {
+  return graphGet(buildListMessagesPath(mailbox, sinceIso, opts))
 }
 
 // Re-fetch un message complet (corps + headers complets) — utilisé Phase 2/3

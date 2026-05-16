@@ -67,6 +67,58 @@ services:
       timeout:  5s
       retries:  5
 
+  # ─── Pont mail ↔ tickets : classifieur Ollama (optionnel) ───────────────
+  # Active la classification IA des mails entrants (cf. issue #8 et le
+  # module email-bridge). Sans ce service, le pont fonctionne toujours :
+  # tous les mails arrivés sur les boîtes monitorées atterrissent en
+  # `ticket_proposals` (fallback). L'ajout d'Ollama permet de filtrer
+  # automatiquement les non-tickets (newsletters, notifications) avant
+  # qu'ils n'encombrent la file des propositions.
+  #
+  # Modèle par défaut : `qwen2.5:3b` (~1.9 GB). 3 raisons :
+  #   1. Multilingue propre FR/EN (entraîné par Alibaba, large vocabulaire)
+  #   2. Excellent en sortie JSON stricte (le prompt demande {intent,…})
+  #   3. Tient en RAM CPU sur une machine modeste (~3 GB)
+  # Pour ajuster, modifier `mail.classifier.model` en settings.
+  #
+  # Activation : décommenter ces services + passer `--profile email-bridge`
+  # au `docker compose up`, puis activer côté Opale via :
+  #   UPDATE settings SET value='http://ollama:11434' WHERE key='mail.classifier.url';
+  #   UPDATE settings SET value='qwen2.5:3b'          WHERE key='mail.classifier.model';
+  #   UPDATE settings SET value='true'                WHERE key='mail.classifier.enabled';
+  #
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: opale-ollama
+  #   restart: unless-stopped
+  #   profiles: ["email-bridge"]
+  #   volumes:
+  #     - ollama_models:/root/.ollama
+  #   # Pas de port exposé : seul opale-api a besoin d'y accéder, via le
+  #   # nom de service `ollama` sur le réseau Docker interne.
+  #
+  # ollama-init:
+  #   # One-shot : pull du modèle au premier démarrage. Exit après pull,
+  #   # ne redémarre pas. Re-runner manuellement pour changer de modèle :
+  #   #   docker compose run --rm ollama-init
+  #   image: ollama/ollama:latest
+  #   profiles: ["email-bridge"]
+  #   depends_on:
+  #     ollama:
+  #       condition: service_started
+  #   volumes:
+  #     - ollama_models:/root/.ollama
+  #   environment:
+  #     OLLAMA_HOST: http://ollama:11434
+  #   entrypoint: ["/bin/sh", "-c"]
+  #   # Boucle de retry courte : le serveur ollama prend ~2s à être prêt
+  #   # même après "container started", donc on attend avec un ping.
+  #   command:
+  #     - |
+  #       until ollama list >/dev/null 2>&1; do sleep 1; done
+  #       ollama pull qwen2.5:3b
+  #   restart: "no"
+
   # ─── Reverse proxy (exemple Caddy) ──────────────────────────────────────
   # Décommentez et adaptez si vous voulez gérer le TLS dans la même compose.
   # Sinon utilisez un proxy externe (nginx, Traefik, ou le proxy de votre
@@ -105,5 +157,6 @@ services:
 
 volumes:
   pgdata:
+  # ollama_models:    # décommenter si le profile email-bridge est utilisé
   # caddy_data:
   # caddy_config:
