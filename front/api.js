@@ -82,6 +82,12 @@ class API {
 
   // Pont mail (issue #8) — stats pour le bandeau en haut de la vue Tickets
   getEmailStats(days = 7)       { return this._fetch(`/email/stats?days=${days}`) }
+  getEmailRecent(params)        {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    return this._fetch(`/email/recent${qs}`)
+  }
+  getEmailDiagnostic()          { return this._fetch('/email/diagnostic') }
+  getEmailStatus()              { return this._fetch('/email/status') }
 
   // Snoozes d'alertes
   getSnoozes()              { return this._fetch('/alert-snoozes') }
