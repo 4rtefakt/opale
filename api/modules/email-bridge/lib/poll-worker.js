@@ -81,6 +81,24 @@ export async function pollOnce(db, log, injection = {}) {
       continue
     }
 
+    // Normaliser le format du curseur avant de l'envoyer à Graph. Si
+    // quelqu'un a édité le setting à la main (ou via UPDATE SQL), il peut
+    // être en format Postgres (`2026-05-09 10:59:47.040437+00`) ce que
+    // Graph rejette avec 400 "Invalid filter clause". On reformate en ISO
+    // 8601 strict, et on persiste la version normalisée pour ne pas
+    // re-payer le parsing à chaque tick.
+    const parsed = new Date(cursor)
+    if (Number.isNaN(parsed.getTime())) {
+      stats.errors++
+      log?.warn({ mailbox, cursor }, 'email-bridge: curseur illisible, skip mailbox (ré-initialiser via /api/settings)')
+      continue
+    }
+    const cursorIso = parsed.toISOString()
+    if (cursorIso !== cursor) {
+      await setSetting(db, key, cursorIso)
+      cursor = cursorIso
+    }
+
     let page
     try {
       page = await list(mailbox, cursor, { top: 50 })
