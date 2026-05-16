@@ -316,3 +316,57 @@ test('GET / — admin voit tous les tickets + filtre status', { skip: SKIP }, as
   // Filtre status=open respecté.
   for (const r of rows) assert.equal(r.status, 'open')
 })
+
+// ─── Archives : status='closed' opt-in ──────────────────────────────────────
+// Le status 'closed' ne doit JAMAIS apparaître quand status est absent —
+// sans ça, archiver un ticket ne ferait rien (il resterait dans "Tous").
+// Et il doit apparaître quand on demande explicitement status=closed.
+
+test('GET / — sans filtre status, exclut les tickets closed (archives opt-in)',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-tk-closed-1')
+    const create = await createTicketAs(admin.token, { title: 'À archiver' })
+    const ticketId = create.json().id
+    // Archive via PATCH.
+    const patch = await fastify.inject({
+      method: 'PATCH', url: `/api/tickets/${ticketId}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { status: 'closed' },
+    })
+    assert.equal(patch.statusCode, 200)
+
+    // GET sans status : le ticket ne doit pas apparaître.
+    const res = await fastify.inject({
+      method: 'GET', url: '/api/tickets/',
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    const rows = res.json()
+    assert.ok(!rows.some(r => r.id === ticketId),
+      'ticket closed ne doit PAS apparaître dans GET sans filtre status')
+  }
+)
+
+test('GET /?status=closed — retourne uniquement les archives',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-tk-closed-2')
+    const create = await createTicketAs(admin.token, { title: 'Archive me' })
+    const closedId = create.json().id
+    await fastify.inject({
+      method: 'PATCH', url: `/api/tickets/${closedId}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { status: 'closed' },
+    })
+
+    // Créer aussi un ticket OPEN pour vérifier qu'il n'apparaît pas.
+    const open = await createTicketAs(admin.token, { title: 'Pas archivé' })
+
+    const res = await fastify.inject({
+      method: 'GET', url: '/api/tickets/?status=closed',
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    const rows = res.json()
+    assert.ok(rows.some(r => r.id === closedId), 'archive doit apparaître')
+    assert.ok(!rows.some(r => r.id === open.json().id), 'open ne doit PAS être dans status=closed')
+    for (const r of rows) assert.equal(r.status, 'closed')
+  }
+)

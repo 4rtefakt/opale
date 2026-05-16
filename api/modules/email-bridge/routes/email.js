@@ -61,4 +61,42 @@ export default async function emailRoute(fastify) {
       })),
     })
   })
+
+  // GET /api/email/stats?days=7 — breakdown des actions du pipeline sur la
+  // fenêtre donnée. Utilisé par le bandeau "cette semaine" en haut de la
+  // vue Tickets (cf. front/views/tickets.js).
+  //
+  // Réponse :
+  //   { since, total, by_action: { proposal_created, proposal_created_no_match,
+  //                                message_appended, skipped_other, skipped_error,
+  //                                in_queue } }
+  // - `in_queue` : mails ingérés (mapping créé) mais sans action terminale
+  //   posée (transitoire — souvent 0). Réelement "en cours de traitement".
+  fastify.get('/stats', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+    const days = Math.min(Math.max(parseInt(req.query.days ?? 7, 10) || 7, 1), 90)
+    const since = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString()
+
+    const { rows } = await fastify.db.query(`
+      SELECT action, COUNT(*)::int AS n
+      FROM email_thread_mapping
+      WHERE created_at >= $1
+      GROUP BY action
+    `, [since])
+
+    const byAction = {
+      proposal_created: 0,
+      proposal_created_no_match: 0,
+      message_appended: 0,
+      skipped_other: 0,
+      skipped_error: 0,
+      in_queue: 0,           // action IS NULL → encore dans le pipeline
+    }
+    let total = 0
+    for (const r of rows) {
+      total += r.n
+      if (r.action === null) byAction.in_queue = r.n
+      else if (byAction[r.action] !== undefined) byAction[r.action] = r.n
+    }
+    reply.send({ since, days, total, by_action: byAction })
+  })
 }

@@ -192,6 +192,9 @@ export async function renderTickets(container, opts = {}) {
         </button>
       </div>
     </div>
+    <!-- Bandeau stats du pont mail (issue #8). Caché si l'API renvoie 0 :
+         ça évite d'afficher du vide quand le pont est désactivé. -->
+    <div id="tk-mail-stats" style="display:none;padding:6px 16px;font-size:12px;color:var(--text-secondary);border-bottom:0.5px solid var(--border);background:var(--bg-secondary)"></div>
     <div id="tk-main" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>`
 
   ensureKanbanStyles()
@@ -205,6 +208,8 @@ export async function renderTickets(container, opts = {}) {
   window.sendReply            = sendReply
   window.resolveTicket        = resolveTicket
   window.reopenTicket         = reopenTicket
+  window.archiveTicket        = archiveTicket
+  window.unarchiveTicket      = unarchiveTicket
   window.tkSetPriorityFilter  = tkSetPriorityFilter
   window.tkToggleTagFilter    = tkToggleTagFilter
   window.tkSetAssignedFilter  = tkSetAssignedFilter
@@ -234,7 +239,7 @@ export async function renderTickets(container, opts = {}) {
   window.tkKanbanGotoList     = tkKanbanGotoList
 
   // Précharge le référentiel tags en parallèle de la liste
-  await Promise.all([loadTags(), loadTickets(), loadProposalsCount()])
+  await Promise.all([loadTags(), loadTickets(), loadProposalsCount(), loadEmailStats()])
   renderMain()
 
   // Deep-link create : ouvrir la modale moderne avec le device pré-rempli.
@@ -260,6 +265,30 @@ async function loadProposalsCount() {
     _proposalsCount = pending || 0
   } catch { _proposalsCount = 0 }
   updateProposalsBadge()
+}
+
+// Stats du pont mail sur 7 jours (issue #8). Affiche un bandeau ambiant
+// en haut de la vue Tickets. Caché si total=0 — évite du vide quand le
+// pont est inactif. Erreur silencieuse : le badge ne s'affiche pas, mais
+// la vue Tickets reste fonctionnelle.
+async function loadEmailStats() {
+  const bar = document.getElementById('tk-mail-stats')
+  if (!bar) return
+  let stats
+  try { stats = await window.api.getEmailStats(7) } catch { return }
+  if (!stats || !stats.total) { bar.style.display = 'none'; return }
+
+  const a = stats.by_action || {}
+  const propTotal = (a.proposal_created || 0) + (a.proposal_created_no_match || 0)
+  const parts = []
+  parts.push(`<i class="ti ti-mail" style="font-size:12px;vertical-align:-1px"></i> ${t('tickets.mail_stats.ingested', { n: stats.total })}`)
+  if (propTotal)            parts.push(t('tickets.mail_stats.proposals',     { n: propTotal }))
+  if (a.message_appended)   parts.push(t('tickets.mail_stats.appended',      { n: a.message_appended }))
+  if (a.skipped_other)      parts.push(t('tickets.mail_stats.skipped_other', { n: a.skipped_other }))
+  if (a.in_queue)           parts.push(`<span style="color:var(--accent)">${t('tickets.mail_stats.in_queue', { n: a.in_queue })}</span>`)
+  if (a.skipped_error)      parts.push(`<span style="color:var(--red)">${t('tickets.mail_stats.errors', { n: a.skipped_error })}</span>`)
+  bar.innerHTML = parts.join(' · ')
+  bar.style.display = ''
 }
 
 function updateProposalsBadge() {
@@ -301,7 +330,7 @@ function renderListLayout(main) {
           </button>
         </div>
         <div class="toolbar" style="padding:6px 10px;border-bottom:0.5px solid var(--border);gap:4px;flex-wrap:nowrap">
-          ${['all','open','in_progress','auto','resolved'].map(s => `
+          ${['all','open','in_progress','auto','resolved','closed'].map(s => `
             <button class="btn btn-sm ${_filters.status===s?'btn-primary':''}" id="tf-${s}"
               onclick="setStatusFilter('${s}')">${t('tickets.filter.'+s)}</button>
           `).join('')}
@@ -702,23 +731,36 @@ function renderDetail(tk, container) {
   const detail = container || getDetailContainer()
   if (!detail) return
   const resolved = tk.status === 'resolved'
+  const closed   = tk.status === 'closed'
+
+  // 3 états → 3 jeux d'actions :
+  //   open/in_progress → "Résoudre"
+  //   resolved         → "Rouvrir" + "Archiver"
+  //   closed           → "Désarchiver"
+  let actions = ''
+  if (closed) {
+    actions = `<button class="btn btn-sm" onclick="unarchiveTicket('${tk.id}')">${t('tickets.unarchive')}</button>`
+  } else if (resolved) {
+    actions = `
+      <button class="btn btn-sm" onclick="reopenTicket('${tk.id}')">${t('tickets.reopen')}</button>
+      <button class="btn btn-sm" onclick="archiveTicket('${tk.id}')">${t('tickets.archive')}</button>`
+  } else {
+    actions = `<button class="btn btn-sm" onclick="resolveTicket('${tk.id}')">${t('tickets.resolve')}</button>`
+  }
+
   detail.innerHTML = `
     <div class="ticket-detail-header">
       <div style="flex:1;min-width:0">
         <div class="ticket-detail-title">${esc(tk.title)}</div>
         <div class="ticket-detail-tags">
-          <span class="badge badge-${tk.status==='resolved'?'green':tk.status==='in_progress'?'blue':'orange'}">${statusLabel(tk.status)}</span>
+          <span class="badge badge-${tk.status==='resolved'?'green':tk.status==='in_progress'?'blue':tk.status==='closed'?'gray':'orange'}">${statusLabel(tk.status)}</span>
           <span class="badge">${prioLabel(tk.priority)}</span>
           ${tk.is_auto ? `<span class="badge">Auto</span>` : ''}
           ${tk.hostname ? `<span class="badge">${esc(tk.hostname)}</span>` : ''}
         </div>
       </div>
       <div class="ticket-detail-actions">
-        ${!resolved ? `
-          <button class="btn btn-sm" onclick="resolveTicket('${tk.id}')">${t('tickets.resolve')}</button>
-        ` : `
-          <button class="btn btn-sm" onclick="reopenTicket('${tk.id}')">${t('tickets.reopen')}</button>
-        `}
+        ${actions}
       </div>
     </div>
     <div class="ticket-body-grid">
@@ -870,6 +912,39 @@ async function reopenTicket(id) {
     renderListOrKanban()
     renderDetail(tk)
     showToast(t('tickets.toast.reopened'), 'info')
+  } catch {
+    showToast(t('error.generic'), 'error')
+  }
+}
+
+// Archive : ticket clos. Sort des tabs Tous/Ouverts/En cours/Résolus,
+// reste accessible via le tab "Archives". Distinct de resolved : on garde
+// l'info "résolu" en historique mais on enlève le ticket de la circulation.
+async function archiveTicket(id) {
+  try {
+    await window.api.updateTicket(id, { status: 'closed' })
+    // Le ticket disparaît du tab courant (si ce n'est pas Archives). On
+    // l'enlève de la liste locale pour éviter un flicker avant le refetch.
+    _tickets = _tickets.filter(t => t.id !== id)
+    if (_activeId === id) _activeId = null
+    renderListOrKanban()
+    document.getElementById('ticket-detail').innerHTML = `<div class="ticket-detail-empty"></div>`
+    showToast(t('tickets.toast.archived'), 'success')
+  } catch {
+    showToast(t('error.generic'), 'error')
+  }
+}
+
+// Désarchive : ticket repassé à 'resolved' (pas à 'open' — il était clos
+// donc le boulot était fait, on le remet dans les Résolus).
+async function unarchiveTicket(id) {
+  try {
+    await window.api.updateTicket(id, { status: 'resolved' })
+    _tickets = _tickets.filter(t => t.id !== id)  // sortir du tab Archives
+    if (_activeId === id) _activeId = null
+    renderListOrKanban()
+    document.getElementById('ticket-detail').innerHTML = `<div class="ticket-detail-empty"></div>`
+    showToast(t('tickets.toast.unarchived'), 'info')
   } catch {
     showToast(t('error.generic'), 'error')
   }
