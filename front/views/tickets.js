@@ -645,7 +645,11 @@ function ensureKanbanStyles() {
     .kanban-col-body { flex:1; overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:6px; }
     .kanban-empty { color:var(--text-tertiary); font-size:12px; text-align:center; padding:20px 8px; }
     .kanban-overflow { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:6px 8px; font-size:11px; color:var(--text-tertiary); }
-    .kanban-card { background:var(--bg-primary); border:0.5px solid var(--border); border-radius:6px; cursor:pointer; display:flex; overflow:hidden; transition: box-shadow 0.15s; }
+    /* flex-shrink:0 : sans ça, les cards en flex children de .kanban-col-body
+       se compressent verticalement quand la colonne contient plus de cards
+       que de place visible. Avec, chaque card garde sa hauteur naturelle et
+       la colonne devient vraiment scrollable (overflow-y:auto déjà posé). */
+    .kanban-card { background:var(--bg-primary); border:0.5px solid var(--border); border-radius:6px; cursor:pointer; display:flex; overflow:hidden; transition: box-shadow 0.15s; flex-shrink:0; }
     .kanban-card:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.08); border-color: var(--blue); }
     .kanban-card.kc-dragging { opacity:0.4; }
     .kc-prio { width:3px; flex-shrink:0; }
