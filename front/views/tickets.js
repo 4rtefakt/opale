@@ -24,6 +24,42 @@ function shortName(name) {
   return parts[0] + ' ' + parts[parts.length - 1][0].toUpperCase() + '.'
 }
 
+// Nettoie au rendu les descriptions HTML des tickets créés avant le fix
+// htmlToText (issue #8 — case-sensitive bug sur contentType). Détection
+// heuristique : présence de balises HTML caractéristiques d'Outlook. Sans
+// match, retourne le texte intact (cas normal des tickets manuels).
+//
+// Pas de sanitisation des nouveaux tickets (ceux générés post-fix) — leur
+// description est déjà du texte propre. `esc()` côté caller protège
+// quoi qu'il arrive l'injection XSS.
+function cleanLegacyHtml(text) {
+  if (!text) return text
+  const s = String(text)
+  if (!/<(html|body|head|div|p|br|meta|style)[\s>]/i.test(s)) return s
+  return s
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p\s*>/gi, '\n\n')
+    .replace(/<\/div\s*>/gi, '\n')
+    .replace(/<\/li\s*>/gi, '\n')
+    .replace(/<li\s*>/gi, '- ')
+    .replace(/<\/h[1-6]\s*>/gi, '\n\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 // Affiche updated_at si différent de created_at (mode hybride), sinon created_at.
 function displayWhen(tk) {
   if (!tk.updated_at || tk.updated_at === tk.created_at) {
@@ -767,7 +803,7 @@ function renderDetail(tk, container) {
     </div>
     <div class="ticket-body-grid">
       <div class="ticket-thread-col">
-        ${tk.description ? `<div class="desc-box" style="white-space:pre-wrap;line-height:1.5">${esc(tk.description)}</div>` : ''}
+        ${tk.description ? `<div class="desc-box" style="white-space:pre-wrap;line-height:1.5;max-height:300px;overflow-y:auto">${esc(cleanLegacyHtml(tk.description))}</div>` : ''}
         <div class="messages" id="msg-thread">
           ${tk.messages.map(m => renderMsg(m)).join('')}
         </div>

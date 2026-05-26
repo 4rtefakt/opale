@@ -87,7 +87,11 @@ export function stripSignature(text) {
 export function extractMailBodyText(graphMessage, fullMessage, { maxChars = 8000 } = {}) {
   let body = ''
   if (fullMessage?.body?.content) {
-    body = fullMessage.body.contentType === 'HTML'
+    // Graph documente `contentType: text | html` (minuscule). En prod on
+    // a vu uniquement 'html'. On compare en lowercase pour être robuste
+    // si Microsoft change la casse, ou si un autre client mail renvoie
+    // une casse différente.
+    body = String(fullMessage.body.contentType).toLowerCase() === 'html'
       ? htmlToText(fullMessage.body.content)
       : String(fullMessage.body.content)
   } else if (graphMessage?.bodyPreview) {
