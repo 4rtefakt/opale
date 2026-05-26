@@ -21,6 +21,16 @@ import {
   fetchTopBandwidth,
 } from '../../modules/monitoring/lib/bandwidth.js'
 
+// Timestamp relatif à `Date.now()`. Évite les fixtures avec dates absolues
+// qui tombent hors de la fenêtre rolling `now() - 7 days` de `fetchBandwidth`
+// après quelques semaines, et cassent les tests sans qu'aucun code change.
+// Pattern type : `recentTime(60)` = il y a 60 minutes (base time des tests
+// 2-points historiques) ; `recentTime(45)` = il y a 45 min (= 15 min après
+// recentTime(60), ce qui reproduit l'écart historique des fixtures).
+function recentTime(minutesAgo) {
+  return new Date(Date.now() - minutesAgo * 60 * 1000)
+}
+
 // ─── bytesToMbps ─────────────────────────────────────────────────────────────
 
 test('bytesToMbps — nominal 15 min / 1.8 MB', () => {
@@ -147,8 +157,8 @@ test('fetchBandwidth — pseudo-adapters seuls → payload vide (filtrage SQL)',
   t.after(() => release())
 
   const deviceId = await seedDevice(db)
-  const t0 = new Date('2026-05-13T10:00:00Z')
-  const t1 = new Date('2026-05-13T10:15:00Z')
+  const t0 = recentTime(60)
+  const t1 = recentTime(45)
   await seedBandwidth(db, deviceId, [
     { adapter: 'Loopback Pseudo-Interface 1', bytes_sent: 0,       bytes_recv: 0,       sampled_at: t0 },
     { adapter: 'Loopback Pseudo-Interface 1', bytes_sent: 1_000_000, bytes_recv: 1_000_000, sampled_at: t1 },
@@ -168,8 +178,8 @@ test('fetchBandwidth — sélectionne l\'adapter PHYSIQUE entre wifi + Netbird +
   t.after(() => release())
 
   const deviceId = await seedDevice(db)
-  const tA = new Date('2026-05-13T10:00:00Z')
-  const tB = new Date('2026-05-13T10:15:00Z')
+  const tA = recentTime(60)
+  const tB = recentTime(45)
   await seedBandwidth(db, deviceId, [
     // Wifi : 100 MB cumulé → après filtre c'est l'adapter principal
     { adapter: 'Intel(R) Wireless-AC 9462', bytes_sent: 0,           bytes_recv: 0,           sampled_at: tA },
@@ -192,8 +202,8 @@ test('fetchBandwidth — calcule ds/dr/secs_since_prev sur l\'adapter unique', a
   t.after(() => release())
 
   const deviceId = await seedDevice(db)
-  const tA = new Date('2026-05-13T10:00:00Z')
-  const tB = new Date('2026-05-13T10:15:00Z') // +15 min = 900 s
+  const tA = recentTime(60)
+  const tB = recentTime(45) // +15 min = 900 s
   await seedBandwidth(db, deviceId, [
     { adapter: 'Wi-Fi', bytes_sent: 100_000_000, bytes_recv: 200_000_000, sampled_at: tA },
     { adapter: 'Wi-Fi', bytes_sent: 110_000_000, bytes_recv: 230_000_000, sampled_at: tB },
@@ -219,9 +229,9 @@ test('fetchBandwidth — exclut les doublons rapprochés (< 60s)', async (t) => 
   // (Δ = 14:30 min > 60s) mais part d'un sample qui restera dans le
   // tableau final via LAG. C'est intentionnel : le bug visé est le pic
   // calculé sur intervalle court, pas l'exclusion du delta legitimate.
-  const tA = new Date('2026-05-13T10:00:00Z')
-  const tDup = new Date('2026-05-13T10:00:30Z')
-  const tB = new Date('2026-05-13T10:15:00Z')
+  const tA = recentTime(60)
+  const tDup = new Date(recentTime(60).getTime() + 30 * 1000)
+  const tB = recentTime(45)
   await seedBandwidth(db, deviceId, [
     { adapter: 'Wi-Fi', bytes_sent: 100_000_000, bytes_recv: 200_000_000, sampled_at: tA },
     { adapter: 'Wi-Fi', bytes_sent: 100_001_000, bytes_recv: 200_001_000, sampled_at: tDup },
@@ -246,8 +256,8 @@ test('fetchBandwidth — reset compteur (delta négatif) → ds/dr = 0', async (
   const deviceId = await seedDevice(db)
   // Reboot Windows → compteur perfMon repart à 0.
   // bytes_sent_now (5 MB depuis boot) < prev (100 MB) → CASE WHEN >= → 0
-  const tA = new Date('2026-05-13T10:00:00Z')
-  const tB = new Date('2026-05-13T10:15:00Z')
+  const tA = recentTime(60)
+  const tB = recentTime(45)
   await seedBandwidth(db, deviceId, [
     { adapter: 'Wi-Fi', bytes_sent: 100_000_000, bytes_recv: 200_000_000, sampled_at: tA },
     { adapter: 'Wi-Fi', bytes_sent: 5_000_000,   bytes_recv: 8_000_000,   sampled_at: tB },
@@ -290,8 +300,8 @@ test('fetchBandwidth — wifi + ethernet : pick celui qui a le plus de trafic', 
   t.after(() => release())
 
   const deviceId = await seedDevice(db)
-  const tA = new Date('2026-05-13T10:00:00Z')
-  const tB = new Date('2026-05-13T10:15:00Z')
+  const tA = recentTime(60)
+  const tB = recentTime(45)
   await seedBandwidth(db, deviceId, [
     { adapter: 'Wi-Fi',    bytes_sent: 0,            bytes_recv: 0,            sampled_at: tA },
     { adapter: 'Wi-Fi',    bytes_sent: 10_000_000,   bytes_recv: 10_000_000,   sampled_at: tB },
