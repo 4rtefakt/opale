@@ -272,6 +272,31 @@ docker compose -f docker-compose.example.yml exec -T db \
   < api/migrations/0NN_description.sql
 ```
 
+**One-off data migration scripts** (`api/scripts/`)
+
+After upgrading from a pre-refonte release of the tickets module, run
+these once. Each accepts `--check` for a dry-run that lists candidates
+without modifying anything.
+
+```bash
+# 1. Move HTML email bodies from tickets.description into a first
+#    ticket_message, replacing the description with a short "Mail de X
+#    reçu le Y" header. Idempotent.
+docker compose exec api node \
+  /app/api/scripts/migrate-html-descriptions-to-messages.js --check
+docker compose exec api node \
+  /app/api/scripts/migrate-html-descriptions-to-messages.js
+
+# 2. Re-inject legacy emails previously classified as "skipped_other"
+#    by the old auto-classifier back into the "to sort" inbox, so an
+#    admin can verify there were no false positives. Re-runs the
+#    classifier in advisory mode if configured. Idempotent.
+docker compose exec api node \
+  /app/api/scripts/migrate-legacy-skipped-to-inbox.js --check
+docker compose exec api node \
+  /app/api/scripts/migrate-legacy-skipped-to-inbox.js
+```
+
 **Updating the agent fleet** — bump the version in
 `agent-go/version.go`, rebuild with `node agent-go/build.js`, copy
 `agent-go/dist/` to the server's volume mount. Each agent picks up the
