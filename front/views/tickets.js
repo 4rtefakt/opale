@@ -277,6 +277,8 @@ export async function renderTickets(container, opts = {}) {
   window.tkAssignSelf         = tkAssignSelf
   window.tkUnassign           = tkUnassign
   window.tkOpenAssigneePickerOnTicket = tkOpenAssigneePickerOnTicket
+  window.tkOpenPriorityPicker = tkOpenPriorityPicker
+  window.tkSetPriority        = tkSetPriority
   window.tkOpenRequesterPicker = tkOpenRequesterPicker
   window.tkClearRequester      = tkClearRequester
   window.tkOpenDevicePicker    = tkOpenDevicePicker
@@ -732,14 +734,20 @@ function ticketItem(tk) {
   const prio   = prioLabel(tk.priority)
   const active = _activeId === tk.id ? ' active' : ''
   const tagsHtml = (tk.tags || []).slice(0, 4).map(g => tagChip(g, { compact: true })).join('')
+  // Bordure gauche colorée selon la priorité — visible d'un coup d'œil sur
+  // la liste, plus parlant qu'un mot "Critique" perdu dans la meta.
+  const prioBorder = tk.priority === 'critical' ? '#dc2626'
+                   : tk.priority === 'high'     ? '#d97706'
+                   : ''
+  const prioStyle  = prioBorder ? `border-left:3px solid ${prioBorder}` : ''
   return `
-    <div class="ticket-item${active}" onclick="selectTicket('${tk.id}')">
+    <div class="ticket-item${active}" style="${prioStyle}" onclick="selectTicket('${tk.id}')">
       <div class="tk-header">
         <span class="tk-title">${awaitingDot(tk)}${esc(tk.title)}</span>
         <span class="badge badge-${tk.status==='resolved'?'green':tk.status==='in_progress'?'blue':'orange'}">${status}</span>
       </div>
       <div class="tk-meta">
-        <span>${prio}</span>
+        <span style="${tk.priority==='critical' ? 'color:#dc2626;font-weight:600' : tk.priority==='high' ? 'color:#d97706;font-weight:500' : ''}">${prio}</span>
         ${tk.hostname ? `<span>· ${deviceLink(tk.device_id, tk.hostname)}</span>` : ''}
         ${tk.requester_name ? `<span title="${esc(t('tickets.info.requester'))}: ${esc(tk.requester_name)}">· <i class="ti ti-user" style="font-size:11px;opacity:0.7"></i> ${userLink(tk.user_id, shortName(tk.requester_name))}</span>` : ''}
         ${tk.assigned_to_name ? `<span title="${esc(t('tickets.info.assignee'))}: ${esc(tk.assigned_to_name)}">· <i class="ti ti-user-check" style="font-size:11px;opacity:0.7"></i> ${userLink(tk.assigned_to_entra_id, shortName(tk.assigned_to_name))}</span>` : ''}
@@ -820,7 +828,7 @@ function renderDetail(tk, container) {
         <div class="ticket-detail-title">${esc(tk.title)}</div>
         <div class="ticket-detail-tags">
           <span class="badge badge-${tk.status==='resolved'?'green':tk.status==='in_progress'?'blue':tk.status==='closed'?'gray':'orange'}">${statusLabel(tk.status)}</span>
-          <span class="badge">${prioLabel(tk.priority)}</span>
+          <span class="badge" style="cursor:pointer;border-left:3px solid ${tk.priority==='critical'?'#dc2626':tk.priority==='high'?'#d97706':tk.priority==='low'?'#64748b':'#0d9488'}" onclick="tkOpenPriorityPicker('${tk.id}')" title="${esc(t('tickets.priority.change'))}">${prioLabel(tk.priority)} <i class="ti ti-edit" style="font-size:10px;opacity:0.6"></i></span>
           ${tk.is_auto ? `<span class="badge">Auto</span>` : ''}
           ${tk.hostname ? `<span class="badge">${deviceLink(tk.device_id, tk.hostname)}</span>` : ''}
         </div>
@@ -1054,6 +1062,47 @@ async function tkUnassign(id) {
     })
     await refreshTicket(id)
   } catch { showToast(t('error.generic'), 'error') }
+}
+
+// Picker de priorité : un PATCH par click sur l'une des 4 valeurs.
+// Modale ultra simple — pas de search, juste 4 boutons radio-like.
+async function tkOpenPriorityPicker(id) {
+  const current = _tickets.find(t => t.id === id)?.priority || 'normal'
+  const opts = [
+    { v: 'critical', color: '#dc2626' },
+    { v: 'high',     color: '#d97706' },
+    { v: 'normal',   color: '#0d9488' },
+    { v: 'low',      color: '#64748b' },
+  ]
+  showModal(`
+    <div class="modal-title">${t('tickets.priority.picker_title')}</div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      ${opts.map(o => `
+        <button class="btn ${o.v === current ? 'btn-primary' : ''}"
+          style="justify-content:flex-start;text-align:left;border-left:4px solid ${o.color}"
+          onclick="tkSetPriority('${id}', '${o.v}')">
+          <span style="font-weight:500">${esc(prioLabel(o.v))}</span>
+          ${o.v === current ? `<span style="margin-left:auto;font-size:11px;color:var(--text-tertiary)">(${t('tickets.priority.current')})</span>` : ''}
+        </button>`).join('')}
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+    </div>`)
+}
+
+async function tkSetPriority(id, priority) {
+  try {
+    await window.api.updateTicket(id, { priority })
+    const tk = await window.api.getTicket(id)
+    const idx = _tickets.findIndex(t => t.id === id)
+    if (idx !== -1) _tickets[idx].priority = priority
+    closeModal()
+    renderListOrKanban()
+    renderDetail(tk)
+    showToast(t('tickets.toast.priority_changed'), 'success')
+  } catch {
+    showToast(t('error.generic'), 'error')
+  }
 }
 
 async function tkOpenAssigneePickerOnTicket(id) {
@@ -1686,9 +1735,14 @@ async function openProposalsModal() {
   let list = []
   try { list = await window.api.getProposals({ status: 'pending' }) } catch { list = [] }
 
+  // Override de la largeur par défaut du #modal-content (max-width:640px)
+  // pour la modale propositions : on a souvent ~10 cards à afficher avec
+  // description longue, le 640px serre trop. 1100px / 92vw = lisible
+  // sur écran moyen, gardable sur petit écran.
   showModal(`
+    <style>#modal-content { max-width: min(1100px, 92vw) !important; }</style>
     <div class="modal-title">${t('tickets.proposals.title')} (${list.length})</div>
-    <div style="max-height:60vh;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-top:10px">
+    <div style="max-height:72vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;margin-top:10px">
       ${list.length
         ? list.map(p => proposalCard(p)).join('')
         : `<div style="text-align:center;color:var(--text-tertiary);padding:24px;font-size:13px">${t('tickets.proposals.empty')}</div>`}
