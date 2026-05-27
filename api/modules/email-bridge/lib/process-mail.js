@@ -22,7 +22,17 @@ import { matchSender }   from './match-sender.js'
 import { matchThread }   from './match-thread.js'
 import { classifyWithOllama } from './classify.js'
 import { getMessage }    from './graph-mail.js'
-import { extractMailBodyText } from './body-text.js'
+import { extractMailBodyText, htmlToText } from './body-text.js'
+
+// Microsoft Graph dit que `bodyPreview` est plain text, mais en pratique
+// quelques mails Outlook (forwards inline, contenus mixtes) ont du HTML
+// résiduel. On strippe systématiquement quand on touche bodyPreview, en
+// défense en profondeur : si extractMailBodyText échoue ou si le mail est
+// "other" (intent qui skip getMessage), on ne fuit pas du HTML brut en DB.
+function safeBodyPreview(graphMessage) {
+  const raw = graphMessage?.bodyPreview || ''
+  return htmlToText(raw).slice(0, 1000)
+}
 
 // Extrait les headers RFC du payload Graph. `internetMessageHeaders` est une
 // liste [{name, value}], on construit un index lowercased.
@@ -55,7 +65,7 @@ function buildSourcePayload(graphMessage, mailbox) {
     fromName:          graphMessage.from?.emailAddress?.name    || null,
     subject:           graphMessage.subject     || null,
     receivedAt:        graphMessage.receivedDateTime || null,
-    bodyPreview:       (graphMessage.bodyPreview || '').slice(0, 1000),
+    bodyPreview:       safeBodyPreview(graphMessage),
     attachments:       extractAttachmentMeta(graphMessage),
   }
 }
@@ -119,6 +129,36 @@ async function appendMessageToTicket(client, { ticketId, authorName, content }) 
   await client.query(`UPDATE tickets SET updated_at = now() WHERE id = $1`, [ticketId])
 }
 
+// Phase 1b : un mail répond à une proposal pending (pas encore acceptée).
+// On veut accumuler les relances dans la MÊME proposal au lieu d'en créer
+// des nouvelles. Stockage : source_payload.replies[] (array, ordre d'arrivée).
+// SELECT FOR UPDATE pour sérialiser les inserts concurrents (2 mails en
+// parallèle sur la même proposal).
+async function appendReplyToProposal(client, { proposalId, graphMessage, sender, bodyText }) {
+  const { rows } = await client.query(
+    `SELECT source_payload FROM ticket_proposals WHERE id = $1 FOR UPDATE`,
+    [proposalId]
+  )
+  if (!rows.length) return false
+  const payload = rows[0].source_payload || {}
+  const replies = Array.isArray(payload.replies) ? payload.replies : []
+  replies.push({
+    internetMessageId: graphMessage.internetMessageId || null,
+    from:              graphMessage.from?.emailAddress?.address || null,
+    fromName:          graphMessage.from?.emailAddress?.name || sender.user_name || null,
+    subject:           graphMessage.subject || null,
+    receivedAt:        graphMessage.receivedDateTime || null,
+    bodyText:          bodyText || null,
+    bodyPreview:       safeBodyPreview(graphMessage),
+  })
+  payload.replies = replies
+  await client.query(
+    `UPDATE ticket_proposals SET source_payload = $1 WHERE id = $2`,
+    [JSON.stringify(payload), proposalId]
+  )
+  return true
+}
+
 async function createProposal(client, {
   graphMessage, mailbox, sender, intent, classifier, bodyText,
 }) {
@@ -132,7 +172,7 @@ async function createProposal(client, {
   // sinon fallback sur bodyPreview. Limite 4000 chars pour rester lisible
   // dans la vue ticket — au-delà c'est rare et un lien vers le mail source
   // serait mieux (Phase ultérieure).
-  const body = bodyText || graphMessage.bodyPreview || '(corps vide)'
+  const body = bodyText || safeBodyPreview(graphMessage) || '(corps vide)'
   const description = [
     `De: ${sender.user_name || graphMessage.from?.emailAddress?.name || ''} <${graphMessage.from?.emailAddress?.address || ''}>`,
     `Sujet: ${graphMessage.subject || ''}`,
@@ -151,6 +191,11 @@ async function createProposal(client, {
     JSON.stringify({
       ...buildSourcePayload(graphMessage, mailbox),
       classifier: { intent, ...classifier },
+      // bodyText : corps complet (signature strippée) du mail. Utilisé à
+      // l'acceptation de la proposal pour créer le premier ticket_message
+      // (Phase 1a). On le stocke à part de suggested_description pour ne pas
+      // dépendre d'un parsing du format "De: ... / Sujet: ... / <body>".
+      bodyText: bodyText || null,
     }),
     cleanSubject.slice(0, 200),
     description,
@@ -214,7 +259,7 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
     classifier = { intent: 'reply', confidence: 1, reason: 'thread match (pending proposal)' }
   } else {
     classifier = await classifySafe(db, log, {
-      from: fromAddress, subject: graphMessage.subject, bodyPreview: graphMessage.bodyPreview,
+      from: fromAddress, subject: graphMessage.subject, bodyPreview: safeBodyPreview(graphMessage),
     }, { classifierFn })
     intent = classifier.intent
   }
@@ -275,11 +320,23 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
 
     if (threadMatch?.ticket_id) {
       const authorName = sender.user_name || fromAddress || 'Email'
-      const content = bodyText || graphMessage.bodyPreview || '(corps vide)'
+      const content = bodyText || safeBodyPreview(graphMessage) || '(corps vide)'
       await appendMessageToTicket(client, {
         ticketId: threadMatch.ticket_id, authorName, content,
       })
       action = 'message_appended'
+    } else if (threadMatch?.proposal_id) {
+      // Phase 1b — réponse à une proposition pas encore acceptée.
+      // On accumule dans source_payload.replies[] au lieu de créer une
+      // nouvelle proposal (sinon le maintainer voit N propositions doublons
+      // pour le même thread, et perd le contexte des relances).
+      // À l'acceptation de la proposal, les replies seront convertis en
+      // ticket_message individuels chronologiquement.
+      const appended = await appendReplyToProposal(client, {
+        proposalId: threadMatch.proposal_id, graphMessage, sender, bodyText,
+      })
+      action = appended ? 'reply_appended_to_proposal' : 'skipped_error'
+      if (!appended) errorMessage = `proposal ${threadMatch.proposal_id} introuvable au moment de l'append`
     } else if (intent === 'other') {
       // Non-ticket : mapping row seule, pour pouvoir ré-évaluer si la
       // classif s'est trompée (Phase 5 "ce n'est pas un ticket / si").

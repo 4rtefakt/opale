@@ -173,6 +173,100 @@ test('processOne : mail "reply" matché par In-Reply-To → message ajouté au t
   }
 )
 
+test('processOne : mail réponse à proposal pending → append à replies, pas de nouvelle proposal',
+  { skip: SKIP }, async () => {
+    // Seed : une proposal email + mapping inbound qui pointe vers elle.
+    const { rows: pRows } = await db.query(`
+      INSERT INTO ticket_proposals (source, suggested_title, source_payload)
+      VALUES ('email', 'Proposal pending', $1)
+      RETURNING id
+    `, [JSON.stringify({ from: 'marie@example.com', fromName: 'Marie',
+                        receivedAt: '2026-02-05T09:00:00Z', bodyText: 'Mail initial' })])
+    const proposalId = pRows[0].id
+
+    const parentMsgId = `<parent-prop-${Math.random().toString(36).slice(2)}@x>`
+    await db.query(`
+      INSERT INTO email_thread_mapping
+        (internet_message_id, mailbox, direction, received_at, proposal_id, action)
+      VALUES ($1, 'helpdesk@test', 'inbound', '2026-02-05T09:00:00Z', $2, 'proposal_created')
+    `, [parentMsgId, proposalId])
+
+    const propsBefore = await countRows('ticket_proposals')
+
+    // Mail de relance qui répond au mail initial (In-Reply-To).
+    const msg = fakeGraphMessage({
+      subject: 'Re: Proposal pending',
+      bodyPreview: 'Je relance, toujours pas résolu.',
+      internetMessageHeaders: [{ name: 'In-Reply-To', value: parentMsgId }],
+    })
+    let classifierCalled = false
+    const out = await processOne(db, null, {
+      graphMessage: msg, mailbox: 'helpdesk@test',
+      classifierFn: async () => { classifierCalled = true; return { intent: 'new_ticket' } },
+    })
+
+    assert.equal(out.action, 'reply_appended_to_proposal')
+    assert.equal(out.proposal_id, proposalId)
+    assert.equal(classifierCalled, false, 'thread match → classifier court-circuité')
+
+    // Aucune nouvelle proposal créée.
+    assert.equal(await countRows('ticket_proposals'), propsBefore)
+
+    // La proposal initiale a maintenant un replies[] avec le contenu de la relance.
+    const { rows: updated } = await db.query(
+      `SELECT source_payload FROM ticket_proposals WHERE id = $1`, [proposalId]
+    )
+    const sp = updated[0].source_payload
+    assert.ok(Array.isArray(sp.replies), 'source_payload.replies doit exister')
+    assert.equal(sp.replies.length, 1)
+    assert.equal(sp.replies[0].from, 'marie@example.com')
+    assert.match(sp.replies[0].bodyPreview, /Je relance/)
+
+    // Mapping du mail de relance pointe aussi vers la proposal.
+    const { rows: mapRows } = await db.query(
+      `SELECT action, proposal_id FROM email_thread_mapping WHERE internet_message_id = $1`,
+      [msg.internetMessageId]
+    )
+    assert.equal(mapRows[0].action, 'reply_appended_to_proposal')
+    assert.equal(mapRows[0].proposal_id, proposalId)
+  }
+)
+
+test('processOne : 2 réponses à la même proposal pending → 2 entrées dans replies',
+  { skip: SKIP }, async () => {
+    const { rows: pRows } = await db.query(`
+      INSERT INTO ticket_proposals (source, suggested_title, source_payload)
+      VALUES ('email', 'Multi relance', '{}'::jsonb)
+      RETURNING id
+    `)
+    const proposalId = pRows[0].id
+    const parentMsgId = `<parent-multi-${Math.random().toString(36).slice(2)}@x>`
+    await db.query(`
+      INSERT INTO email_thread_mapping
+        (internet_message_id, mailbox, direction, received_at, proposal_id, action)
+      VALUES ($1, 'helpdesk@test', 'inbound', now(), $2, 'proposal_created')
+    `, [parentMsgId, proposalId])
+
+    for (let i = 0; i < 2; i++) {
+      const msg = fakeGraphMessage({
+        subject: `Re: Multi relance ${i}`,
+        bodyPreview: `relance ${i}`,
+        internetMessageHeaders: [{ name: 'In-Reply-To', value: parentMsgId }],
+      })
+      const out = await processOne(db, null, {
+        graphMessage: msg, mailbox: 'helpdesk@test',
+        classifierFn: stubClassifier('new_ticket'),
+      })
+      assert.equal(out.action, 'reply_appended_to_proposal')
+    }
+
+    const { rows } = await db.query(
+      `SELECT source_payload FROM ticket_proposals WHERE id = $1`, [proposalId]
+    )
+    assert.equal(rows[0].source_payload.replies.length, 2)
+  }
+)
+
 test('processOne : intent "reply" sans thread match → proposition_created_no_match',
   { skip: SKIP }, async () => {
     const msg = fakeGraphMessage({
@@ -207,6 +301,41 @@ test('processOne : mail déjà ingéré → already_ingested, pas de double acti
     })
     assert.equal(out2.action, 'already_ingested')
     assert.equal(await countRows('ticket_proposals'), proposalsAfter1)
+  }
+)
+
+test('processOne : bodyPreview HTML résiduel → strippé partout (défense en profondeur)',
+  { skip: SKIP }, async () => {
+    // Cas réel observé : Outlook glisse parfois du HTML dans bodyPreview
+    // (mails forwarded, signatures inline). Notre pipeline doit garantir
+    // qu'aucun HTML brut ne fuit en DB, peu importe le chemin pris.
+    const htmlPreview = '<p>Bonjour,</p><p>Mon compte est <strong>bloqué</strong>.</p>'
+    const msg = fakeGraphMessage({
+      bodyPreview: htmlPreview,
+      // hasAttachments + pas de full message : on simule un mail dont
+      // bodyPreview est notre seule source.
+    })
+    const out = await processOne(db, null, {
+      graphMessage: msg, mailbox: 'helpdesk@test',
+      classifierFn: stubClassifier('new_ticket'),
+    })
+    assert.equal(out.action, 'proposal_created')
+
+    // 1. Aucun HTML dans suggested_description (utilisé par l'UI propositions)
+    const { rows: pRows } = await db.query(
+      `SELECT suggested_description, source_payload FROM ticket_proposals WHERE id = $1`,
+      [out.proposal_id]
+    )
+    assert.ok(!/<p>|<strong>/.test(pRows[0].suggested_description),
+      'suggested_description ne doit contenir aucune balise HTML')
+
+    // 2. Aucun HTML dans source_payload.bodyPreview (sert au diagnostic admin)
+    assert.ok(!/<p>|<strong>/.test(pRows[0].source_payload.bodyPreview || ''),
+      'source_payload.bodyPreview ne doit contenir aucune balise HTML')
+
+    // 3. Le texte propre est lisible (le strip n'a pas tout supprimé)
+    assert.match(pRows[0].source_payload.bodyPreview, /Bonjour/)
+    assert.match(pRows[0].source_payload.bodyPreview, /compte est bloqué/i)
   }
 )
 

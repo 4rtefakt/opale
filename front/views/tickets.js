@@ -259,6 +259,7 @@ export async function renderTickets(container, opts = {}) {
   window.openTagsModal        = openTagsModal
   window.selectTicket         = selectTicket
   window.sendReply            = sendReply
+  window.sendMsgByMail        = sendMsgByMail
   window.resolveTicket        = resolveTicket
   window.reopenTicket         = reopenTicket
   window.archiveTicket        = archiveTicket
@@ -841,7 +842,7 @@ function renderDetail(tk, container) {
       <div class="ticket-thread-col">
         ${tk.description ? `<div class="desc-box" style="white-space:pre-wrap;line-height:1.5;max-height:300px;overflow-y:auto">${esc(cleanLegacyHtml(tk.description))}</div>` : ''}
         <div class="messages" id="msg-thread">
-          ${tk.messages.map(m => renderMsg(m)).join('')}
+          ${tk.messages.map(m => renderMsg(m, tk)).join('')}
         </div>
         ${!resolved ? `
           <div class="reply-box">
@@ -925,7 +926,7 @@ function renderDetail(tk, container) {
   if (thread) thread.scrollTop = thread.scrollHeight
 }
 
-function renderMsg(m) {
+function renderMsg(m, tk) {
   if (m.type === 'system') {
     return `<div class="msg">
       <div class="msg-av" style="background:var(--bg-tertiary);color:var(--text-tertiary)"><i class="ti ti-info-circle" style="font-size:14px"></i></div>
@@ -936,11 +937,44 @@ function renderMsg(m) {
     </div>`
   }
   const initials = (m.author || '?').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
+
+  // Phase 1c — badge d'état d'envoi mail + bouton "Envoyer par mail" sur
+  // les notes internes. Trois états :
+  //   - type='internal_note'           → badge "Note interne" (+ bouton si origine mail)
+  //   - type='comment'  + email_sent_at NULL → badge "Envoi en cours"
+  //   - type='comment'  + email_sent_at NOT NULL → badge "Envoyé par mail"
+  // Pour les commentaires inbound (mail entrant), email_sent_at est posé
+  // au moment de l'ingestion par processOne — ils tombent dans le 3e cas.
+  let stateBadge = ''
+  let mailAction = ''
+  if (m.type === 'internal_note') {
+    stateBadge = `<span class="msg-badge msg-badge-internal" title="${esc(t('tickets.msg.internal'))}">
+      <i class="ti ti-note" style="font-size:11px"></i> ${esc(t('tickets.msg.internal'))}
+    </span>`
+    if (tk?.has_inbound_mail) {
+      mailAction = `<button class="btn btn-sm msg-send-mail" onclick="sendMsgByMail('${tk.id}','${m.id}')" title="${esc(t('tickets.msg.send_by_mail'))}">
+        <i class="ti ti-mail-forward" style="font-size:11px"></i> ${esc(t('tickets.msg.send_by_mail'))}
+      </button>`
+    }
+  } else if (m.type === 'comment' && !m.email_sent_at) {
+    stateBadge = `<span class="msg-badge msg-badge-sending" title="${esc(t('tickets.msg.sending'))}">
+      <i class="ti ti-mail-fast" style="font-size:11px"></i> ${esc(t('tickets.msg.sending'))}
+    </span>`
+  } else if (m.type === 'comment' && m.email_sent_at) {
+    stateBadge = `<span class="msg-badge msg-badge-sent" title="${esc(t('tickets.msg.sent_by_mail'))}">
+      <i class="ti ti-mail-check" style="font-size:11px"></i> ${esc(t('tickets.msg.sent_by_mail'))}
+    </span>`
+  }
+
+  const contentClass = m.type === 'resolution' ? 'resolution'
+                     : m.type === 'internal_note' ? 'internal-note' : ''
+
   return `<div class="msg">
     <div class="msg-av">${esc(initials)}</div>
     <div class="msg-bubble">
-      <div class="msg-author">${esc(m.author)}<span class="msg-time">${formatRelative(m.created_at)}</span></div>
-      <div class="msg-content ${m.type === 'resolution' ? 'resolution' : ''}" style="white-space:pre-wrap;line-height:1.5">${esc(m.content)}</div>
+      <div class="msg-author">${esc(m.author)}<span class="msg-time">${formatRelative(m.created_at)}</span>${stateBadge}</div>
+      <div class="msg-content ${contentClass}" style="white-space:pre-wrap;line-height:1.5">${esc(m.content)}</div>
+      ${mailAction ? `<div class="msg-actions">${mailAction}</div>` : ''}
     </div>
   </div>`
 }
@@ -952,6 +986,7 @@ async function sendReply(id) {
   const content = input?.value?.trim()
   if (!content) return
   try {
+    // Pas de type explicite : l'API défaulte à 'internal_note' (Phase 1c).
     await window.api.addMessage(id, { content })
     input.value = ''
     const tk = await window.api.getTicket(id)
@@ -960,6 +995,21 @@ async function sendReply(id) {
     if (idx !== -1) { _tickets[idx].updated_at = new Date().toISOString(); renderList() }
   } catch {
     showToast(t('error.generic'), 'error')
+  }
+}
+
+// Phase 1c — convertit une note interne en message à envoyer par mail.
+// L'outbound worker l'enverra au prochain tick (~10s). On confirme avant car
+// l'action est visible côté requester et non réversible (re-clic = no-op).
+async function sendMsgByMail(ticketId, msgId) {
+  if (!confirm(t('tickets.send_by_mail.confirm'))) return
+  try {
+    await window.api.sendMessageByMail(ticketId, msgId)
+    const tk = await window.api.getTicket(ticketId)
+    renderDetail(tk)
+  } catch (err) {
+    if (err?.status === 409) showToast(t('tickets.send_by_mail.no_inbound'), 'error')
+    else showToast(t('error.generic'), 'error')
   }
 }
 

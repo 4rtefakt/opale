@@ -270,11 +270,154 @@ test('POST /:id/messages — owner ajoute un message + bump updated_at', { skip:
   assert.equal(res.statusCode, 201)
   assert.equal(res.json().content, 'Premier commentaire')
   assert.equal(res.json().author, 'Message Author')
+  // Phase 1c : default = note interne, email_sent_at set (= ne sera pas
+  // picked par l'outbox tant que /send-by-mail n'est pas appelé).
+  assert.equal(res.json().type, 'internal_note', 'default type = internal_note')
+  assert.ok(res.json().email_sent_at, 'email_sent_at posé à la création (note interne)')
 
   const { rows } = await db.query('SELECT updated_at FROM tickets WHERE id = $1', [id])
   assert.ok(new Date(rows[0].updated_at).getTime() > updatedBefore,
     'updated_at doit être bumped après ajout message')
 })
+
+test('POST /:id/messages — type invalide → 400', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-msg-badtype')
+  const created = await createTicketAs(admin.token, { title: 'Bad type' })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${created.json().id}/messages`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { content: 'X', type: 'pas_un_type' },
+  })
+  assert.equal(res.statusCode, 400)
+})
+
+// ─── POST /:id/messages/:msgId/send-by-mail — Phase 1c ────────────────────
+
+test('send-by-mail : note interne + ticket d\'origine mail → flip vers comment + email_sent_at=NULL',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-tk-send-mail', 'Admin Send')
+    const created = await createTicketAs(admin.token, { title: 'Ticket mail' })
+    const ticketId = created.json().id
+
+    // Seed un email_thread_mapping inbound pour ce ticket (= origine mail).
+    await db.query(`
+      INSERT INTO email_thread_mapping
+        (internet_message_id, mailbox, direction, received_at, ticket_id)
+      VALUES ($1, 'helpdesk@test', 'inbound', now(), $2)
+    `, [`<seed-${Math.random().toString(36).slice(2)}@x>`, ticketId])
+
+    // Création note interne via /messages
+    const msgRes = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${ticketId}/messages`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { content: 'Bonjour, je traite votre demande.' },
+    })
+    assert.equal(msgRes.statusCode, 201)
+    const msgId = msgRes.json().id
+    assert.equal(msgRes.json().type, 'internal_note')
+
+    // Action : envoyer par mail
+    const sendRes = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${ticketId}/messages/${msgId}/send-by-mail`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    assert.equal(sendRes.statusCode, 200)
+    assert.equal(sendRes.json().type, 'comment', 'type flippé en comment')
+    assert.equal(sendRes.json().email_sent_at, null, 'email_sent_at NULL = outbox va le piquer')
+  }
+)
+
+test('send-by-mail : ticket sans origine mail → 409', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-send-noinbound')
+  const created = await createTicketAs(admin.token, { title: 'Ticket manuel' })
+  const ticketId = created.json().id
+
+  const msgRes = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${ticketId}/messages`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { content: 'Note' },
+  })
+  const msgId = msgRes.json().id
+
+  const sendRes = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${ticketId}/messages/${msgId}/send-by-mail`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.equal(sendRes.statusCode, 409)
+  assert.match(sendRes.json().error, /origine mail/)
+})
+
+test('send-by-mail : double-clic / message déjà commenté → idempotent (200, no-op)',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-tk-send-idem')
+    const created = await createTicketAs(admin.token, { title: 'Idem' })
+    const ticketId = created.json().id
+    await db.query(`
+      INSERT INTO email_thread_mapping
+        (internet_message_id, mailbox, direction, received_at, ticket_id)
+      VALUES ($1, 'helpdesk@test', 'inbound', now(), $2)
+    `, [`<idem-${Math.random().toString(36).slice(2)}@x>`, ticketId])
+
+    const msgRes = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${ticketId}/messages`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { content: 'Ack' },
+    })
+    const msgId = msgRes.json().id
+
+    await fastify.inject({
+      method: 'POST', url: `/api/tickets/${ticketId}/messages/${msgId}/send-by-mail`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    // 2e appel : message déjà 'comment', on ne re-flippe pas, on renvoie tel quel
+    const second = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${ticketId}/messages/${msgId}/send-by-mail`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    assert.equal(second.statusCode, 200)
+    assert.equal(second.json().type, 'comment')
+  }
+)
+
+test('send-by-mail : non-membre → 403', { skip: SKIP }, async () => {
+  const owner = await adminAuth('oid-tk-send-owner')
+  const other = await userAuth('oid-tk-send-outsider')
+  const created = await createTicketAs(owner.token, { title: 'Privé' })
+  const msgRes = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${created.json().id}/messages`,
+    headers: { authorization: `Bearer ${owner.token}` },
+    payload: { content: 'X' },
+  })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${created.json().id}/messages/${msgRes.json().id}/send-by-mail`,
+    headers: { authorization: `Bearer ${other.token}` },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
+test('GET /:id — expose has_inbound_mail selon présence d\'email_thread_mapping inbound',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-tk-has-inbound')
+    const noMail = await createTicketAs(admin.token, { title: 'Sans mail' })
+    const withMail = await createTicketAs(admin.token, { title: 'Avec mail' })
+    await db.query(`
+      INSERT INTO email_thread_mapping
+        (internet_message_id, mailbox, direction, received_at, ticket_id)
+      VALUES ($1, 'helpdesk@test', 'inbound', now(), $2)
+    `, [`<hi-${Math.random().toString(36).slice(2)}@x>`, withMail.json().id])
+
+    const a = await fastify.inject({
+      method: 'GET', url: `/api/tickets/${noMail.json().id}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    const b = await fastify.inject({
+      method: 'GET', url: `/api/tickets/${withMail.json().id}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    assert.equal(a.json().has_inbound_mail, false)
+    assert.equal(b.json().has_inbound_mail, true)
+  }
+)
 
 // ─── GET / (liste) — ACL non-admin vs admin ────────────────────────────────
 
