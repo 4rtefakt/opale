@@ -67,6 +67,12 @@ class API {
   sendMessageByMail(ticketId, msgId) {
     return this._fetch(`/tickets/${ticketId}/messages/${msgId}/send-by-mail`, { method: 'POST' })
   }
+  // Phase 2 — relations M2M users/devices + merge
+  addTicketUser(ticketId, body)      { return this._fetch(`/tickets/${ticketId}/users`, { method: 'POST', body }) }
+  removeTicketUser(ticketId, entraId) { return this._fetch(`/tickets/${ticketId}/users/${encodeURIComponent(entraId)}`, { method: 'DELETE' }) }
+  addTicketDevice(ticketId, body)    { return this._fetch(`/tickets/${ticketId}/devices`, { method: 'POST', body }) }
+  removeTicketDevice(ticketId, deviceId) { return this._fetch(`/tickets/${ticketId}/devices/${deviceId}`, { method: 'DELETE' }) }
+  mergeTicket(sourceId, targetId)    { return this._fetch(`/tickets/${sourceId}/merge`, { method: 'POST', body: { target_ticket_id: targetId } }) }
 
   // Tags (référentiel partagé avec les tickets)
   getTags()                   { return this._fetch('/tickets/tags') }

@@ -513,3 +513,430 @@ test('GET /?status=closed — retourne uniquement les archives',
     for (const r of rows) assert.equal(r.status, 'closed')
   }
 )
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 2 — Multi-relations users/devices + merge
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── Migration 060 backfill ─────────────────────────────────────────────────
+
+test('Migration 060 : ticket existant avec user_id/device_id → row en ticket_users / ticket_devices',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-backfill', 'BF Admin')
+    const alice = await userAuth('oid-m2m-alice', 'Alice')
+    const device = await seedDevice(db, { hostname: 'PC-BF' })
+    const created = await createTicketAs(admin.token, {
+      title: 'BF', user_id: alice.user.entraId, device_id: device.id,
+    })
+    const ticketId = created.json().id
+
+    const { rows: u } = await db.query(
+      `SELECT user_entra_id, role FROM ticket_users WHERE ticket_id = $1`, [ticketId]
+    )
+    assert.equal(u.length, 1)
+    assert.equal(u[0].user_entra_id, alice.user.entraId)
+    assert.equal(u[0].role, 'requester')
+
+    const { rows: d } = await db.query(
+      `SELECT device_id FROM ticket_devices WHERE ticket_id = $1`, [ticketId]
+    )
+    assert.equal(d.length, 1)
+    assert.equal(d[0].device_id, device.id)
+  }
+)
+
+// ─── GET /:id expose related_users + related_devices ────────────────────────
+
+test('GET /:id — retourne related_users[] et related_devices[] (incluant requester)',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-get-related', 'GR Admin')
+    const alice = await userAuth('oid-m2m-get-alice', 'Alice')
+    const device = await seedDevice(db, { hostname: 'PC-GR' })
+    const created = await createTicketAs(admin.token, {
+      title: 'GR', user_id: alice.user.entraId, device_id: device.id,
+    })
+    const res = await fastify.inject({
+      method: 'GET', url: `/api/tickets/${created.json().id}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    const tk = res.json()
+    assert.ok(Array.isArray(tk.related_users))
+    assert.ok(Array.isArray(tk.related_devices))
+    assert.equal(tk.related_users.length, 1)
+    assert.equal(tk.related_users[0].entra_id, alice.user.entraId)
+    assert.equal(tk.related_users[0].role, 'requester')
+    assert.equal(tk.related_users[0].display_name, 'Alice')
+    assert.equal(tk.related_devices.length, 1)
+    assert.equal(tk.related_devices[0].id, device.id)
+    assert.equal(tk.related_devices[0].hostname, 'PC-GR')
+  }
+)
+
+// ─── POST /:id/users + DELETE ────────────────────────────────────────────────
+
+test('POST /:id/users — ajoute un involved (admin) + retourne 201',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-postusr', 'PU Admin')
+    const bob = await userAuth('oid-m2m-bob', 'Bob')
+    const created = await createTicketAs(admin.token, { title: 'PU' })
+
+    const res = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${created.json().id}/users`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { entra_id: bob.user.entraId },
+    })
+    assert.equal(res.statusCode, 201)
+    assert.equal(res.json().role, 'involved')
+
+    // Vérifie via GET
+    const det = await fastify.inject({
+      method: 'GET', url: `/api/tickets/${created.json().id}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    const users = det.json().related_users
+    assert.ok(users.some(u => u.entra_id === bob.user.entraId && u.role === 'involved'))
+  }
+)
+
+test('POST /:id/users — role=requester remplace l\'ancien requester + sync tickets.user_id',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-changereq', 'CR Admin')
+    const alice = await userAuth('oid-m2m-cr-alice', 'Alice')
+    const bob = await userAuth('oid-m2m-cr-bob', 'Bob')
+    const created = await createTicketAs(admin.token, { title: 'CR', user_id: alice.user.entraId })
+
+    const res = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${created.json().id}/users`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { entra_id: bob.user.entraId, role: 'requester' },
+    })
+    assert.equal(res.statusCode, 201)
+
+    const { rows } = await db.query(
+      `SELECT user_entra_id, role FROM ticket_users WHERE ticket_id = $1 ORDER BY role`,
+      [created.json().id]
+    )
+    assert.equal(rows.length, 1, 'un seul user après remplacement requester')
+    assert.equal(rows[0].user_entra_id, bob.user.entraId)
+    assert.equal(rows[0].role, 'requester')
+
+    const { rows: t } = await db.query(`SELECT user_id FROM tickets WHERE id = $1`, [created.json().id])
+    assert.equal(t[0].user_id, bob.user.entraId, 'tickets.user_id sync sur nouveau requester')
+  }
+)
+
+test('POST /:id/users — non-admin → 403', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-m2m-usr-acl-adm')
+  const other = await userAuth('oid-m2m-usr-acl-usr')
+  const bob = await userAuth('oid-m2m-usr-acl-bob')
+  const created = await createTicketAs(admin.token, { title: 'ACL' })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${created.json().id}/users`,
+    headers: { authorization: `Bearer ${other.token}` },
+    payload: { entra_id: bob.user.entraId },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
+test('POST /:id/users — role inconnu → 400', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-m2m-usr-badrole')
+  const bob = await userAuth('oid-m2m-usr-badrole-bob')
+  const created = await createTicketAs(admin.token, { title: 'BR' })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${created.json().id}/users`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { entra_id: bob.user.entraId, role: 'spectator' },
+  })
+  assert.equal(res.statusCode, 400)
+})
+
+test('POST /:id/users — user introuvable → 404', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-m2m-usr-ghost')
+  const created = await createTicketAs(admin.token, { title: 'G' })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${created.json().id}/users`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { entra_id: 'oid-inexistant' },
+  })
+  assert.equal(res.statusCode, 404)
+})
+
+test('DELETE /:id/users/:entraId — retire le requester → tickets.user_id devient NULL',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-delreq', 'DR Admin')
+    const alice = await userAuth('oid-m2m-dr-alice', 'Alice')
+    const created = await createTicketAs(admin.token, { title: 'DR', user_id: alice.user.entraId })
+    const res = await fastify.inject({
+      method: 'DELETE', url: `/api/tickets/${created.json().id}/users/${alice.user.entraId}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    assert.equal(res.statusCode, 204)
+    const { rows: t } = await db.query(`SELECT user_id FROM tickets WHERE id = $1`, [created.json().id])
+    assert.equal(t[0].user_id, null)
+    const { rows: u } = await db.query(`SELECT user_entra_id FROM ticket_users WHERE ticket_id = $1`, [created.json().id])
+    assert.equal(u.length, 0)
+  }
+)
+
+test('DELETE /:id/users/:entraId — lien inexistant → 404', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-m2m-del404')
+  const created = await createTicketAs(admin.token, { title: 'D4' })
+  const res = await fastify.inject({
+    method: 'DELETE', url: `/api/tickets/${created.json().id}/users/oid-jamais-vu`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.equal(res.statusCode, 404)
+})
+
+// ─── POST /:id/devices + DELETE ─────────────────────────────────────────────
+
+test('POST /:id/devices — premier device → set tickets.device_id (primary)',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-dev-first')
+    const created = await createTicketAs(admin.token, { title: 'DF' })
+    const device = await seedDevice(db, { hostname: 'PC-DF' })
+    const res = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${created.json().id}/devices`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { device_id: device.id },
+    })
+    assert.equal(res.statusCode, 201)
+    const { rows: t } = await db.query(`SELECT device_id FROM tickets WHERE id = $1`, [created.json().id])
+    assert.equal(t[0].device_id, device.id, 'primary set sur 1er device')
+  }
+)
+
+test('POST /:id/devices — 2e device → primary inchangé, ticket_devices.length=2',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-dev-second')
+    const d1 = await seedDevice(db, { hostname: 'PC-D1' })
+    const d2 = await seedDevice(db, { hostname: 'PC-D2' })
+    const created = await createTicketAs(admin.token, { title: 'DS', device_id: d1.id })
+
+    await fastify.inject({
+      method: 'POST', url: `/api/tickets/${created.json().id}/devices`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { device_id: d2.id },
+    })
+    const { rows: t } = await db.query(`SELECT device_id FROM tickets WHERE id = $1`, [created.json().id])
+    assert.equal(t[0].device_id, d1.id, 'primary reste sur le 1er')
+    const { rows: tds } = await db.query(`SELECT device_id FROM ticket_devices WHERE ticket_id = $1`, [created.json().id])
+    assert.equal(tds.length, 2)
+  }
+)
+
+test('DELETE /:id/devices/:deviceId — retire primary → fallback sur le plus ancien restant',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-dev-rm-primary')
+    const d1 = await seedDevice(db, { hostname: 'PC-RM1' })
+    const d2 = await seedDevice(db, { hostname: 'PC-RM2' })
+    const created = await createTicketAs(admin.token, { title: 'RMP', device_id: d1.id })
+    await fastify.inject({
+      method: 'POST', url: `/api/tickets/${created.json().id}/devices`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { device_id: d2.id },
+    })
+
+    const res = await fastify.inject({
+      method: 'DELETE', url: `/api/tickets/${created.json().id}/devices/${d1.id}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    assert.equal(res.statusCode, 204)
+    const { rows: t } = await db.query(`SELECT device_id FROM tickets WHERE id = $1`, [created.json().id])
+    assert.equal(t[0].device_id, d2.id, 'primary fallback sur d2')
+  }
+)
+
+test('DELETE /:id/devices/:deviceId — retire le seul device → tickets.device_id NULL',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-dev-rm-only')
+    const d = await seedDevice(db, { hostname: 'PC-RM-ONLY' })
+    const created = await createTicketAs(admin.token, { title: 'RMO', device_id: d.id })
+    const res = await fastify.inject({
+      method: 'DELETE', url: `/api/tickets/${created.json().id}/devices/${d.id}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    assert.equal(res.statusCode, 204)
+    const { rows: t } = await db.query(`SELECT device_id FROM tickets WHERE id = $1`, [created.json().id])
+    assert.equal(t[0].device_id, null)
+  }
+)
+
+// ─── POST /:id/merge ─────────────────────────────────────────────────────────
+
+test('POST /:id/merge — happy : messages + users + devices fusionnés, source devient merged',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-merge-ok', 'Merge Admin')
+    const alice = await userAuth('oid-m2m-merge-alice', 'Alice')
+    const bob = await userAuth('oid-m2m-merge-bob', 'Bob')
+    const d1 = await seedDevice(db, { hostname: 'PC-MA' })
+    const d2 = await seedDevice(db, { hostname: 'PC-MB' })
+
+    const src = await createTicketAs(admin.token, { title: 'Source', user_id: alice.user.entraId, device_id: d1.id })
+    const tgt = await createTicketAs(admin.token, { title: 'Target', user_id: bob.user.entraId, device_id: d2.id })
+
+    // Ajoute un message au source pour vérifier qu'il bouge
+    await fastify.inject({
+      method: 'POST', url: `/api/tickets/${src.json().id}/messages`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { content: 'Message du source' },
+    })
+
+    const res = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${src.json().id}/merge`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { target_ticket_id: tgt.json().id },
+    })
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.json().merged_into, tgt.json().id)
+
+    // Source : status='merged' + merged_into pointe vers target
+    const { rows: srcRows } = await db.query(
+      `SELECT status, merged_into FROM tickets WHERE id = $1`, [src.json().id]
+    )
+    assert.equal(srcRows[0].status, 'merged')
+    assert.equal(srcRows[0].merged_into, tgt.json().id)
+
+    // Target : a hérité du message + d'Alice (en 'involved' car Bob requester déjà) + du device d1
+    const { rows: msgs } = await db.query(
+      `SELECT content, type FROM ticket_messages WHERE ticket_id = $1 ORDER BY created_at ASC`,
+      [tgt.json().id]
+    )
+    assert.ok(msgs.some(m => m.content === 'Message du source'), 'message du source repointé')
+    assert.ok(msgs.some(m => m.type === 'system' && /Fusion/.test(m.content)), 'note system "Fusion" présente')
+
+    const { rows: users } = await db.query(
+      `SELECT user_entra_id, role FROM ticket_users WHERE ticket_id = $1 ORDER BY role`, [tgt.json().id]
+    )
+    const roles = Object.fromEntries(users.map(u => [u.user_entra_id, u.role]))
+    assert.equal(roles[bob.user.entraId], 'requester')
+    assert.equal(roles[alice.user.entraId], 'involved', 'Alice (ex-requester du source) downgrade en involved')
+
+    const { rows: devs } = await db.query(
+      `SELECT device_id FROM ticket_devices WHERE ticket_id = $1`, [tgt.json().id]
+    )
+    const devIds = devs.map(r => r.device_id)
+    assert.ok(devIds.includes(d1.id) && devIds.includes(d2.id), 'les 2 devices fusionnés')
+
+    // Source vidé des M2M (ON DELETE CASCADE des FK + DELETE explicite dans le merge)
+    const { rows: srcUsers } = await db.query(`SELECT user_entra_id FROM ticket_users WHERE ticket_id = $1`, [src.json().id])
+    assert.equal(srcUsers.length, 0)
+  }
+)
+
+test('POST /:id/merge — target n\'avait pas de requester → hérite du source comme requester',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-merge-noreq')
+    const carol = await userAuth('oid-m2m-merge-carol', 'Carol')
+    const src = await createTicketAs(admin.token, { title: 'S2', user_id: carol.user.entraId })
+    const tgt = await createTicketAs(admin.token, { title: 'T2' }) // pas de user_id
+
+    const res = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${src.json().id}/merge`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { target_ticket_id: tgt.json().id },
+    })
+    assert.equal(res.statusCode, 200)
+
+    const { rows: users } = await db.query(
+      `SELECT user_entra_id, role FROM ticket_users WHERE ticket_id = $1`, [tgt.json().id]
+    )
+    assert.equal(users.length, 1)
+    assert.equal(users[0].user_entra_id, carol.user.entraId)
+    assert.equal(users[0].role, 'requester')
+
+    const { rows: t } = await db.query(`SELECT user_id FROM tickets WHERE id = $1`, [tgt.json().id])
+    assert.equal(t[0].user_id, carol.user.entraId, 'tickets.user_id sync')
+  }
+)
+
+test('POST /:id/merge — self-merge → 400', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-m2m-merge-self')
+  const tk = await createTicketAs(admin.token, { title: 'SM' })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${tk.json().id}/merge`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { target_ticket_id: tk.json().id },
+  })
+  assert.equal(res.statusCode, 400)
+})
+
+test('POST /:id/merge — source déjà merged → 409', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-m2m-merge-twice')
+  const a = await createTicketAs(admin.token, { title: 'A' })
+  const b = await createTicketAs(admin.token, { title: 'B' })
+  const c = await createTicketAs(admin.token, { title: 'C' })
+
+  // a → b
+  await fastify.inject({
+    method: 'POST', url: `/api/tickets/${a.json().id}/merge`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { target_ticket_id: b.json().id },
+  })
+  // a → c : refusé car a est déjà merged
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${a.json().id}/merge`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { target_ticket_id: c.json().id },
+  })
+  assert.equal(res.statusCode, 409)
+})
+
+test('POST /:id/merge — target déjà merged → 409', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-m2m-merge-tgt-merged')
+  const a = await createTicketAs(admin.token, { title: 'A' })
+  const b = await createTicketAs(admin.token, { title: 'B' })
+  const c = await createTicketAs(admin.token, { title: 'C' })
+
+  await fastify.inject({
+    method: 'POST', url: `/api/tickets/${b.json().id}/merge`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { target_ticket_id: c.json().id },
+  })
+  // a → b : b est déjà merged dans c → refusé
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${a.json().id}/merge`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { target_ticket_id: b.json().id },
+  })
+  assert.equal(res.statusCode, 409)
+})
+
+test('POST /:id/merge — non-admin → 403', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-m2m-merge-acl-adm')
+  const other = await userAuth('oid-m2m-merge-acl-usr')
+  const a = await createTicketAs(admin.token, { title: 'A' })
+  const b = await createTicketAs(admin.token, { title: 'B' })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${a.json().id}/merge`,
+    headers: { authorization: `Bearer ${other.token}` },
+    payload: { target_ticket_id: b.json().id },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
+test('POST /:id/merge — email_thread_mapping repointé vers target',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-m2m-merge-etm')
+    const src = await createTicketAs(admin.token, { title: 'Src' })
+    const tgt = await createTicketAs(admin.token, { title: 'Tgt' })
+
+    const msgId = `<merge-etm-${Math.random().toString(36).slice(2)}@x>`
+    await db.query(`
+      INSERT INTO email_thread_mapping
+        (internet_message_id, mailbox, direction, received_at, ticket_id)
+      VALUES ($1, 'helpdesk@test', 'inbound', now(), $2)
+    `, [msgId, src.json().id])
+
+    await fastify.inject({
+      method: 'POST', url: `/api/tickets/${src.json().id}/merge`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { target_ticket_id: tgt.json().id },
+    })
+
+    const { rows } = await db.query(
+      `SELECT ticket_id FROM email_thread_mapping WHERE internet_message_id = $1`, [msgId]
+    )
+    assert.equal(rows[0].ticket_id, tgt.json().id)
+  }
+)

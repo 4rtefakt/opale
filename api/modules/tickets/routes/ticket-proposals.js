@@ -1,6 +1,8 @@
 // Tickets proposés : candidats à valider avant de devenir des vrais tickets.
 // Sources : alert, script, email (IA), manual. Acceptation → INSERT dans tickets + lien.
 
+import { syncRequester, addDeviceToTicket } from '../lib/relations.js'
+
 const ALLOWED_SOURCES   = ['alert', 'script', 'email', 'manual']
 const ALLOWED_PRIORITES = ['low', 'normal', 'high', 'critical']
 
@@ -186,6 +188,10 @@ export default async function ticketProposalsRoute(fastify) {
       `, [title, description || null, priority, device_id || null, user_id || null,
           p.source, entraId, displayName])
       const tk = tRows[0]
+
+      // Phase 2 : peuple les tables M2M (idem que POST /tickets).
+      if (tk.user_id)   await syncRequester(client, tk.id, tk.user_id)
+      if (tk.device_id) await addDeviceToTicket(client, tk.id, tk.device_id)
 
       for (const m of messagesToInsert) {
         // created_at explicite quand on connaît la date du mail réelle, pour

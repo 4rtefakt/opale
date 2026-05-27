@@ -260,6 +260,9 @@ export async function renderTickets(container, opts = {}) {
   window.selectTicket         = selectTicket
   window.sendReply            = sendReply
   window.sendMsgByMail        = sendMsgByMail
+  window.tkRemoveUser         = tkRemoveUser
+  window.tkRemoveDevice       = tkRemoveDevice
+  window.tkOpenMergeModal     = tkOpenMergeModal
   window.resolveTicket        = resolveTicket
   window.reopenTicket         = reopenTicket
   window.archiveTicket        = archiveTicket
@@ -784,6 +787,12 @@ async function selectTicket(id) {
   detail.innerHTML = `<div class="ticket-detail-empty"><i class="ti ti-loader-2" style="font-size:24px;animation:spin 1s linear infinite"></i></div>`
   try {
     const tk = await window.api.getTicket(id)
+    // Phase 2 : ticket fusionné → redirige vers le ticket cible avec toast.
+    // On ne montre jamais le ticket source merged (état zombie côté UX).
+    if (tk.merged_into) {
+      showToast(t('tickets.merge.redirected').replace('{target}', tk.merged_into.slice(0, 8)), 'info')
+      return selectTicket(tk.merged_into)
+    }
     renderDetail(tk)
   } catch {
     showToast(t('error.generic'), 'error')
@@ -880,15 +889,13 @@ function renderDetail(tk, container) {
 
         <div class="info-section">
           <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
-            <span>${t('tickets.info.requester')}</span>
-            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkOpenRequesterPicker('${tk.id}')">
-              <i class="ti ti-pencil" style="font-size:11px"></i>
+            <span>${t('tickets.info.related_users')}</span>
+            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkOpenRequesterPicker('${tk.id}')" title="${esc(t('tickets.related_users.add'))}">
+              <i class="ti ti-plus" style="font-size:11px"></i>
             </button>
           </div>
-          <div style="display:flex;flex-direction:column;gap:4px">
-            <div style="font-size:13px">${tk.requester_name ? userLink(tk.user_id, tk.requester_name) : `<span style="color:var(--text-tertiary)">${t('tickets.no_requester')}</span>`}</div>
-            ${tk.requester_email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(tk.requester_email)}</div>` : ''}
-            ${tk.user_id ? `<div><button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkClearRequester('${tk.id}')">${t('tickets.clear_requester')}</button></div>` : ''}
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${renderRelatedUsers(tk)}
           </div>
         </div>
 
@@ -909,21 +916,65 @@ function renderDetail(tk, container) {
         ${window.OPALE.moduleEnabled('inventory') ? `
         <div class="info-section">
           <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
-            <span>${t('tickets.info.device')}</span>
-            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkOpenDevicePicker('${tk.id}')">
-              <i class="ti ti-pencil" style="font-size:11px"></i>
+            <span>${t('tickets.info.related_devices')}</span>
+            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkOpenDevicePicker('${tk.id}')" title="${esc(t('tickets.related_devices.add'))}">
+              <i class="ti ti-plus" style="font-size:11px"></i>
             </button>
           </div>
-          <div style="display:flex;flex-direction:column;gap:4px">
-            <div style="font-size:13px">${tk.hostname ? deviceLink(tk.device_id, tk.hostname) : `<span style="color:var(--text-tertiary)">${t('tickets.no_device')}</span>`}</div>
-            ${tk.device_id ? `<div><button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkClearDevice('${tk.id}')">${t('tickets.clear_device')}</button></div>` : ''}
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${renderRelatedDevices(tk)}
           </div>
+        </div>
+
+        <div class="info-section">
+          <div class="info-section-title">${t('tickets.merge.section')}</div>
+          <button class="btn btn-sm" style="font-size:11px;width:100%" onclick="tkOpenMergeModal('${tk.id}')">
+            <i class="ti ti-arrows-join" style="font-size:11px"></i> ${esc(t('tickets.merge.action'))}
+          </button>
         </div>` : ''}
       </div>
     </div>`
 
   const thread = document.getElementById('msg-thread')
   if (thread) thread.scrollTop = thread.scrollHeight
+}
+
+// Phase 2 — rendu des relations multi (users / devices) + bouton de retrait.
+// Le requester est listé en premier (badge spécifique) puis les involved.
+function renderRelatedUsers(tk) {
+  const users = Array.isArray(tk.related_users) ? tk.related_users : []
+  if (!users.length) {
+    return `<span style="color:var(--text-tertiary);font-size:12px">${t('tickets.no_requester')}</span>`
+  }
+  return users.map(u => {
+    const isReq = u.role === 'requester'
+    const roleBadge = isReq
+      ? `<span class="badge" style="background:rgba(13,148,136,0.12);color:#0d9488;font-size:9px;padding:1px 5px">${esc(t('tickets.role.requester'))}</span>`
+      : ''
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+      <div style="font-size:13px;display:flex;align-items:center;gap:6px;flex:1;min-width:0">
+        ${userLink(u.entra_id, u.display_name || u.entra_id)} ${roleBadge}
+      </div>
+      <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text-tertiary)"
+        onclick="tkRemoveUser('${tk.id}','${u.entra_id}')" title="${esc(t('tickets.related_users.remove'))}">
+        <i class="ti ti-x" style="font-size:11px"></i>
+      </button>
+    </div>`
+  }).join('')
+}
+
+function renderRelatedDevices(tk) {
+  const devs = Array.isArray(tk.related_devices) ? tk.related_devices : []
+  if (!devs.length) {
+    return `<span style="color:var(--text-tertiary);font-size:12px">${t('tickets.no_device')}</span>`
+  }
+  return devs.map(d => `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+    <div style="font-size:13px;flex:1;min-width:0">${deviceLink(d.id, d.hostname || d.id)}</div>
+    <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text-tertiary)"
+      onclick="tkRemoveDevice('${tk.id}','${d.id}')" title="${esc(t('tickets.related_devices.remove'))}">
+      <i class="ti ti-x" style="font-size:11px"></i>
+    </button>
+  </div>`).join('')
 }
 
 function renderMsg(m, tk) {
@@ -1299,6 +1350,83 @@ async function tkClearRequester(id) {
     await window.api.updateTicket(id, { user_id: null })
     await refreshTicket(id)
   } catch { showToast(t('error.generic'), 'error') }
+}
+
+// Phase 2 — actions M2M depuis la liste des related_users / related_devices
+async function tkRemoveUser(ticketId, entraId) {
+  if (!confirm(t('tickets.related_users.confirm_remove'))) return
+  try {
+    await window.api.removeTicketUser(ticketId, entraId)
+    await refreshTicket(ticketId)
+  } catch { showToast(t('error.generic'), 'error') }
+}
+
+async function tkRemoveDevice(ticketId, deviceId) {
+  if (!confirm(t('tickets.related_devices.confirm_remove'))) return
+  try {
+    await window.api.removeTicketDevice(ticketId, deviceId)
+    await refreshTicket(ticketId)
+  } catch { showToast(t('error.generic'), 'error') }
+}
+
+// Fusion : demande l'ID cible (8 premiers chars suffisent — on cherche par
+// préfixe pour confort, mais la confirmation montre les 2 titres pour
+// éviter une fusion accidentelle).
+async function tkOpenMergeModal(sourceId) {
+  showModal(`
+    <div class="modal-title">${t('tickets.merge.modal_title')}</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="font-size:12px;color:var(--text-secondary)">${esc(t('tickets.merge.modal_help'))}</div>
+      <input class="form-input" id="tk-merge-q" placeholder="${t('tickets.merge.search')}" autocomplete="off">
+      <div id="tk-merge-results" style="max-height:240px;overflow-y:auto;border:0.5px solid var(--border);border-radius:6px"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+    </div>`)
+  const input = document.getElementById('tk-merge-q')
+  const list  = document.getElementById('tk-merge-results')
+  setTimeout(() => input?.focus(), 50)
+
+  const renderResults = () => {
+    const q = input.value.trim().toLowerCase()
+    if (!q) { list.innerHTML = ''; return }
+    // On reste sur _tickets en mémoire : pas d'appel API supplémentaire.
+    // Filtre par titre ou préfixe d'ID, exclut le source et les déjà-merged.
+    const matches = _tickets.filter(t =>
+      t.id !== sourceId &&
+      t.status !== 'merged' &&
+      ((t.title || '').toLowerCase().includes(q) || t.id.startsWith(q))
+    ).slice(0, 20)
+    list.innerHTML = matches.length
+      ? matches.map(t => `
+          <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
+            onclick="window.tkConfirmMerge('${sourceId}','${t.id}')">
+            <div style="font-size:13px">${esc(t.title || '(sans titre)')}</div>
+            <div style="font-size:11px;color:var(--text-tertiary)">${t.id.slice(0, 8)} · ${statusLabel(t.status)}</div>
+          </div>`).join('')
+      : `<div style="padding:10px;color:var(--text-tertiary);font-size:12px">${t('tickets.merge.no_match')}</div>`
+  }
+  input.addEventListener('input', renderResults)
+
+  window.tkConfirmMerge = async (srcId, tgtId) => {
+    const srcTk = _tickets.find(x => x.id === srcId)
+    const tgtTk = _tickets.find(x => x.id === tgtId)
+    if (!confirm(t('tickets.merge.confirm')
+        .replace('{source}', srcTk?.title || srcId)
+        .replace('{target}', tgtTk?.title || tgtId))) return
+    closeModal()
+    try {
+      await window.api.mergeTicket(srcId, tgtId)
+      showToast(t('tickets.merge.success'), 'success')
+      // Recharge la liste pour faire disparaître le ticket merged + redirige
+      // sur le target.
+      await loadTickets()
+      await selectTicket(tgtId)
+    } catch (err) {
+      const msg = err?.body?.error || t('error.generic')
+      showToast(msg, 'error')
+    }
+  }
 }
 
 async function tkOpenTagPicker(ticketId) {

@@ -1,6 +1,14 @@
+import {
+  syncRequester, addInvolvedUser, removeUserFromTicket,
+  addDeviceToTicket, removeDeviceFromTicket,
+  loadRelatedUsersFor, loadRelatedDevicesFor,
+  mergeTicketInto,
+} from '../lib/relations.js'
+
 // Couleurs autorisées pour les tags : palette fermée alignée avec le front.
 const TAG_COLORS = ['slate', 'blue', 'green', 'amber', 'red', 'violet', 'pink', 'teal']
 const PRIORITIES = ['low', 'normal', 'high', 'critical']
+const USER_ROLES = ['requester', 'involved']
 
 function parseCsv(v) {
   if (!v) return null
@@ -280,6 +288,11 @@ export default async function ticketsRoute(fastify) {
         )
       }
 
+      // Phase 2 : peuple les tables M2M en cohérence avec les colonnes
+      // tickets.user_id / device_id qu'on vient d'écrire.
+      if (tk.user_id)   await syncRequester(client, tk.id, tk.user_id)
+      if (tk.device_id) await addDeviceToTicket(client, tk.id, tk.device_id)
+
       await client.query('COMMIT')
 
       // Re-fetch avec le requester pour cohérence avec GET
@@ -341,6 +354,16 @@ export default async function ticketsRoute(fastify) {
     const tk = tRows[0]
     tk.tags = tagMap.get(tk.id) || []
     tk.messages = msgs
+
+    // Phase 2 : exposer les relations M2M complètes (le front affichera des
+    // listes éditables au lieu de juste tk.user_id + tk.device_id).
+    const [usersMap, devicesMap] = await Promise.all([
+      loadRelatedUsersFor(fastify.db, [tk.id]),
+      loadRelatedDevicesFor(fastify.db, [tk.id]),
+    ])
+    tk.related_users   = usersMap.get(tk.id) || []
+    tk.related_devices = devicesMap.get(tk.id) || []
+
     reply.send(tk)
   })
 
@@ -350,9 +373,6 @@ export default async function ticketsRoute(fastify) {
     if (!acl) return
     const { status, priority, assigned_to_entra_id, assigned_to_name, user_id, device_id } = req.body || {}
     const { displayName } = acl
-
-    const { rows: existing } = await fastify.db.query('SELECT status FROM tickets WHERE id = $1', [req.params.id])
-    if (!existing.length) return reply.code(404).send({ error: 'Ticket introuvable' })
 
     const fields = []
     const params = []
@@ -368,26 +388,48 @@ export default async function ticketsRoute(fastify) {
 
     if (!fields.length) return reply.code(400).send({ error: 'Aucun champ à modifier' })
 
-    params.push(req.params.id)
-    const { rows } = await fastify.db.query(`
-      UPDATE tickets SET ${fields.join(', ')}, updated_at = now()
-      WHERE id = $${i} RETURNING *
-    `, params)
+    const client = await fastify.db.connect()
+    try {
+      await client.query('BEGIN')
 
-    // Message système si changement de statut
-    if (status && status !== existing[0].status) {
-      const label = status === 'resolved'    ? 'Ticket résolu'
-                  : status === 'in_progress' ? 'Ticket pris en charge'
-                  : status === 'open'        ? 'Ticket réouvert'
-                  : status
+      const { rows: existing } = await client.query(
+        `SELECT status FROM tickets WHERE id = $1 FOR UPDATE`, [req.params.id]
+      )
+      if (!existing.length) { await client.query('ROLLBACK'); return reply.code(404).send({ error: 'Ticket introuvable' }) }
 
-      await fastify.db.query(`
-        INSERT INTO ticket_messages (ticket_id, type, author, content)
-        VALUES ($1, 'system', $2, $3)
-      `, [req.params.id, displayName, label])
+      params.push(req.params.id)
+      const { rows } = await client.query(`
+        UPDATE tickets SET ${fields.join(', ')}, updated_at = now()
+        WHERE id = $${i} RETURNING *
+      `, params)
+
+      // Phase 2 : sync M2M si user_id / device_id changent. Pour device_id,
+      // on ajoute simplement à ticket_devices (sans retirer les autres) :
+      // c'est la sémantique "+1 device concerné" plutôt que "remplace".
+      if (user_id !== undefined)   await syncRequester(client, req.params.id, user_id || null)
+      if (device_id !== undefined && device_id) await addDeviceToTicket(client, req.params.id, device_id)
+
+      // Message système si changement de statut
+      if (status && status !== existing[0].status) {
+        const label = status === 'resolved'    ? 'Ticket résolu'
+                    : status === 'in_progress' ? 'Ticket pris en charge'
+                    : status === 'open'        ? 'Ticket réouvert'
+                    : status
+
+        await client.query(`
+          INSERT INTO ticket_messages (ticket_id, type, author, content)
+          VALUES ($1, 'system', $2, $3)
+        `, [req.params.id, displayName, label])
+      }
+
+      await client.query('COMMIT')
+      reply.send(rows[0])
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw err
+    } finally {
+      client.release()
     }
-
-    reply.send(rows[0])
   })
 
   // POST /api/tickets/:id/messages — admin OU requester OU assignee
@@ -462,6 +504,141 @@ export default async function ticketsRoute(fastify) {
       `, [req.params.msgId])
       await fastify.db.query('UPDATE tickets SET updated_at = now() WHERE id = $1', [req.params.id])
       reply.send(rows[0])
+    })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Phase 2 — Relations M2M users / devices + merge
+  // ───────────────────────────────────────────────────────────────────────────
+
+  // POST /api/tickets/:id/users { entra_id, role? }
+  // Admin-only : seul un admin ajoute/retire des personnes d'un ticket
+  // (sinon n'importe quel requester pourrait s'auto-désigner pour des
+  // tickets qui ne sont pas les siens).
+  fastify.post('/:id/users',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const { entra_id, role = 'involved' } = req.body || {}
+      if (!entra_id) return reply.code(400).send({ error: 'entra_id requis' })
+      if (!USER_ROLES.includes(role)) return reply.code(400).send({ error: 'role invalide' })
+
+      // Vérif que le ticket existe + que le user existe (FK 404 explicite)
+      const { rows: tk } = await fastify.db.query(`SELECT id FROM tickets WHERE id = $1`, [req.params.id])
+      if (!tk.length) return reply.code(404).send({ error: 'Ticket introuvable' })
+      const { rows: u } = await fastify.db.query(
+        `SELECT entra_id, display_name, email FROM users_cache WHERE entra_id = $1`, [entra_id]
+      )
+      if (!u.length) return reply.code(404).send({ error: 'Utilisateur introuvable' })
+
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        if (role === 'requester') await syncRequester(client, req.params.id, entra_id)
+        else                       await addInvolvedUser(client, req.params.id, entra_id)
+        await client.query(`UPDATE tickets SET updated_at = now() WHERE id = $1`, [req.params.id])
+        await client.query('COMMIT')
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        throw err
+      } finally {
+        client.release()
+      }
+      reply.code(201).send({ entra_id, role, display_name: u[0].display_name, email: u[0].email })
+    })
+
+  // DELETE /api/tickets/:id/users/:entraId
+  fastify.delete('/:id/users/:entraId',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        const removed = await removeUserFromTicket(client, req.params.id, req.params.entraId)
+        if (!removed) { await client.query('ROLLBACK'); return reply.code(404).send({ error: 'Lien introuvable' }) }
+        await client.query(`UPDATE tickets SET updated_at = now() WHERE id = $1`, [req.params.id])
+        await client.query('COMMIT')
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        throw err
+      } finally {
+        client.release()
+      }
+      reply.code(204).send()
+    })
+
+  // POST /api/tickets/:id/devices { device_id }
+  fastify.post('/:id/devices',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const { device_id } = req.body || {}
+      if (!device_id) return reply.code(400).send({ error: 'device_id requis' })
+
+      const { rows: tk } = await fastify.db.query(`SELECT id FROM tickets WHERE id = $1`, [req.params.id])
+      if (!tk.length) return reply.code(404).send({ error: 'Ticket introuvable' })
+      const { rows: d } = await fastify.db.query(`SELECT id, hostname FROM devices WHERE id = $1`, [device_id])
+      if (!d.length) return reply.code(404).send({ error: 'Device introuvable' })
+
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        await addDeviceToTicket(client, req.params.id, device_id)
+        await client.query(`UPDATE tickets SET updated_at = now() WHERE id = $1`, [req.params.id])
+        await client.query('COMMIT')
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        throw err
+      } finally {
+        client.release()
+      }
+      reply.code(201).send({ id: device_id, hostname: d[0].hostname })
+    })
+
+  // DELETE /api/tickets/:id/devices/:deviceId
+  fastify.delete('/:id/devices/:deviceId',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        const removed = await removeDeviceFromTicket(client, req.params.id, req.params.deviceId)
+        if (!removed) { await client.query('ROLLBACK'); return reply.code(404).send({ error: 'Lien introuvable' }) }
+        await client.query(`UPDATE tickets SET updated_at = now() WHERE id = $1`, [req.params.id])
+        await client.query('COMMIT')
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        throw err
+      } finally {
+        client.release()
+      }
+      reply.code(204).send()
+    })
+
+  // POST /api/tickets/:id/merge { target_ticket_id }
+  // Fusionne le ticket :id (source) DANS target_ticket_id. Action admin-only,
+  // destructive côté source (passé en status='merged'). Réversibilité : non
+  // automatisée — l'admin peut toujours réouvrir le source manuellement.
+  fastify.post('/:id/merge',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const target_ticket_id = req.body?.target_ticket_id
+      if (!target_ticket_id) return reply.code(400).send({ error: 'target_ticket_id requis' })
+
+      const { displayName } = fastify.getUserIdentity(req)
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        await mergeTicketInto(client, {
+          sourceId: req.params.id,
+          targetId: target_ticket_id,
+          byName: displayName,
+        })
+        await client.query('COMMIT')
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        if (err.message === 'SELF_MERGE')             return reply.code(400).send({ error: 'Ne peut pas fusionner un ticket avec lui-même' })
+        if (err.message === 'SOURCE_NOT_FOUND')       return reply.code(404).send({ error: 'Ticket source introuvable' })
+        if (err.message === 'TARGET_NOT_FOUND')       return reply.code(404).send({ error: 'Ticket cible introuvable' })
+        if (err.message === 'SOURCE_ALREADY_MERGED')  return reply.code(409).send({ error: 'Ticket source déjà fusionné' })
+        if (err.message === 'TARGET_ALREADY_MERGED')  return reply.code(409).send({ error: 'Ticket cible déjà fusionné — choisir le ticket final' })
+        throw err
+      } finally {
+        client.release()
+      }
+      reply.send({ merged_from: req.params.id, merged_into: target_ticket_id })
     })
 
   // POST /api/tickets/:id/tags  { tag_id }
