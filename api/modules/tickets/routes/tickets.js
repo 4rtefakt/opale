@@ -213,9 +213,10 @@ export default async function ticketsRoute(fastify) {
       ${where}
       -- Tri stable par priorité opérationnelle : in_progress en premier
       -- (sur quoi je bosse maintenant), puis open (file d'attente), puis
-      -- resolved (consultatif), puis closed (archives). Sur un filtre
-      -- status précis le CASE est neutre (1 seule valeur) donc le tri
-      -- par updated_at reste effectif.
+      -- resolved (consultatif), puis closed (archives). Au sein de chaque
+      -- bucket status, les tickets critiques / high remontent en haut.
+      -- Sur un filtre status précis le CASE status est neutre — le tri
+      -- par priorité puis par updated_at reste effectif.
       ORDER BY
         CASE t.status
           WHEN 'in_progress' THEN 1
@@ -223,6 +224,13 @@ export default async function ticketsRoute(fastify) {
           WHEN 'resolved'    THEN 3
           WHEN 'closed'      THEN 4
           ELSE 9
+        END,
+        CASE t.priority
+          WHEN 'critical' THEN 1
+          WHEN 'high'     THEN 2
+          WHEN 'normal'   THEN 3
+          WHEN 'low'      THEN 4
+          ELSE 5
         END,
         t.updated_at DESC NULLS LAST, t.created_at DESC
       LIMIT $${i + 1} OFFSET $${i + 2}
