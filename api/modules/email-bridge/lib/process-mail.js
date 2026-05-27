@@ -1,22 +1,21 @@
-// Pipeline de traitement d'un mail entrant (Phase 2/3, issue #8).
+// Pipeline de traitement d'un mail entrant (issue #8 + refonte Phase 3).
 //
 // Pour chaque mail Graph reçu :
 //   1. Pré-check : déjà dans email_thread_mapping ? (idempotence)
-//   2. Match thread : ce mail répond-il à un ticket/proposal existant ?
-//   3. Sinon, classify (Ollama) → intent
+//   2. Match thread : ce mail répond-il à un ticket / proposal existant ?
+//   3. Classify (Ollama) en MODE ADVISORY : l'intent sert juste de
+//      suggestion visuelle côté UI, il ne décide plus de l'action.
 //   4. Décide l'action :
-//        - thread match (ticket existant) → append message au ticket
-//        - thread match (proposition pas encore acceptée) → mémoriser le
-//          mail en mapping avec proposal_id, mais pas d'action UI immédiate
-//          (le mail sera attaché à la proposition à l'acceptation)
-//        - intent='new_ticket' OU intent='reply' sans match → créer proposal
-//        - intent='other' → skip (mapping row seule, traçabilité)
+//        - thread match (ticket existant)        → append message au ticket
+//        - thread match (proposal pending, 1b)   → append à source_payload.replies
+//        - aucun match                           → action='pending_review'
+//          (l'admin traite via la vue "Mails à trier", routes
+//          /api/email/inbox/:id/to-ticket et /dismiss)
 //   5. Exécute l'action en transaction unique.
 //
-// La transaction couvre INSERT mapping + INSERT proposal/message — si
-// l'une plante, l'autre est rollback. Le curseur côté worker n'est avancé
-// qu'APRÈS retour de processOne, pour qu'un crash mid-page laisse les
-// mails non-traités dans la fenêtre du prochain poll.
+// La transaction couvre INSERT mapping + action. Le curseur côté worker
+// n'est avancé qu'APRÈS retour de processOne — un crash mid-page laisse
+// les mails non-traités dans la fenêtre du prochain poll.
 
 import { matchSender }   from './match-sender.js'
 import { matchThread }   from './match-thread.js'
@@ -42,32 +41,6 @@ function indexHeaders(graphMessage) {
     if (h?.name) idx[h.name.toLowerCase()] = h.value || ''
   }
   return idx
-}
-
-// Méta minimales des PJ : nom, type, taille. Pas de téléchargement Phase 3.
-function extractAttachmentMeta(graphMessage) {
-  if (!graphMessage?.hasAttachments) return []
-  // Graph nécessite un re-fetch /attachments pour avoir la liste détaillée.
-  // En attendant, on signale juste qu'il y a des PJ.
-  // (Phase 3.5 / 4 : si on veut les métadonnées détaillées, ajouter un
-  // appel `listAttachments` ici. Volontaire de garder léger Phase 3.)
-  return [{ note: 'attachments present, fetch on demand' }]
-}
-
-// Construit le source_payload stocké sur ticket_proposals.
-function buildSourcePayload(graphMessage, mailbox) {
-  return {
-    mailbox,
-    internetMessageId: graphMessage.internetMessageId || null,
-    conversationId:    graphMessage.conversationId    || null,
-    graphMessageId:    graphMessage.id                || null,
-    from:              graphMessage.from?.emailAddress?.address || null,
-    fromName:          graphMessage.from?.emailAddress?.name    || null,
-    subject:           graphMessage.subject     || null,
-    receivedAt:        graphMessage.receivedDateTime || null,
-    bodyPreview:       safeBodyPreview(graphMessage),
-    attachments:       extractAttachmentMeta(graphMessage),
-  }
 }
 
 // Lit les settings du classifieur en un seul aller-retour.
@@ -159,52 +132,6 @@ async function appendReplyToProposal(client, { proposalId, graphMessage, sender,
   return true
 }
 
-async function createProposal(client, {
-  graphMessage, mailbox, sender, intent, classifier, bodyText,
-}) {
-  // Titre suggéré : le subject nettoyé des préfixes (Re:, TR:, Fwd:).
-  const cleanSubject = (graphMessage.subject || '(sans sujet)')
-    .replace(/^\s*(re|tr|fwd|fw)\s*:\s*/i, '')
-    .replace(/^\s*\[[^\]]+\]\s*/, '')  // tag externe éventuel
-    .trim() || '(sans sujet)'
-
-  // Description : full body (signature strippée) si on a pu le récupérer,
-  // sinon fallback sur bodyPreview. Limite 4000 chars pour rester lisible
-  // dans la vue ticket — au-delà c'est rare et un lien vers le mail source
-  // serait mieux (Phase ultérieure).
-  const body = bodyText || safeBodyPreview(graphMessage) || '(corps vide)'
-  const description = [
-    `De: ${sender.user_name || graphMessage.from?.emailAddress?.name || ''} <${graphMessage.from?.emailAddress?.address || ''}>`,
-    `Sujet: ${graphMessage.subject || ''}`,
-    '',
-    body,
-  ].join('\n').slice(0, 4000)
-
-  const { rows } = await client.query(`
-    INSERT INTO ticket_proposals
-      (source, source_ref_type, source_ref_id, source_payload,
-       suggested_title, suggested_description, suggested_priority,
-       suggested_device_id, suggested_user_id)
-    VALUES ('email', 'email', NULL, $1, $2, $3, 'normal', $4, $5)
-    RETURNING id
-  `, [
-    JSON.stringify({
-      ...buildSourcePayload(graphMessage, mailbox),
-      classifier: { intent, ...classifier },
-      // bodyText : corps complet (signature strippée) du mail. Utilisé à
-      // l'acceptation de la proposal pour créer le premier ticket_message
-      // (Phase 1a). On le stocke à part de suggested_description pour ne pas
-      // dépendre d'un parsing du format "De: ... / Sujet: ... / <body>".
-      bodyText: bodyText || null,
-    }),
-    cleanSubject.slice(0, 200),
-    description,
-    sender.device_id || null,
-    sender.user_id   || null,
-  ])
-  return rows[0].id
-}
-
 // ── Pipeline principal ────────────────────────────────────────────────────────
 
 // Process un seul mail Graph dans une transaction. Idempotent : si déjà en
@@ -212,8 +139,8 @@ async function createProposal(client, {
 // modifier.
 //
 // Retour : {action, ticket_id?, proposal_id?, intent?, error?}
-//   action : 'message_appended' | 'proposal_created' | 'skipped_other'
-//          | 'pending_proposal' | 'already_ingested' | 'skipped_error'
+//   action : 'message_appended' | 'reply_appended_to_proposal' |
+//            'pending_review' | 'already_ingested' | 'skipped_error'
 export async function processOne(db, log, { graphMessage, mailbox, classifierFn }) {
   const internetMessageId = graphMessage.internetMessageId
   if (!internetMessageId) {
@@ -264,12 +191,13 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
     intent = classifier.intent
   }
 
-  // Si on va créer un proposal/message (donc tout sauf 'other'), récupérer
-  // le body complet du mail via getMessage(). Pas avant : ça économise un
-  // appel Graph pour les ~80 % de mails classés 'other' (newsletters,
-  // notifications) où bodyPreview suffit largement.
+  // On ne récupère le body complet via getMessage() QUE si on va l'utiliser
+  // immédiatement pour append à un ticket ou une proposal existants. Pour
+  // les mails en pending_review (Phase 3), on diffère l'appel jusqu'à ce
+  // que l'admin clique "→ Ticket" — ça économise un appel Graph par mail
+  // (volume newsletters / notifications qui finiront en dismiss).
   let bodyText = null
-  if (intent !== 'other') {
+  if (threadMatch?.ticket_id || threadMatch?.proposal_id) {
     try {
       const full = await getMessage(mailbox, graphMessage.id)
       bodyText = extractMailBodyText(graphMessage, full)
@@ -337,25 +265,15 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
       })
       action = appended ? 'reply_appended_to_proposal' : 'skipped_error'
       if (!appended) errorMessage = `proposal ${threadMatch.proposal_id} introuvable au moment de l'append`
-    } else if (intent === 'other') {
-      // Non-ticket : mapping row seule, pour pouvoir ré-évaluer si la
-      // classif s'est trompée (Phase 5 "ce n'est pas un ticket / si").
-      action = 'skipped_other'
-    } else if (intent === 'new_ticket' || intent === 'reply') {
-      proposalId = await createProposal(client, {
-        graphMessage, mailbox, sender, intent, classifier, bodyText,
-      })
-      // intent='reply' sans match parent : on a quand même créé une
-      // proposition (fallback). On distingue dans `action` pour qu'un
-      // maintainer puisse retrouver les "orphelins de reply" facilement.
-      action = (intent === 'reply' && !threadMatch)
-        ? 'proposal_created_no_match'
-        : 'proposal_created'
     } else {
-      // Garde-fou : intent inconnu (ne devrait jamais arriver, validation
-      // côté classifier garantit l'enum).
-      action = 'skipped_error'
-      errorMessage = `unknown intent: ${intent}`
+      // Phase 3 — Plus de classification automatique en proposal vs other.
+      // Tout mail sans thread match arrive en 'pending_review' : l'admin
+      // décide via la vue "Mails à trier" si c'est un ticket (route
+      // /to-ticket) ou à ignorer (route /dismiss). Le classifier reste
+      // appelé en mode advisory : son intent et sa confidence sont stockés
+      // dans classifier_result (déjà fait au INSERT mapping ci-dessus) et
+      // servent juste de suggestion visuelle côté front.
+      action = 'pending_review'
     }
 
     await client.query(`

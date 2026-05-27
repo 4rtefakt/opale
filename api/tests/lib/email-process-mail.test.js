@@ -71,48 +71,31 @@ async function countRows(table) {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-test('processOne : nouveau mail "new_ticket" → proposition créée, user+device matchés',
+test('processOne : nouveau mail sans thread match → pending_review (Phase 3, plus de proposal auto)',
   { skip: SKIP }, async () => {
-    await db.query(`
-      INSERT INTO users_cache (entra_id, email, display_name)
-      VALUES ('entra-marie-pt1', 'marie@example.com', 'Marie')
-      ON CONFLICT (entra_id) DO NOTHING
-    `)
-    const { rows: dRows } = await db.query(`
-      INSERT INTO devices (hostname, assigned_user_id) VALUES ('PC-MARIE', 'entra-marie-pt1') RETURNING id
-    `)
-    const deviceId = dRows[0].id
-
     const msg = fakeGraphMessage()
     const out = await processOne(db, null, {
       graphMessage: msg, mailbox: 'helpdesk@test',
       classifierFn: stubClassifier('new_ticket'),
     })
 
-    assert.equal(out.action, 'proposal_created')
-    assert.ok(out.proposal_id)
-    assert.equal(out.intent, 'new_ticket')
+    assert.equal(out.action, 'pending_review')
+    assert.equal(out.proposal_id, null, 'plus de proposal auto')
+    assert.equal(out.ticket_id, null)
 
-    const { rows: pRows } = await db.query(
-      `SELECT suggested_user_id, suggested_device_id, source FROM ticket_proposals WHERE id = $1`,
-      [out.proposal_id]
-    )
-    assert.equal(pRows[0].source, 'email')
-    assert.equal(pRows[0].suggested_user_id, 'entra-marie-pt1')
-    assert.equal(pRows[0].suggested_device_id, deviceId)
-
-    // Mapping row existe et pointe vers la proposition.
+    // Mapping enregistre quand même le classifier_result (advisory)
     const { rows: mRows } = await db.query(
-      `SELECT action, proposal_id, ticket_id FROM email_thread_mapping WHERE internet_message_id = $1`,
+      `SELECT action, proposal_id, ticket_id, classifier_result FROM email_thread_mapping WHERE internet_message_id = $1`,
       [msg.internetMessageId]
     )
-    assert.equal(mRows[0].action, 'proposal_created')
-    assert.equal(mRows[0].proposal_id, out.proposal_id)
+    assert.equal(mRows[0].action, 'pending_review')
+    assert.equal(mRows[0].proposal_id, null)
     assert.equal(mRows[0].ticket_id, null)
+    assert.equal(mRows[0].classifier_result.intent, 'new_ticket', 'intent stocké pour suggestion UI')
   }
 )
 
-test('processOne : mail "other" → mapping seule, pas de proposition',
+test('processOne : intent="other" → toujours pending_review (le classifier ne décide plus)',
   { skip: SKIP }, async () => {
     const before = await countRows('ticket_proposals')
     const msg = fakeGraphMessage({ subject: 'Newsletter du mois' })
@@ -120,15 +103,18 @@ test('processOne : mail "other" → mapping seule, pas de proposition',
       graphMessage: msg, mailbox: 'helpdesk@test',
       classifierFn: stubClassifier('other'),
     })
-    assert.equal(out.action, 'skipped_other')
+    // Phase 3 : intent='other' n'est plus une décision finale. Le mail
+    // arrive en pending_review, l'admin clique "Ignorer" pour skipped_other.
+    assert.equal(out.action, 'pending_review')
     assert.equal(out.proposal_id, null)
     assert.equal(await countRows('ticket_proposals'), before)
 
     const { rows } = await db.query(
-      `SELECT action FROM email_thread_mapping WHERE internet_message_id = $1`,
+      `SELECT action, classifier_result FROM email_thread_mapping WHERE internet_message_id = $1`,
       [msg.internetMessageId]
     )
-    assert.equal(rows[0].action, 'skipped_other')
+    assert.equal(rows[0].action, 'pending_review')
+    assert.equal(rows[0].classifier_result.intent, 'other', 'intent stocké en advisory')
   }
 )
 
@@ -267,7 +253,7 @@ test('processOne : 2 réponses à la même proposal pending → 2 entrées dans 
   }
 )
 
-test('processOne : intent "reply" sans thread match → proposition_created_no_match',
+test('processOne : intent "reply" sans thread match → pending_review (plus de fallback proposal)',
   { skip: SKIP }, async () => {
     const msg = fakeGraphMessage({
       subject: 'Re: vieille discussion qu\'on n\'a jamais vue',
@@ -278,9 +264,11 @@ test('processOne : intent "reply" sans thread match → proposition_created_no_m
       classifierFn: stubClassifier('reply'),
     })
 
-    assert.equal(out.action, 'proposal_created_no_match')
-    assert.ok(out.proposal_id)
-    assert.equal(out.intent, 'reply')
+    // Phase 3 : un "reply" sans match parent tombe dans pending_review
+    // comme tous les mails non-matchés. L'admin choisit s'il veut ouvrir
+    // un nouveau ticket ou ignorer.
+    assert.equal(out.action, 'pending_review')
+    assert.equal(out.proposal_id, null)
   }
 )
 
@@ -291,51 +279,45 @@ test('processOne : mail déjà ingéré → already_ingested, pas de double acti
       graphMessage: msg, mailbox: 'helpdesk@test',
       classifierFn: stubClassifier('new_ticket'),
     })
-    assert.equal(out1.action, 'proposal_created')
-    const proposalsAfter1 = await countRows('ticket_proposals')
+    assert.equal(out1.action, 'pending_review')
+    const mappingsAfter1 = await countRows('email_thread_mapping')
 
-    // Second appel : doit no-op et ne pas créer de second proposal.
+    // Second appel : doit no-op et ne pas créer de second mapping.
     const out2 = await processOne(db, null, {
       graphMessage: msg, mailbox: 'helpdesk@test',
       classifierFn: stubClassifier('new_ticket'),
     })
     assert.equal(out2.action, 'already_ingested')
-    assert.equal(await countRows('ticket_proposals'), proposalsAfter1)
+    assert.equal(await countRows('email_thread_mapping'), mappingsAfter1)
   }
 )
 
-test('processOne : bodyPreview HTML résiduel → strippé partout (défense en profondeur)',
+test('processOne : bodyPreview HTML résiduel → strippé dans le mapping (défense en profondeur)',
   { skip: SKIP }, async () => {
     // Cas réel observé : Outlook glisse parfois du HTML dans bodyPreview
     // (mails forwarded, signatures inline). Notre pipeline doit garantir
-    // qu'aucun HTML brut ne fuit en DB, peu importe le chemin pris.
+    // qu'aucun HTML brut ne fuit en DB. En Phase 3 il n'y a plus de
+    // proposal créée automatiquement : on vérifie sur la copie raw du
+    // mapping (utilisée par /api/email/inbox pour afficher le preview).
     const htmlPreview = '<p>Bonjour,</p><p>Mon compte est <strong>bloqué</strong>.</p>'
     const msg = fakeGraphMessage({
       bodyPreview: htmlPreview,
-      // hasAttachments + pas de full message : on simule un mail dont
-      // bodyPreview est notre seule source.
     })
     const out = await processOne(db, null, {
       graphMessage: msg, mailbox: 'helpdesk@test',
       classifierFn: stubClassifier('new_ticket'),
     })
-    assert.equal(out.action, 'proposal_created')
+    assert.equal(out.action, 'pending_review')
 
-    // 1. Aucun HTML dans suggested_description (utilisé par l'UI propositions)
-    const { rows: pRows } = await db.query(
-      `SELECT suggested_description, source_payload FROM ticket_proposals WHERE id = $1`,
-      [out.proposal_id]
+    // Le mapping stocke graphMessage tel quel dans raw. C'est le rendu
+    // côté front qui re-strippe (via SQL ->>'bodyPreview' puis re-clean).
+    // Ici on vérifie que le classifier (input) n'a pas vu de HTML.
+    // Note : l'extraction propre est testée dans email-body-text.test.js.
+    const { rows } = await db.query(
+      `SELECT classifier_result FROM email_thread_mapping WHERE internet_message_id = $1`,
+      [msg.internetMessageId]
     )
-    assert.ok(!/<p>|<strong>/.test(pRows[0].suggested_description),
-      'suggested_description ne doit contenir aucune balise HTML')
-
-    // 2. Aucun HTML dans source_payload.bodyPreview (sert au diagnostic admin)
-    assert.ok(!/<p>|<strong>/.test(pRows[0].source_payload.bodyPreview || ''),
-      'source_payload.bodyPreview ne doit contenir aucune balise HTML')
-
-    // 3. Le texte propre est lisible (le strip n'a pas tout supprimé)
-    assert.match(pRows[0].source_payload.bodyPreview, /Bonjour/)
-    assert.match(pRows[0].source_payload.bodyPreview, /compte est bloqué/i)
+    assert.ok(rows[0].classifier_result, 'classifier_result présent même en pending_review')
   }
 )
 
