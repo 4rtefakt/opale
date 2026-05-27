@@ -315,7 +315,11 @@ export default async function ticketsRoute(fastify) {
                 AND lm.author IS NOT NULL
                 AND lm.author <> $2
                THEN true ELSE false
-             END AS awaiting_reply
+             END AS awaiting_reply,
+             EXISTS (
+               SELECT 1 FROM email_thread_mapping etm
+               WHERE etm.ticket_id = t.id AND etm.direction = 'inbound'
+             ) AS has_inbound_mail
       FROM tickets t
       LEFT JOIN devices d     ON d.id = t.device_id
       LEFT JOIN users_cache u ON u.entra_id = t.user_id
@@ -387,21 +391,78 @@ export default async function ticketsRoute(fastify) {
   })
 
   // POST /api/tickets/:id/messages — admin OU requester OU assignee
+  // Phase 1c — par défaut, un message saisi depuis l'UI est une *note interne*
+  // (type='internal_note'). L'outbox mail (qui filtre type='comment') ne le
+  // picke pas. Pour envoyer effectivement le message par mail au requester,
+  // l'admin doit ensuite cliquer "Envoyer par mail" sur la note → route
+  // /messages/:msgId/send-by-mail ci-dessous, qui flip type='comment' +
+  // email_sent_at=NULL.
+  // email_sent_at = now() à la création évite que l'outbox repere la note
+  // interne même si on oubliait le filtre type côté worker.
   fastify.post('/:id/messages', { preHandler: [fastify.authenticate] }, async (req, reply) => {
     const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
     if (!acl) return
-    const { content, type = 'comment' } = req.body || {}
+    const { content, type = 'internal_note' } = req.body || {}
     if (!content) return reply.code(400).send({ error: 'Contenu requis' })
+    if (!['internal_note', 'comment', 'system', 'resolution'].includes(type)) {
+      return reply.code(400).send({ error: 'Type invalide' })
+    }
 
     const { displayName } = acl
     const { rows } = await fastify.db.query(`
-      INSERT INTO ticket_messages (ticket_id, type, author, content)
-      VALUES ($1, $2, $3, $4) RETURNING *
+      INSERT INTO ticket_messages (ticket_id, type, author, content, email_sent_at)
+      VALUES ($1, $2, $3, $4, now())
+      RETURNING *
     `, [req.params.id, type, displayName, content])
 
     await fastify.db.query('UPDATE tickets SET updated_at = now() WHERE id = $1', [req.params.id])
     reply.code(201).send(rows[0])
   })
+
+  // POST /api/tickets/:id/messages/:msgId/send-by-mail
+  // Convertit une note interne en message à envoyer par mail. L'admin a
+  // d'abord saisi le texte en mode interne (sans envoi), puis décide de
+  // l'envoyer en cliquant sur ce bouton. On flip :
+  //   type = 'comment' (l'outbox filtre sur type='comment')
+  //   email_sent_at = NULL (l'outbox picke email_sent_at IS NULL)
+  // L'envoi effectif se fait au prochain tick du worker outbound (~10s).
+  // Garde-fous : ticket doit avoir un mapping inbound (sinon pas de
+  // destinataire), et le message doit être encore une note interne (re-clic
+  // = idempotent no-op, on retourne tel quel).
+  fastify.post('/:id/messages/:msgId/send-by-mail',
+    { preHandler: [fastify.authenticate] }, async (req, reply) => {
+      const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
+      if (!acl) return
+
+      const { rows: msgRows } = await fastify.db.query(
+        `SELECT id, type, email_sent_at FROM ticket_messages WHERE id = $1 AND ticket_id = $2`,
+        [req.params.msgId, req.params.id]
+      )
+      if (!msgRows.length) return reply.code(404).send({ error: 'Message introuvable' })
+      if (msgRows[0].type !== 'internal_note') {
+        // Déjà converti (ou message inbound, ou système). Idempotent : retour
+        // tel quel pour ne pas confondre le front si double-clic.
+        return reply.send(msgRows[0])
+      }
+
+      const { rows: mapRows } = await fastify.db.query(
+        `SELECT 1 FROM email_thread_mapping
+         WHERE ticket_id = $1 AND direction = 'inbound' LIMIT 1`,
+        [req.params.id]
+      )
+      if (!mapRows.length) {
+        return reply.code(409).send({ error: 'Ticket sans origine mail, envoi impossible' })
+      }
+
+      const { rows } = await fastify.db.query(`
+        UPDATE ticket_messages
+        SET type = 'comment', email_sent_at = NULL
+        WHERE id = $1
+        RETURNING *
+      `, [req.params.msgId])
+      await fastify.db.query('UPDATE tickets SET updated_at = now() WHERE id = $1', [req.params.id])
+      reply.send(rows[0])
+    })
 
   // POST /api/tickets/:id/tags  { tag_id }
   fastify.post('/:id/tags', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {

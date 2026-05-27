@@ -62,6 +62,11 @@ class API {
   createTicket(body)   { return this._fetch('/tickets', { method: 'POST', body }) }
   updateTicket(id, body) { return this._fetch(`/tickets/${id}`, { method: 'PATCH', body }) }
   addMessage(id, body) { return this._fetch(`/tickets/${id}/messages`, { method: 'POST', body }) }
+  // Phase 1c : convertit une note interne (type='internal_note') en message
+  // à envoyer par mail. L'outbound worker l'enverra au prochain tick.
+  sendMessageByMail(ticketId, msgId) {
+    return this._fetch(`/tickets/${ticketId}/messages/${msgId}/send-by-mail`, { method: 'POST' })
+  }
 
   // Tags (référentiel partagé avec les tickets)
   getTags()                   { return this._fetch('/tickets/tags') }

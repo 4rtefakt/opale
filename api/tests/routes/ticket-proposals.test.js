@@ -180,6 +180,175 @@ test('POST /:id/accept — surcharge title/description/priority fonctionne', { s
   assert.equal(tk.description, 'Desc ajoutée')
 })
 
+test('POST /:id/accept — source=email avec bodyText → description courte + premier message', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tp-accept-email-body')
+  const prop = await seedProposal(db, {
+    source: 'email',
+    suggestedTitle: 'Mon imprimante ne marche pas',
+    suggestedDescription: 'De: Alice <alice@ex.fr>\nSujet: Mon imprimante ne marche pas\n\nBonjour,\n\nL\'imprimante du bureau ne répond plus.\n\nAlice',
+    sourcePayload: {
+      from: 'alice@ex.fr',
+      fromName: 'Alice Dupont',
+      receivedAt: '2026-02-05T14:30:00.000Z',
+      bodyText: "Bonjour,\n\nL'imprimante du bureau ne répond plus.\n\nAlice",
+    },
+  })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/ticket-proposals/${prop.id}/accept`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: {},
+  })
+  assert.equal(res.statusCode, 201)
+  const tk = res.json().ticket
+
+  // Description = ligne courte "Mail de X reçu le Y"
+  assert.match(tk.description, /^Mail de Alice Dupont reçu le /, 'description courte attendue')
+  assert.ok(!tk.description.includes('imprimante'), 'body NE doit PAS être dans la description')
+
+  // Le body est dans ticket_messages, pas dans description
+  const { rows: msgs } = await db.query(
+    `SELECT type, author, content, email_sent_at FROM ticket_messages WHERE ticket_id = $1 ORDER BY created_at ASC`,
+    [tk.id]
+  )
+  assert.equal(msgs.length, 1, 'un seul message attendu (pas de replies)')
+  assert.equal(msgs[0].type, 'comment')
+  assert.equal(msgs[0].author, 'Alice Dupont')
+  assert.match(msgs[0].content, /imprimante du bureau/)
+  assert.ok(msgs[0].email_sent_at, 'email_sent_at doit être set (déjà reçu, pas à renvoyer)')
+})
+
+test('POST /:id/accept — source=email avec replies → premier + N messages chronologiques', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tp-accept-email-replies')
+  const prop = await seedProposal(db, {
+    source: 'email',
+    suggestedTitle: 'Problème VPN',
+    sourcePayload: {
+      from: 'bob@ex.fr',
+      fromName: 'Bob Martin',
+      receivedAt: '2026-02-05T09:00:00.000Z',
+      bodyText: 'VPN ne fonctionne plus depuis ce matin.',
+      replies: [
+        {
+          from: 'bob@ex.fr',
+          fromName: 'Bob Martin',
+          receivedAt: '2026-02-05T09:30:00.000Z',
+          bodyText: 'Pour info j\'ai redémarré le poste, ça ne change rien.',
+        },
+        {
+          from: 'bob@ex.fr',
+          fromName: 'Bob Martin',
+          receivedAt: '2026-02-05T10:15:00.000Z',
+          bodyText: 'En fait ça marche depuis que je suis sur le wifi maison ??',
+        },
+      ],
+    },
+  })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/ticket-proposals/${prop.id}/accept`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: {},
+  })
+  assert.equal(res.statusCode, 201)
+  const tk = res.json().ticket
+
+  const { rows: msgs } = await db.query(
+    `SELECT author, content, created_at, email_sent_at FROM ticket_messages
+     WHERE ticket_id = $1 ORDER BY created_at ASC`,
+    [tk.id]
+  )
+  assert.equal(msgs.length, 3, '1 initial + 2 replies')
+  assert.match(msgs[0].content, /VPN ne fonctionne plus/)
+  assert.match(msgs[1].content, /redémarré le poste/)
+  assert.match(msgs[2].content, /wifi maison/)
+  // Tous marqués déjà envoyés (mails entrants)
+  for (const m of msgs) assert.ok(m.email_sent_at, 'tous les messages ont email_sent_at')
+  // created_at suit la chronologie réelle des mails (pas l'ordre d'INSERT)
+  assert.ok(new Date(msgs[0].created_at) < new Date(msgs[1].created_at))
+  assert.ok(new Date(msgs[1].created_at) < new Date(msgs[2].created_at))
+})
+
+test('POST /:id/accept — source=email legacy sans bodyText → fallback strip "De:/Sujet:"', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tp-accept-email-legacy')
+  // Proposal créée AVANT la Phase 1a : suggested_description contient le
+  // format "De: ... / Sujet: ... / <body>", pas de bodyText dans payload.
+  const prop = await seedProposal(db, {
+    source: 'email',
+    suggestedTitle: 'Demande accès',
+    suggestedDescription: 'De: Carole <carole@ex.fr>\nSujet: Demande accès\n\nJ\'ai besoin d\'accéder au partage RH.',
+    sourcePayload: {
+      from: 'carole@ex.fr',
+      fromName: 'Carole',
+      receivedAt: '2026-02-04T08:00:00.000Z',
+    },
+  })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/ticket-proposals/${prop.id}/accept`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: {},
+  })
+  assert.equal(res.statusCode, 201)
+  const tk = res.json().ticket
+  assert.match(tk.description, /^Mail de Carole reçu le /)
+
+  const { rows: msgs } = await db.query(
+    `SELECT content FROM ticket_messages WHERE ticket_id = $1`, [tk.id]
+  )
+  assert.equal(msgs.length, 1)
+  assert.equal(msgs[0].content, "J'ai besoin d'accéder au partage RH.",
+    'le préfixe "De:/Sujet:" doit être strippé')
+})
+
+test('POST /:id/accept — source=email + override description force la description fournie', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tp-accept-email-override')
+  const prop = await seedProposal(db, {
+    source: 'email',
+    suggestedTitle: 'X',
+    sourcePayload: { fromName: 'Dan', receivedAt: '2026-02-05T10:00:00Z', bodyText: 'body de Dan' },
+  })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/ticket-proposals/${prop.id}/accept`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { description: 'Description manuelle' },
+  })
+  assert.equal(res.statusCode, 201)
+  const tk = res.json().ticket
+  assert.equal(tk.description, 'Description manuelle', 'override doit gagner sur le format auto')
+
+  // Le premier message du mail n'est PAS créé dans ce cas (l'admin a décidé
+  // de réécrire la description et garde la main).
+  const { rows: msgs } = await db.query(
+    `SELECT id FROM ticket_messages WHERE ticket_id = $1`, [tk.id]
+  )
+  assert.equal(msgs.length, 0, 'override description = pas de premier message auto')
+})
+
+test('POST /:id/accept — source=manual → comportement inchangé (description = suggested_description)', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tp-accept-manual')
+  const prop = await seedProposal(db, {
+    source: 'manual',
+    suggestedTitle: 'Manuel',
+    suggestedDescription: 'Ma description manuelle',
+  })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/ticket-proposals/${prop.id}/accept`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: {},
+  })
+  assert.equal(res.statusCode, 201)
+  const tk = res.json().ticket
+  assert.equal(tk.description, 'Ma description manuelle')
+
+  const { rows: msgs } = await db.query(
+    `SELECT id FROM ticket_messages WHERE ticket_id = $1`, [tk.id]
+  )
+  assert.equal(msgs.length, 0, 'pas de message auto pour source!=email')
+})
+
 test('POST /:id/accept — proposal inexistante → 404', { skip: SKIP }, async () => {
   const { token } = await adminAuth('oid-tp-accept-404')
   const res = await fastify.inject({
