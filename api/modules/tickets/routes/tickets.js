@@ -211,7 +211,19 @@ export default async function ticketsRoute(fastify) {
         ORDER BY created_at DESC LIMIT 1
       ) lm ON true
       ${where}
-      ORDER BY t.updated_at DESC NULLS LAST, t.created_at DESC
+      -- Tri stable par cycle de vie : open → in_progress → resolved → closed.
+      -- Sur le filtre "Tous", les tickets actifs remontent en haut. Sur un
+      -- filtre status précis le CASE est neutre (1 seule valeur) donc le
+      -- tri par updated_at reste effectif.
+      ORDER BY
+        CASE t.status
+          WHEN 'open'        THEN 1
+          WHEN 'in_progress' THEN 2
+          WHEN 'resolved'    THEN 3
+          WHEN 'closed'      THEN 4
+          ELSE 9
+        END,
+        t.updated_at DESC NULLS LAST, t.created_at DESC
       LIMIT $${i + 1} OFFSET $${i + 2}
     `, params)
 

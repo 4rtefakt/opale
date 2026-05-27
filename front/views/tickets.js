@@ -24,6 +24,22 @@ function shortName(name) {
   return parts[0] + ' ' + parts[parts.length - 1][0].toUpperCase() + '.'
 }
 
+// Liens cliquables vers les fiches device / user. On utilise des <a href="#/...">
+// pour permettre clic milieu + ctrl+clic en plus du clic standard. event.
+// stopPropagation() évite que le clic remonte au row parent qui ouvrirait
+// le ticket — on veut juste naviguer vers la fiche.
+function deviceLink(deviceId, hostname, { extraStyle = '' } = {}) {
+  if (!hostname) return ''
+  if (!deviceId) return esc(hostname)  // fallback texte si pas d'id
+  return `<a href="#/postes/${esc(deviceId)}" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor;${extraStyle}">${esc(hostname)}</a>`
+}
+
+function userLink(entraId, displayName, { extraStyle = '' } = {}) {
+  if (!displayName) return ''
+  if (!entraId) return esc(displayName)
+  return `<a href="#/users/${esc(entraId)}" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor;${extraStyle}">${esc(displayName)}</a>`
+}
+
 // Nettoie au rendu les descriptions HTML des tickets créés avant le fix
 // htmlToText (issue #8 — case-sensitive bug sur contentType). Détection
 // heuristique : présence de balises HTML caractéristiques d'Outlook. Sans
@@ -247,6 +263,7 @@ export async function renderTickets(container, opts = {}) {
   window.reopenTicket         = reopenTicket
   window.archiveTicket        = archiveTicket
   window.unarchiveTicket      = unarchiveTicket
+  window.takeInProgressTicket = takeInProgressTicket
   window.openMailDiagnosticModal = openMailDiagnosticModal
   window.tkSetPriorityFilter  = tkSetPriorityFilter
   window.tkToggleTagFilter    = tkToggleTagFilter
@@ -473,9 +490,9 @@ function kanbanCard(tk) {
         ${tags ? `<div class="kc-tags">${tags}</div>` : ''}
         <div class="kc-meta">
           ${tk.is_auto ? `<span class="kc-badge kc-badge-auto" title="Auto"><i class="ti ti-robot" style="font-size:10px"></i></span>` : ''}
-          ${tk.requester_name ? `<span class="kc-badge" title="${esc(t('tickets.info.requester'))}: ${esc(tk.requester_name)}"><i class="ti ti-user" style="font-size:10px"></i> ${esc(shortName(tk.requester_name))}</span>` : ''}
-          ${tk.assigned_to_name ? `<span class="kc-badge" title="${esc(t('tickets.info.assignee'))}: ${esc(tk.assigned_to_name)}"><i class="ti ti-user-check" style="font-size:10px"></i> ${esc(shortName(tk.assigned_to_name))}</span>` : (!['resolved'].includes(tk.status) ? `<span class="kc-badge kc-badge-unassigned"><i class="ti ti-user-off" style="font-size:10px"></i> ${esc(t('tickets.unassigned'))}</span>` : '')}
-          ${tk.hostname ? `<span class="kc-badge" title="Poste"><i class="ti ti-device-laptop" style="font-size:10px"></i> ${esc(tk.hostname)}</span>` : ''}
+          ${tk.requester_name ? `<span class="kc-badge" title="${esc(t('tickets.info.requester'))}: ${esc(tk.requester_name)}"><i class="ti ti-user" style="font-size:10px"></i> ${userLink(tk.user_id, shortName(tk.requester_name))}</span>` : ''}
+          ${tk.assigned_to_name ? `<span class="kc-badge" title="${esc(t('tickets.info.assignee'))}: ${esc(tk.assigned_to_name)}"><i class="ti ti-user-check" style="font-size:10px"></i> ${userLink(tk.assigned_to_entra_id, shortName(tk.assigned_to_name))}</span>` : (!['resolved'].includes(tk.status) ? `<span class="kc-badge kc-badge-unassigned"><i class="ti ti-user-off" style="font-size:10px"></i> ${esc(t('tickets.unassigned'))}</span>` : '')}
+          ${tk.hostname ? `<span class="kc-badge" title="Poste"><i class="ti ti-device-laptop" style="font-size:10px"></i> ${deviceLink(tk.device_id, tk.hostname)}</span>` : ''}
         </div>
         <div class="kc-time">${displayWhen(tk)}</div>
       </div>
@@ -723,9 +740,9 @@ function ticketItem(tk) {
       </div>
       <div class="tk-meta">
         <span>${prio}</span>
-        ${tk.hostname ? `<span>· ${esc(tk.hostname)}</span>` : ''}
-        ${tk.requester_name ? `<span title="${esc(t('tickets.info.requester'))}: ${esc(tk.requester_name)}">· <i class="ti ti-user" style="font-size:11px;opacity:0.7"></i> ${esc(shortName(tk.requester_name))}</span>` : ''}
-        ${tk.assigned_to_name ? `<span title="${esc(t('tickets.info.assignee'))}: ${esc(tk.assigned_to_name)}">· <i class="ti ti-user-check" style="font-size:11px;opacity:0.7"></i> ${esc(shortName(tk.assigned_to_name))}</span>` : ''}
+        ${tk.hostname ? `<span>· ${deviceLink(tk.device_id, tk.hostname)}</span>` : ''}
+        ${tk.requester_name ? `<span title="${esc(t('tickets.info.requester'))}: ${esc(tk.requester_name)}">· <i class="ti ti-user" style="font-size:11px;opacity:0.7"></i> ${userLink(tk.user_id, shortName(tk.requester_name))}</span>` : ''}
+        ${tk.assigned_to_name ? `<span title="${esc(t('tickets.info.assignee'))}: ${esc(tk.assigned_to_name)}">· <i class="ti ti-user-check" style="font-size:11px;opacity:0.7"></i> ${userLink(tk.assigned_to_entra_id, shortName(tk.assigned_to_name))}</span>` : ''}
         <span>· ${displayWhen(tk)}</span>
       </div>
       ${tagsHtml ? `<div class="tk-tags" style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${tagsHtml}</div>` : ''}
@@ -772,13 +789,15 @@ function getDetailContainer() {
 function renderDetail(tk, container) {
   const detail = container || getDetailContainer()
   if (!detail) return
+  const open     = tk.status === 'open'
   const resolved = tk.status === 'resolved'
   const closed   = tk.status === 'closed'
 
-  // 3 états → 3 jeux d'actions :
-  //   open/in_progress → "Résoudre"
-  //   resolved         → "Rouvrir" + "Archiver"
-  //   closed           → "Désarchiver"
+  // 4 états → jeux d'actions :
+  //   open          → "Prendre en charge" + "Résoudre"
+  //   in_progress   → "Résoudre"
+  //   resolved      → "Rouvrir" + "Archiver"
+  //   closed        → "Désarchiver"
   let actions = ''
   if (closed) {
     actions = `<button class="btn btn-sm" onclick="unarchiveTicket('${tk.id}')">${t('tickets.unarchive')}</button>`
@@ -786,8 +805,13 @@ function renderDetail(tk, container) {
     actions = `
       <button class="btn btn-sm" onclick="reopenTicket('${tk.id}')">${t('tickets.reopen')}</button>
       <button class="btn btn-sm" onclick="archiveTicket('${tk.id}')">${t('tickets.archive')}</button>`
+  } else if (open) {
+    actions = `
+      <button class="btn btn-sm" onclick="takeInProgressTicket('${tk.id}')">${t('tickets.take_in_progress')}</button>
+      <button class="btn btn-sm btn-primary" onclick="resolveTicket('${tk.id}')">${t('tickets.resolve')}</button>`
   } else {
-    actions = `<button class="btn btn-sm" onclick="resolveTicket('${tk.id}')">${t('tickets.resolve')}</button>`
+    // in_progress
+    actions = `<button class="btn btn-sm btn-primary" onclick="resolveTicket('${tk.id}')">${t('tickets.resolve')}</button>`
   }
 
   detail.innerHTML = `
@@ -798,7 +822,7 @@ function renderDetail(tk, container) {
           <span class="badge badge-${tk.status==='resolved'?'green':tk.status==='in_progress'?'blue':tk.status==='closed'?'gray':'orange'}">${statusLabel(tk.status)}</span>
           <span class="badge">${prioLabel(tk.priority)}</span>
           ${tk.is_auto ? `<span class="badge">Auto</span>` : ''}
-          ${tk.hostname ? `<span class="badge">${esc(tk.hostname)}</span>` : ''}
+          ${tk.hostname ? `<span class="badge">${deviceLink(tk.device_id, tk.hostname)}</span>` : ''}
         </div>
       </div>
       <div class="ticket-detail-actions">
@@ -837,7 +861,7 @@ function renderDetail(tk, container) {
             </button>
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
-            <div style="font-size:13px">${tk.assigned_to_name ? esc(tk.assigned_to_name) : `<span style="color:var(--text-tertiary)">${t('tickets.unassigned')}</span>`}</div>
+            <div style="font-size:13px">${tk.assigned_to_name ? userLink(tk.assigned_to_entra_id, tk.assigned_to_name) : `<span style="color:var(--text-tertiary)">${t('tickets.unassigned')}</span>`}</div>
             <div style="display:flex;gap:4px;flex-wrap:wrap">
               <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkAssignSelf('${tk.id}')">${t('tickets.assign_self')}</button>
               ${tk.assigned_to_entra_id ? `<button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkUnassign('${tk.id}')">${t('tickets.unassign')}</button>` : ''}
@@ -853,7 +877,7 @@ function renderDetail(tk, container) {
             </button>
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
-            <div style="font-size:13px">${tk.requester_name ? esc(tk.requester_name) : `<span style="color:var(--text-tertiary)">${t('tickets.no_requester')}</span>`}</div>
+            <div style="font-size:13px">${tk.requester_name ? userLink(tk.user_id, tk.requester_name) : `<span style="color:var(--text-tertiary)">${t('tickets.no_requester')}</span>`}</div>
             ${tk.requester_email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(tk.requester_email)}</div>` : ''}
             ${tk.user_id ? `<div><button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkClearRequester('${tk.id}')">${t('tickets.clear_requester')}</button></div>` : ''}
           </div>
@@ -882,7 +906,7 @@ function renderDetail(tk, container) {
             </button>
           </div>
           <div style="display:flex;flex-direction:column;gap:4px">
-            <div style="font-size:13px">${tk.hostname ? esc(tk.hostname) : `<span style="color:var(--text-tertiary)">${t('tickets.no_device')}</span>`}</div>
+            <div style="font-size:13px">${tk.hostname ? deviceLink(tk.device_id, tk.hostname) : `<span style="color:var(--text-tertiary)">${t('tickets.no_device')}</span>`}</div>
             ${tk.device_id ? `<div><button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkClearDevice('${tk.id}')">${t('tickets.clear_device')}</button></div>` : ''}
           </div>
         </div>` : ''}
@@ -926,6 +950,24 @@ async function sendReply(id) {
     renderDetail(tk)
     const idx = _tickets.findIndex(t => t.id === id)
     if (idx !== -1) { _tickets[idx].updated_at = new Date().toISOString(); renderList() }
+  } catch {
+    showToast(t('error.generic'), 'error')
+  }
+}
+
+// Passe le ticket en cours (open → in_progress). Pratique sur les tickets
+// auto-créés via le pipeline mail : on lit la proposition, on accepte le
+// ticket (status='open'), puis on clique "Prendre en charge" pour signaler
+// au requester que c'est traité.
+async function takeInProgressTicket(id) {
+  try {
+    await window.api.updateTicket(id, { status: 'in_progress' })
+    const tk = await window.api.getTicket(id)
+    const idx = _tickets.findIndex(t => t.id === id)
+    if (idx !== -1) _tickets[idx].status = 'in_progress'
+    renderListOrKanban()
+    renderDetail(tk)
+    showToast(t('tickets.toast.in_progress'), 'success')
   } catch {
     showToast(t('error.generic'), 'error')
   }
