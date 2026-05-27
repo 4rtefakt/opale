@@ -1795,9 +1795,13 @@ async function tkRemoveChip(key) {
 //   - Erreurs récentes (Ollama timeout, etc.)
 // Permet à l'admin de comprendre "pourquoi le compteur est bas" sans psql.
 async function openMailDiagnosticModal() {
+  // Phase 4 — alignée sur la largeur des modales Propositions et Mails à
+  // trier : le contenu (config + breakdown + 50 derniers mails) déborde
+  // sinon sur le max-width 640px par défaut de showModal.
   showModal(`
+    <style>#modal-content { max-width: min(1100px, 92vw) !important; }</style>
     <div class="modal-title">${t('tickets.mail_diag.title')}</div>
-    <div id="mail-diag-body" style="max-height:65vh;overflow-y:auto;margin-top:10px;font-size:13px">
+    <div id="mail-diag-body" style="max-height:72vh;overflow-y:auto;margin-top:10px;font-size:13px">
       <div style="text-align:center;color:var(--text-tertiary);padding:20px">${t('common.loading')}…</div>
     </div>
     <div class="modal-footer">

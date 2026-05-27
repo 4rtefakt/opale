@@ -47,8 +47,12 @@ Intune sync layered on top (compliance, enrollment, last-sync date).
 Computed on the fly from device state. Web-Push notifications to admins
 on critical changes.
 
-**Tickets** — full workflow (open / in progress / resolved), tags,
-Kanban view, link to devices, "proposed" tickets for mail-to-AI ingestion.
+**Tickets** — full workflow (open / in progress / resolved / merged),
+tags, Kanban view, multiple involved people and devices per ticket,
+two-way mail integration: incoming mails land in a "to sort" inbox
+where an admin promotes them to tickets or dismisses them, replies are
+appended to the existing thread automatically, outgoing notes can be
+sent back by mail in one click.
 
 **Remote SSH** — terminal in the browser via WebSocket + xterm.js, over
 your existing mesh VPN (e.g. Netbird, Tailscale, ZeroTier).
