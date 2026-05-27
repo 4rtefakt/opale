@@ -98,6 +98,7 @@ let _showAdvanced  = false
 let _localQ        = ''          // recherche locale (titre/hostname)
 let _view          = 'list'      // 'list' | 'kanban'
 let _proposalsCount = 0
+let _inboxCount     = 0
 
 const KANBAN_COL_CAP = 30
 const KANBAN_COLS    = ['open', 'in_progress', 'resolved']
@@ -232,6 +233,10 @@ export async function renderTickets(container, opts = {}) {
           <button class="btn btn-sm ${_view==='list'?'btn-primary':''}"   onclick="tkSetView('list')"   title="${t('tickets.view.list')}"><i class="ti ti-list"></i></button>
           <button class="btn btn-sm ${_view==='kanban'?'btn-primary':''}" onclick="tkSetView('kanban')" title="${t('tickets.view.kanban')}"><i class="ti ti-layout-kanban"></i></button>
         </div>
+        <button class="btn" id="tk-inbox-btn" style="display:none" onclick="openInboxModal()" title="${t('tickets.inbox.title')}">
+          <i class="ti ti-mail-opened"></i> ${t('tickets.inbox.title')}
+          <span id="tk-inbox-count" class="badge" style="margin-left:6px;background:var(--accent);color:#fff;padding:0 6px;border-radius:10px;font-size:11px"></span>
+        </button>
         <button class="btn" id="tk-proposals-btn" style="display:none" onclick="openProposalsModal()" title="${t('tickets.proposals.title')}">
           <i class="ti ti-bulb"></i> ${t('tickets.proposals.title')}
           <span id="tk-proposals-count" class="badge" style="margin-left:6px;background:var(--red);color:#fff;padding:0 6px;border-radius:10px;font-size:11px"></span>
@@ -288,6 +293,9 @@ export async function renderTickets(container, opts = {}) {
   window.tkOpenDevicePicker    = tkOpenDevicePicker
   window.tkClearDevice         = tkClearDevice
   window.openProposalsModal    = openProposalsModal
+  window.openInboxModal        = openInboxModal
+  window.tkInboxToTicket       = tkInboxToTicket
+  window.tkInboxDismiss        = tkInboxDismiss
   window.tkAcceptProposal      = tkAcceptProposal
   window.tkRejectProposal      = tkRejectProposal
   window.tkSetView            = tkSetView
@@ -300,7 +308,7 @@ export async function renderTickets(container, opts = {}) {
   window.tkKanbanGotoList     = tkKanbanGotoList
 
   // Précharge le référentiel tags en parallèle de la liste
-  await Promise.all([loadTags(), loadTickets(), loadProposalsCount(), loadEmailStats()])
+  await Promise.all([loadTags(), loadTickets(), loadProposalsCount(), loadInboxCount(), loadEmailStats()])
   renderMain()
 
   // Deep-link create : ouvrir la modale moderne avec le device pré-rempli.
@@ -328,6 +336,27 @@ async function loadProposalsCount() {
   updateProposalsBadge()
 }
 
+async function loadInboxCount() {
+  try {
+    const { pending } = await window.api.getInboxCount()
+    _inboxCount = pending || 0
+  } catch { _inboxCount = 0 }
+  updateInboxBadge()
+}
+
+function updateInboxBadge() {
+  const btn = document.getElementById('tk-inbox-btn')
+  const cnt = document.getElementById('tk-inbox-count')
+  if (!btn || !cnt) return
+  if (_inboxCount > 0) {
+    btn.style.display = ''
+    cnt.textContent = _inboxCount
+  } else {
+    btn.style.display = 'none'
+    cnt.textContent = ''
+  }
+}
+
 // Stats du pont mail sur 7 jours (issue #8). Affiche un bandeau ambiant
 // en haut de la vue Tickets. Caché si total=0 — évite du vide quand le
 // pont est inactif. Erreur silencieuse : le badge ne s'affiche pas, mais
@@ -340,9 +369,13 @@ async function loadEmailStats() {
   if (!stats || !stats.total) { bar.style.display = 'none'; return }
 
   const a = stats.by_action || {}
+  // Phase 3 : 'pending_review' remplace les 'proposal_created' auto. On
+  // garde un total "proposals" pour les mappings legacy encore vivants
+  // dans la fenêtre temporelle.
   const propTotal = (a.proposal_created || 0) + (a.proposal_created_no_match || 0)
   const parts = []
   parts.push(`<i class="ti ti-mail" style="font-size:12px;vertical-align:-1px"></i> ${t('tickets.mail_stats.ingested', { n: stats.total })}`)
+  if (a.pending_review)     parts.push(`<span style="color:var(--accent)">${t('tickets.mail_stats.pending_review', { n: a.pending_review })}</span>`)
   if (propTotal)            parts.push(t('tickets.mail_stats.proposals',     { n: propTotal }))
   if (a.message_appended)   parts.push(t('tickets.mail_stats.appended',      { n: a.message_appended }))
   if (a.skipped_other)      parts.push(t('tickets.mail_stats.skipped_other', { n: a.skipped_other }))
@@ -1907,6 +1940,103 @@ function renderMailDiagErrors(errors) {
           </div>`).join('')}
       </div>
     </section>`
+}
+
+// Phase 3 — Vue "Mails à trier". Liste les mails entrants en
+// attente d'arbitrage humain (action='pending_review' côté DB). Pour
+// chaque mail : "→ Ticket" crée un ticket, "Ignorer" passe en
+// skipped_other. La suggestion du classifier (Ollama) est affichée en
+// badge advisory mais ne décide jamais à la place de l'admin.
+async function openInboxModal() {
+  let list = []
+  try { list = await window.api.getInbox() } catch { list = [] }
+
+  showModal(`
+    <style>#modal-content { max-width: min(1100px, 92vw) !important; }</style>
+    <div class="modal-title">${t('tickets.inbox.title')} (${list.length})</div>
+    <div id="tk-inbox-list" style="max-height:72vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;margin-top:10px">
+      ${list.length
+        ? list.map(m => inboxCard(m)).join('')
+        : `<div style="text-align:center;color:var(--text-tertiary);padding:24px;font-size:13px">${t('tickets.inbox.empty')}</div>`}
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal()">${t('btn.close')}</button>
+    </div>`)
+}
+
+function inboxCard(m) {
+  // Badge advisory du classifier — uniquement informatif, ne préselectionne
+  // aucun bouton. Mapping intent → couleur cohérent avec proposalCard.
+  const cls = m.classifier_result
+  let suggestionBadge = ''
+  if (cls && !cls.fallback) {
+    const intentLabel = cls.intent === 'new_ticket' ? t('tickets.inbox.suggest.new_ticket')
+                      : cls.intent === 'reply'      ? t('tickets.inbox.suggest.reply')
+                      : cls.intent === 'other'      ? t('tickets.inbox.suggest.dismiss')
+                      : cls.intent
+    const color = cls.intent === 'other' ? '#64748b'
+                : (cls.confidence || 0) >= 0.7 ? '#0d9488' : '#d97706'
+    suggestionBadge = `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:8px;font-weight:500;font-size:11px"
+      title="${esc((cls.reason || '') + ' (' + Math.round((cls.confidence || 0) * 100) + '%)')}">
+      🤖 ${esc(intentLabel)}
+    </span>`
+  }
+  const senderInfo = m.suggested_user_name
+    ? `<span style="background:var(--bg-secondary);padding:1px 6px;border-radius:8px;font-size:11px"><i class="ti ti-user" style="font-size:10px"></i> ${esc(m.suggested_user_name)}</span>`
+    : ''
+  const deviceInfo = m.suggested_device_hostname
+    ? `<span style="background:var(--bg-secondary);padding:1px 6px;border-radius:8px;font-size:11px"><i class="ti ti-device-laptop" style="font-size:10px"></i> ${esc(m.suggested_device_hostname)}</span>`
+    : ''
+  return `
+    <div id="tk-inbox-card-${m.id}" style="border:0.5px solid var(--border);border-radius:6px;padding:12px;background:var(--bg-tertiary)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${esc(m.subject || '(sans sujet)')}</div>
+          <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <span><i class="ti ti-mail" style="font-size:10px"></i> ${esc(m.from_address || '')}</span>
+            ${suggestionBadge}
+            ${senderInfo}
+            ${deviceInfo}
+            <span>${formatRelative(m.received_at)}</span>
+          </div>
+          ${m.body_preview ? `<div style="margin-top:8px;font-size:13px;color:var(--text-primary);background:var(--bg-secondary);padding:8px 10px;border-radius:4px;white-space:pre-wrap;max-height:120px;overflow:auto;line-height:1.4">${esc(m.body_preview)}</div>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">
+          <button class="btn btn-sm btn-primary" onclick="tkInboxToTicket('${m.id}')">
+            <i class="ti ti-arrow-right" style="font-size:11px"></i> ${esc(t('tickets.inbox.to_ticket'))}
+          </button>
+          <button class="btn btn-sm" onclick="tkInboxDismiss('${m.id}')">
+            <i class="ti ti-x" style="font-size:11px"></i> ${esc(t('tickets.inbox.dismiss'))}
+          </button>
+        </div>
+      </div>
+    </div>`
+}
+
+async function tkInboxToTicket(mappingId) {
+  try {
+    const { ticket } = await window.api.inboxToTicket(mappingId)
+    showToast(t('tickets.inbox.ticket_created'), 'success')
+    closeModal()
+    await loadInboxCount()
+    await loadTickets()
+    // Ouvre directement le ticket créé
+    if (ticket?.id) await selectTicket(ticket.id)
+  } catch (err) {
+    showToast(err?.body?.error || t('error.generic'), 'error')
+  }
+}
+
+async function tkInboxDismiss(mappingId) {
+  if (!confirm(t('tickets.inbox.confirm_dismiss'))) return
+  try {
+    await window.api.inboxDismiss(mappingId)
+    // Retire la card de la modale sans recharger toute la liste
+    document.getElementById(`tk-inbox-card-${mappingId}`)?.remove()
+    await loadInboxCount()
+  } catch (err) {
+    showToast(err?.body?.error || t('error.generic'), 'error')
+  }
 }
 
 async function openProposalsModal() {

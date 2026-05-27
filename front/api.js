@@ -74,6 +74,15 @@ class API {
   removeTicketDevice(ticketId, deviceId) { return this._fetch(`/tickets/${ticketId}/devices/${deviceId}`, { method: 'DELETE' }) }
   mergeTicket(sourceId, targetId)    { return this._fetch(`/tickets/${sourceId}/merge`, { method: 'POST', body: { target_ticket_id: targetId } }) }
 
+  // Phase 3 — vue "Mails à trier" (inbox)
+  getInbox(params)                   {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    return this._fetch(`/email/inbox${qs}`)
+  }
+  getInboxCount()                    { return this._fetch('/email/inbox/count') }
+  inboxToTicket(mappingId)           { return this._fetch(`/email/inbox/${mappingId}/to-ticket`, { method: 'POST' }) }
+  inboxDismiss(mappingId)            { return this._fetch(`/email/inbox/${mappingId}/dismiss`, { method: 'POST' }) }
+
   // Tags (référentiel partagé avec les tickets)
   getTags()                   { return this._fetch('/tickets/tags') }
   createTag(body)             { return this._fetch('/tickets/tags', { method: 'POST', body }) }

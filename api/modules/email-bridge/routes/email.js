@@ -7,6 +7,8 @@
 // Les routes de configuration (mail.inboxes, mail.poll_enabled) passent
 // par l'API existante /api/settings — pas besoin d'endpoints dédiés ici.
 
+import { createTicketFromMapping, dismissInboxMapping } from '../lib/inbox.js'
+
 export default async function emailRoute(fastify) {
 
   // GET /api/email/recent?mailbox=&limit=50
@@ -85,12 +87,18 @@ export default async function emailRoute(fastify) {
     `, [since])
 
     const byAction = {
-      proposal_created: 0,
-      proposal_created_no_match: 0,
-      message_appended: 0,
-      skipped_other: 0,
-      skipped_error: 0,
-      in_queue: 0,           // action IS NULL → encore dans le pipeline
+      // Phase 3 : nouveau pipeline → 'pending_review' remplace les
+      // proposal_created automatiques. Les anciennes valeurs restent
+      // dans le breakdown pour ne pas casser les graphes legacy qui
+      // pointent encore sur des mappings pré-Phase-3 dans la fenêtre.
+      pending_review:               0,
+      reply_appended_to_proposal:   0,  // Phase 1b
+      proposal_created:             0,  // pré-Phase-3
+      proposal_created_no_match:    0,  // pré-Phase-3
+      message_appended:             0,
+      skipped_other:                0,
+      skipped_error:                0,
+      in_queue:                     0,  // action IS NULL → encore dans le pipeline
     }
     let total = 0
     for (const r of rows) {
@@ -100,6 +108,110 @@ export default async function emailRoute(fastify) {
     }
     reply.send({ since, days, total, by_action: byAction })
   })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Phase 3 — Vue "Mails à trier" (inbox)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  // GET /api/email/inbox?limit=&offset=&status=pending_review
+  // Liste les mails ingérés en attente d'arbitrage humain. status par défaut
+  // = 'pending_review'. Peut prendre 'all' pour tout voir (admin debug).
+  fastify.get('/inbox',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const limit  = Math.min(parseInt(req.query.limit  ?? 100, 10) || 100, 500)
+      const offset = Math.max(parseInt(req.query.offset ?? 0,   10) || 0,    0)
+      const status = req.query.status || 'pending_review'
+
+      const conds  = [`direction = 'inbound'`]
+      const params = []
+      let i = 1
+      if (status === 'pending_review') {
+        conds.push(`action = $${i++}`); params.push('pending_review')
+      } else if (status !== 'all') {
+        conds.push(`action = $${i++}`); params.push(status)
+      }
+      const where = 'WHERE ' + conds.join(' AND ')
+      params.push(limit, offset)
+
+      const { rows } = await fastify.db.query(`
+        SELECT etm.id, etm.mailbox, etm.from_address, etm.subject, etm.received_at,
+               etm.action, etm.classifier_result,
+               -- bodyPreview du Graph (déjà strippé en Phase 1) tel quel.
+               etm.raw->>'bodyPreview' AS body_preview,
+               u.entra_id   AS suggested_user_id,
+               u.display_name AS suggested_user_name,
+               d.id         AS suggested_device_id,
+               d.hostname   AS suggested_device_hostname
+        FROM email_thread_mapping etm
+        -- match best-effort sur l'expéditeur pour suggérer un user/device
+        -- côté UI (l'admin peut ré-attribuer manuellement après création).
+        LEFT JOIN users_cache u ON LOWER(u.email) = LOWER(etm.from_address)
+        LEFT JOIN devices d     ON d.assigned_user_id = u.entra_id
+        ${where}
+        ORDER BY etm.received_at DESC NULLS LAST, etm.created_at DESC
+        LIMIT $${i} OFFSET $${i + 1}
+      `, params)
+
+      reply.send(rows)
+    })
+
+  // GET /api/email/inbox/count — compteur pour le badge UI.
+  fastify.get('/inbox/count',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const { rows } = await fastify.db.query(
+        `SELECT COUNT(*)::int AS pending FROM email_thread_mapping
+         WHERE direction = 'inbound' AND action = 'pending_review'`
+      )
+      reply.send({ pending: rows[0].pending })
+    })
+
+  // POST /api/email/inbox/:id/to-ticket
+  // Convertit un mail en attente en ticket. Crée le ticket avec sa première
+  // description, peuple le premier ticket_message, sync les M2M, et repointe
+  // le mapping. Idempotent : si déjà lié à un ticket → 409.
+  fastify.post('/inbox/:id/to-ticket',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const { entraId, displayName } = fastify.getUserIdentity(req)
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        const tk = await createTicketFromMapping(client, fastify.log, {
+          mappingId: req.params.id,
+          byEntraId: entraId,
+          byName:    displayName,
+        })
+        await client.query('COMMIT')
+        reply.code(201).send({ ticket: tk })
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        if (err.message === 'MAPPING_NOT_FOUND') return reply.code(404).send({ error: 'Mail introuvable' })
+        if (err.message === 'ALREADY_LINKED')    return reply.code(409).send({ error: 'Mail déjà lié à un ticket' })
+        throw err
+      } finally {
+        client.release()
+      }
+    })
+
+  // POST /api/email/inbox/:id/dismiss
+  // Marque le mail comme ignoré (action='skipped_other') sans créer de
+  // ticket. Idempotent : re-clic = 200 no-op.
+  fastify.post('/inbox/:id/dismiss',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        await dismissInboxMapping(client, req.params.id)
+        await client.query('COMMIT')
+        reply.send({ ok: true })
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        if (err.message === 'MAPPING_NOT_FOUND') return reply.code(404).send({ error: 'Mail introuvable' })
+        if (err.message === 'NOT_PENDING')       return reply.code(409).send({ error: 'Mail déjà traité' })
+        throw err
+      } finally {
+        client.release()
+      }
+    })
 
   // GET /api/email/diagnostic — vue d'ensemble pour la modale debug :
   // config classifieur + dernières erreurs + comptage par mailbox.
