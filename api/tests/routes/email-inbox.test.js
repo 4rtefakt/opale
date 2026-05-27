@@ -130,6 +130,27 @@ test('GET /inbox — body_preview est exposé depuis raw',
   }
 )
 
+test('GET /inbox — body_preview HTML legacy → strippé à la lecture (défense en profondeur)',
+  { skip: SKIP }, async () => {
+    const { token } = await adminAuth('oid-inbox-html-strip')
+    await seedInboxMapping(db, {
+      subject: 'Avec HTML legacy',
+      bodyPreview: '<p>Bonjour,</p><p>Compte <strong>bloqué</strong>.</p>',
+    })
+
+    const res = await fastify.inject({
+      method: 'GET', url: '/api/email/inbox',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    const row = res.json().find(r => r.subject === 'Avec HTML legacy')
+    assert.ok(row, 'mail seedé présent')
+    assert.ok(!/<p>|<strong>/.test(row.body_preview),
+      'body_preview ne doit contenir aucune balise HTML après strip défensif')
+    assert.match(row.body_preview, /Bonjour/, 'le contenu texte reste lisible')
+    assert.match(row.body_preview, /bloqué/i)
+  }
+)
+
 test('GET /inbox — classifier_result inclus (advisory)',
   { skip: SKIP }, async () => {
     const { token } = await adminAuth('oid-inbox-classifier')

@@ -8,6 +8,7 @@
 // par l'API existante /api/settings — pas besoin d'endpoints dédiés ici.
 
 import { createTicketFromMapping, dismissInboxMapping } from '../lib/inbox.js'
+import { htmlToText } from '../lib/body-text.js'
 
 export default async function emailRoute(fastify) {
 
@@ -136,7 +137,6 @@ export default async function emailRoute(fastify) {
       const { rows } = await fastify.db.query(`
         SELECT etm.id, etm.mailbox, etm.from_address, etm.subject, etm.received_at,
                etm.action, etm.classifier_result,
-               -- bodyPreview du Graph (déjà strippé en Phase 1) tel quel.
                etm.raw->>'bodyPreview' AS body_preview,
                u.entra_id   AS suggested_user_id,
                u.display_name AS suggested_user_name,
@@ -151,6 +151,12 @@ export default async function emailRoute(fastify) {
         ORDER BY etm.received_at DESC NULLS LAST, etm.created_at DESC
         LIMIT $${i} OFFSET $${i + 1}
       `, params)
+
+      // Strip HTML défensif sur body_preview à la lecture. Les mails ingérés
+      // pré-Phase-3 stockaient parfois du bodyPreview Outlook avec balises
+      // résiduelles dans raw. On normalise ici sans toucher à raw lui-même
+      // (qui reste la source brute Graph pour le diagnostic admin).
+      for (const r of rows) r.body_preview = htmlToText(r.body_preview || '')
 
       reply.send(rows)
     })
