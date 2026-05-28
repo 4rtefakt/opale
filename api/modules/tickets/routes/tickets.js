@@ -8,6 +8,7 @@ import {
 import {
   saveAttachmentStream, openAttachment, deleteAttachmentFile, contentDisposition,
 } from '../lib/attachments.js'
+import { generateSuggestion } from '../lib/assistant.js'
 
 // Taille max d'une pièce jointe : 25 Mo.
 const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
@@ -556,6 +557,74 @@ export default async function ticketsRoute(fastify) {
       await fastify.db.query('UPDATE tickets SET updated_at = now() WHERE id = $1', [req.params.id])
       reply.send(rows[0])
     })
+
+  // POST /api/tickets/:id/ai-suggest
+  // Génère via Ollama une suggestion de réponse / prochaine étape de
+  // diagnostic à partir du contexte du ticket, et l'ajoute au fil comme un
+  // message type='ai_suggestion' (jamais envoyé par mail : l'outbox filtre
+  // type='comment'). Brouillon que l'admin relit/édite avant d'envoyer.
+  fastify.post('/:id/ai-suggest', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
+    if (!acl) return
+
+    const { rows: cfgRows } = await fastify.db.query(
+      `SELECT key, value FROM settings WHERE key IN
+        ('tickets.assistant.enabled','tickets.assistant.url','tickets.assistant.model')`
+    )
+    const cfg = Object.fromEntries(cfgRows.map(r => [r.key, r.value]))
+    if (cfg['tickets.assistant.enabled'] !== 'true') {
+      return reply.code(409).send({ error: 'Assistant IA désactivé' })
+    }
+    const url = cfg['tickets.assistant.url'], model = cfg['tickets.assistant.model']
+    if (!url || !model) return reply.code(409).send({ error: 'Assistant IA non configuré' })
+
+    const { rows: tk } = await fastify.db.query(
+      `SELECT title, description FROM tickets WHERE id = $1`, [req.params.id]
+    )
+    if (!tk.length) return reply.code(404).send({ error: 'Ticket introuvable' })
+
+    // Contexte : derniers échanges humains (pas system ni suggestions IA).
+    const { rows: msgs } = await fastify.db.query(
+      `SELECT author, content FROM ticket_messages
+       WHERE ticket_id = $1 AND type IN ('comment','internal_note')
+       ORDER BY created_at ASC LIMIT 20`,
+      [req.params.id]
+    )
+
+    let suggestion
+    try {
+      const gen = fastify.generateSuggestion || generateSuggestion
+      suggestion = await gen({
+        title: tk[0].title, description: tk[0].description, messages: msgs, url, model,
+      })
+    } catch (err) {
+      req.log?.warn({ err: err.message, ticketId: req.params.id }, 'ai-suggest: génération échouée')
+      return reply.code(502).send({ error: 'La génération IA a échoué (Ollama indisponible ?)' })
+    }
+
+    // email_sent_at=now() : sécurité anti-outbox (en plus du filtre type).
+    const { rows } = await fastify.db.query(`
+      INSERT INTO ticket_messages (ticket_id, type, author, content, email_sent_at)
+      VALUES ($1, 'ai_suggestion', 'Assistant IA', $2, now())
+      RETURNING *
+    `, [req.params.id, suggestion])
+    reply.code(201).send(rows[0])
+  })
+
+  // DELETE /api/tickets/:id/messages/:msgId — réservé aux brouillons IA.
+  // On ne permet de supprimer QUE les ai_suggestion (l'historique réel des
+  // échanges n'est jamais effaçable depuis l'UI).
+  fastify.delete('/:id/messages/:msgId', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
+    if (!acl) return
+    const { rowCount } = await fastify.db.query(
+      `DELETE FROM ticket_messages
+       WHERE id = $1 AND ticket_id = $2 AND type = 'ai_suggestion'`,
+      [req.params.msgId, req.params.id]
+    )
+    if (!rowCount) return reply.code(404).send({ error: 'Suggestion introuvable' })
+    reply.code(204).send()
+  })
 
   // ───────────────────────────────────────────────────────────────────────────
   // Phase 2 — Relations M2M users / devices + merge
