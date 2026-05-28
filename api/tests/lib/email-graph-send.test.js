@@ -16,7 +16,11 @@ function mockFetch(calls, { failAt } = {}) {
       return { ok: false, status: 400, text: async () => '{"error":"boom"}' }
     }
     if (url.endsWith('/createReply')) {
-      return { ok: true, status: 201, json: async () => ({ id: 'DRAFT-123' }) }
+      // Graph renvoie le brouillon avec la citation du fil pré-remplie.
+      return { ok: true, status: 201, json: async () => ({
+        id: 'DRAFT-123',
+        body: { contentType: 'HTML', content: '<div id="quote">De: Marie<br>&gt; message original</div>' },
+      }) }
     }
     return { ok: true, status: 202, json: async () => ({}) }
   }
@@ -41,10 +45,15 @@ test('sendReply : séquence createReply → PATCH → send sur la bonne mailbox'
   // 1. createReply sur le message d'origine
   assert.match(calls[0].url, /\/users\/support%40tdv\.org\/messages\/AAMk-orig\/createReply$/)
   assert.equal(calls[0].method, 'POST')
-  // 2. PATCH du brouillon créé
+  // 2. PATCH du brouillon créé : notre texte AU-DESSUS de la citation héritée
   assert.match(calls[1].url, /\/messages\/DRAFT-123$/)
   assert.equal(calls[1].method, 'PATCH')
   assert.match(calls[1].body, /Bonjour/)
+  assert.match(calls[1].body, /message original/, 'la citation du fil est préservée')
+  // ordre : notre réponse avant la citation
+  const patched = JSON.parse(calls[1].body).body.content
+  assert.ok(patched.indexOf('Bonjour') < patched.indexOf('message original'),
+    'notre texte doit précéder la citation')
   // 3. send du brouillon
   assert.match(calls[2].url, /\/messages\/DRAFT-123\/send$/)
   assert.equal(calls[2].method, 'POST')
