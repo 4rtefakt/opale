@@ -67,6 +67,40 @@ class API {
   sendMessageByMail(ticketId, msgId) {
     return this._fetch(`/tickets/${ticketId}/messages/${msgId}/send-by-mail`, { method: 'POST' })
   }
+  // Pièces jointes (upload manuel)
+  async uploadAttachment(ticketId, file) {
+    const token = await window.auth.getToken()
+    const base  = window.ENV?.API_BASE_URL || '/api'
+    const fd = new FormData()
+    fd.append('file', file)
+    // Pas de Content-Type explicite : le navigateur pose le multipart +
+    // boundary lui-même. _fetch n'est pas utilisable (force application/json).
+    const res = await fetch(`${base}/tickets/${ticketId}/attachments`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: fd,
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new ApiError(res.status, data.error || 'Upload échoué', data)
+    return data
+  }
+  deleteAttachment(ticketId, attId) {
+    return this._fetch(`/tickets/${ticketId}/attachments/${attId}`, { method: 'DELETE' })
+  }
+  async downloadAttachment(ticketId, attId, filename) {
+    const token = await window.auth.getToken()
+    const base  = window.ENV?.API_BASE_URL || '/api'
+    const res = await fetch(`${base}/tickets/${ticketId}/attachments/${attId}/download`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) throw new ApiError(res.status, 'Téléchargement échoué')
+    const url = URL.createObjectURL(await res.blob())
+    const a = document.createElement('a')
+    a.href = url; a.download = filename || 'fichier'
+    document.body.appendChild(a); a.click(); a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   // Phase 2 — relations M2M users/devices + merge
   addTicketUser(ticketId, body)      { return this._fetch(`/tickets/${ticketId}/users`, { method: 'POST', body }) }
   removeTicketUser(ticketId, entraId) { return this._fetch(`/tickets/${ticketId}/users/${encodeURIComponent(entraId)}`, { method: 'DELETE' }) }

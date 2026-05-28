@@ -283,18 +283,41 @@ without modifying anything.
 #    ticket_message, replacing the description with a short "Mail de X
 #    reçu le Y" header. Idempotent.
 docker compose exec api node \
-  /app/api/scripts/migrate-html-descriptions-to-messages.js --check
+  /app/scripts/migrate-html-descriptions-to-messages.js --check
 docker compose exec api node \
-  /app/api/scripts/migrate-html-descriptions-to-messages.js
+  /app/scripts/migrate-html-descriptions-to-messages.js
 
 # 2. Re-inject legacy emails previously classified as "skipped_other"
 #    by the old auto-classifier back into the "to sort" inbox, so an
 #    admin can verify there were no false positives. Re-runs the
 #    classifier in advisory mode if configured. Idempotent.
 docker compose exec api node \
-  /app/api/scripts/migrate-legacy-skipped-to-inbox.js --check
+  /app/scripts/migrate-legacy-skipped-to-inbox.js --check
 docker compose exec api node \
-  /app/api/scripts/migrate-legacy-skipped-to-inbox.js
+  /app/scripts/migrate-legacy-skipped-to-inbox.js
+```
+
+**Ticket attachments storage** — uploaded files are stored on disk under
+`/app/data/ticket-attachments` inside the API container (referenced from
+`ticket_attachments.storage_path` in the DB). Mount a writable volume for
+that path so files survive container rebuilds, e.g. in your compose:
+
+```yaml
+  api:
+    volumes:
+      - attachments_data:/app/data/ticket-attachments
+# …
+volumes:
+  attachments_data:
+```
+
+Override the base path with `ATTACHMENTS_DIR` if needed. Files are pruned
+6 months after a ticket is closed by a maintenance script (cron-friendly,
+`--check` for dry-run):
+
+```bash
+docker compose exec api node /app/scripts/purge-old-attachments.js --check
+docker compose exec api node /app/scripts/purge-old-attachments.js
 ```
 
 **Updating the agent fleet** — bump the version in
