@@ -249,7 +249,7 @@ export async function renderTickets(el) {
         return `
           <span style="display:inline-flex;align-items:center;gap:4px;background:${color};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px">
             ${esc(g.name)}
-            <i class="ti ti-x" style="cursor:pointer;font-size:11px" onclick="mNtiRemoveTag('${esc(g.id)}')"></i>
+            <i class="ti ti-x" style="cursor:pointer;font-size:11px;padding:8px;margin:-8px -4px -8px 0" onclick="mNtiRemoveTag('${esc(g.id)}')"></i>
           </span>`
       }).join('')
       area.innerHTML = chips + `
@@ -466,7 +466,7 @@ function renderActiveChips() {
 
 function advChip(label, key) {
   return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-secondary);font-size:11px;padding:2px 8px;border-radius:10px">
-    ${esc(label)} <span style="cursor:pointer;opacity:0.7" onclick="mTkRemoveChip('${esc(key)}')">×</span>
+    ${esc(label)} <span style="cursor:pointer;opacity:0.7;padding:8px;margin:-8px -4px -8px 0" onclick="mTkRemoveChip('${esc(key)}')">×</span>
   </span>`
 }
 

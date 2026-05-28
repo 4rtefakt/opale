@@ -465,7 +465,8 @@ function mPerfPanel(d) {
       const icon = stat === 'ac' || stat === 'full' ? 'ti-plug' :
                    stat === 'charging' ? 'ti-battery-charging' :
                    sp.battery_pct < 20 ? 'ti-battery-1' : 'ti-battery'
-      rows.push(hwRow(icon, 'Batterie', `${sp.battery_pct}%${stat ? ' · ' + stat : ''}`))
+      const statLabel = stat ? batteryStatusLabel(stat) : ''
+      rows.push(hwRow(icon, 'Batterie', `${sp.battery_pct}%${statLabel ? ' · ' + statLabel : ''}`))
     }
   }
 
@@ -513,6 +514,12 @@ function complianceBadge(state) {
   const m = map[state]
   if (!m) return esc(state)
   return `<span style="color:${m.color}">${m.text}</span>`
+}
+
+function batteryStatusLabel(stat) {
+  const key   = 'battery.status.' + stat
+  const label = t(key)
+  return label === key ? stat : label
 }
 
 function formatJoinType(jt) {

@@ -63,7 +63,7 @@ html, body {
 .m-header h1 { font-size: 17px; font-weight: 700; flex: 1; }
 
 .m-icon-btn {
-  width: 36px; height: 36px; border-radius: 10px;
+  width: 44px; height: 44px; border-radius: 10px;
   background: var(--bg-tertiary); border: none;
   color: var(--text-secondary); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
@@ -163,7 +163,8 @@ html, body {
 }
 .m-filters::-webkit-scrollbar { display: none; }
 .m-filter-pill {
-  padding: 5px 12px; border-radius: 99px; font-size: 11px; font-weight: 600;
+  display: inline-flex; align-items: center;
+  min-height: 44px; padding: 0 14px; border-radius: 99px; font-size: 11px; font-weight: 600;
   border: none; cursor: pointer; white-space: nowrap;
   background: var(--bg-secondary); color: var(--text-secondary);
 }
@@ -336,7 +337,8 @@ textarea.m-input { font-family: inherit; }
 }
 .m-ssh-quick-row::-webkit-scrollbar { display: none; }
 .m-ssh-quick-btn {
-  padding: 4px 10px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
+  display: inline-flex; align-items: center; min-height: 44px;
+  padding: 0 12px; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 6px;
   color: #94a3b8; font-size: 11px; font-weight: 500; cursor: pointer;
   white-space: nowrap; flex-shrink: 0; touch-action: manipulation;
 }
@@ -402,6 +404,7 @@ textarea.m-input { font-family: inherit; }
 .m-menu-tile.teal   { color: #2dd4bf; }
 .m-menu-tile.orange { color: var(--orange); }
 .m-menu-tile.red    { color: var(--red); }
+.m-menu-tile.indigo { color: #818cf8; }
 
 /* ── Menu rows ── */
 .m-menu-row {

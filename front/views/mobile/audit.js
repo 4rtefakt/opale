@@ -13,6 +13,15 @@ const ICONS = {
   script_run:     'ti-player-play',
 }
 
+// Libellé lisible de l'action — réutilise le namespace i18n du dashboard
+// (dashboard.activity.action.*). Fallback : nom brut sans underscores plutôt
+// que le code SCREAMING_CASE.
+function actionLabel(action) {
+  const key   = 'dashboard.activity.action.' + action
+  const label = t(key)
+  return label === key ? action.replace(/_/g, ' ') : label
+}
+
 // Ligne principale lisible selon l'action
 function rowTitle(r) {
   const d = r.details || {}
@@ -171,7 +180,7 @@ function renderRows(action, append, newRows) {
         </div>
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
-            <span style="font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.3px">${esc(r.action)}</span>
+            <span style="font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.3px">${esc(actionLabel(r.action))}</span>
             ${levelColor ? `<span style="font-size:10px;font-weight:700;color:${levelColor}">${esc(d.level?.toUpperCase() || '')}</span>` : ''}
           </div>
           <div style="font-size:13px;font-weight:600;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(title)}</div>

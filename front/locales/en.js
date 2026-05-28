@@ -102,6 +102,28 @@ export default {
   'dashboard.activity.action.agent_bootstrap_exchange': 'Agent bootstrap',
   'dashboard.activity.action.laps_rotated':             'LAPS rotated',
   'dashboard.activity.action.script_executed_remote':   'Script executed',
+  'dashboard.activity.action.agent_checkin':            'Agent checkin',
+  'dashboard.activity.action.setup_script':             'Setup script',
+  'dashboard.activity.action.ssh_session':              'SSH session',
+  'dashboard.activity.action.script_run':               'Script run',
+  'dashboard.activity.action.ticket_created':           'Ticket created',
+  'dashboard.activity.action.ticket_resolved':          'Ticket resolved',
+
+  'compliance.state.compliant':     'Compliant',
+  'compliance.state.noncompliant':  'Non-compliant',
+  'compliance.state.conflict':      'Conflict',
+  'compliance.state.error':         'Error',
+  'compliance.state.inGracePeriod': 'Grace period',
+  'compliance.state.notApplicable': 'Not applicable',
+  'compliance.state.unknown':       'Unknown',
+  'compliance.state.configManager': 'Config Manager',
+
+  'battery.status.ac':          'On AC',
+  'battery.status.charging':    'Charging',
+  'battery.status.discharging': 'On battery',
+  'battery.status.full':        'Full',
+  'battery.status.low':         'Low',
+  'battery.status.critical':    'Critical',
 
   'postes.search':          'Search name, user, model...',
 

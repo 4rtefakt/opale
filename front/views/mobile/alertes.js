@@ -1,6 +1,14 @@
 let _data   = null
 let _filter = 'all'
 
+// Traduit l'enum Intune (compliance_state) en libellé lisible. Fallback : la
+// valeur brute, jamais un code i18n non résolu.
+function complianceStateLabel(state) {
+  const key   = 'compliance.state.' + state
+  const label = t(key)
+  return label === key ? state : label
+}
+
 export async function renderAlertes(el) {
   _filter = 'all'
   el.innerHTML = `
@@ -65,13 +73,20 @@ function allAlerts() {
       : t('mobile.alertes.msg.offline'),
     sub: d.user_name || '',
   }))
-  ;(_data.non_compliant || []).forEach(d => alerts.push({
-    type: 'non_compliant', id: d.id, hostname: d.hostname, user_name: d.user_name,
-    message: d.compliance_state
-      ? t('mobile.alertes.msg.non_compliant_state', { state: d.compliance_state })
-      : t('mobile.alertes.msg.non_compliant'),
-    sub: d.user_name || '',
-  }))
+  ;(_data.non_compliant || []).forEach(d => {
+    // L'état brut (noncompliant) ne fait que répéter le préfixe « Non conforme »
+    // → on ne montre le sous-état que s'il apporte une info (conflit, période de
+    // grâce, erreur…). L'enum est traduit, jamais affiché brut.
+    const state = d.compliance_state
+    const message = state && state !== 'noncompliant'
+      ? t('mobile.alertes.msg.non_compliant_state', { state: complianceStateLabel(state) })
+      : t('mobile.alertes.msg.non_compliant')
+    alerts.push({
+      type: 'non_compliant', id: d.id, hostname: d.hostname, user_name: d.user_name,
+      message,
+      sub: d.user_name || '',
+    })
+  })
 
   return alerts
 }
