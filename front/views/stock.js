@@ -1,6 +1,9 @@
 // Vue Stock — KPI + table + panneau glissant + modals
 let _items     = []
 let _panelId   = null
+// Map display_name → entra_id, alimentée par l'autocomplete destinataire
+// pour résoudre un nom saisi vers un user de l'annuaire à la soumission.
+let _recipientMap = {}
 
 export async function renderStock(container) {
   container.innerHTML = `
@@ -191,8 +194,8 @@ function renderPanelBody(item, mvts) {
             <i class="ti ti-${m.type==='in'?'arrow-down':'arrow-up'}"></i>
           </div>
           <div class="mvt-info">
-            <div class="mvt-label">${m.by_name || m.user_id || '—'}</div>
-            <div class="mvt-sub">${m.note ? esc(m.note) : formatRelative(m.created_at || m.date)}</div>
+            <div class="mvt-label">${m.by_name || m.user_id || '—'}${(m.recipient_name || m.recipient_label) ? ` <span style="color:var(--text-tertiary)">→</span> ${esc(m.recipient_name || m.recipient_label)}` : ''}</div>
+            <div class="mvt-sub">${m.note ? esc(m.note) + ' · ' : ''}${formatRelative(m.created_at || m.date)}</div>
           </div>
           <div class="mvt-qty" style="color:var(--${m.type==='in'?'green':'red'})">${m.type==='in'?'+':'−'}${m.quantity}</div>
         </div>`).join('')
@@ -205,6 +208,56 @@ function closePanel() {
   _panelId = null
 }
 
+// Champ destinataire commun aux deux modales (entrée/sortie). Optionnel :
+// autocomplete sur l'annuaire mais accepte aussi du texte libre.
+function recipientFieldHtml() {
+  return `
+    <div class="form-row">
+      <label class="form-label">${t('stock.modal.recipient')}</label>
+      <input class="form-input" id="mvt-recipient" list="mvt-recipient-dl"
+        placeholder="${t('stock.modal.recipient_placeholder')}" autocomplete="off">
+      <datalist id="mvt-recipient-dl"></datalist>
+    </div>`
+}
+
+// Branche l'autocomplete annuaire sur le champ destinataire. Réinitialise
+// la map à chaque ouverture de modale pour ne pas garder des entrées d'une
+// session précédente.
+function wireRecipientField() {
+  _recipientMap = {}
+  const input = document.getElementById('mvt-recipient')
+  const dl    = document.getElementById('mvt-recipient-dl')
+  if (!input || !dl) return
+  let timer
+  input.addEventListener('input', () => {
+    clearTimeout(timer)
+    const q = input.value.trim()
+    if (q.length < 2) return
+    timer = setTimeout(async () => {
+      try {
+        const users = await window.api.searchUsers(q)
+        _recipientMap = {}
+        dl.innerHTML = users.map(u => {
+          _recipientMap[u.display_name] = u.entra_id
+          return `<option value="${esc(u.display_name)}">`
+        }).join('')
+      } catch { /* autocomplete best-effort */ }
+    }, 200)
+  })
+}
+
+// Construit le payload destinataire : si le texte saisi correspond exactement
+// à un nom de l'annuaire (résolu via _recipientMap), on lie l'entra_id ;
+// sinon on garde le texte libre dans recipient_label.
+function getRecipientPayload() {
+  const val = document.getElementById('mvt-recipient')?.value?.trim()
+  if (!val) return {}
+  const entraId = _recipientMap[val]
+  return entraId
+    ? { recipient_user_id: entraId, recipient_label: val }
+    : { recipient_label: val }
+}
+
 function openInModal(id) {
   const item = _items.find(i => i.id === id)
   showModal(`
@@ -214,6 +267,7 @@ function openInModal(id) {
         <label class="form-label">${t('stock.modal.quantity')}</label>
         <input class="form-input" id="mvt-qty" type="number" min="1" value="1">
       </div>
+      ${recipientFieldHtml()}
       <div class="form-row">
         <label class="form-label">${t('stock.modal.note')}</label>
         <input class="form-input" id="mvt-note" placeholder="${t('stock.modal.note_placeholder')}">
@@ -223,6 +277,7 @@ function openInModal(id) {
       <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
       <button class="btn btn-primary" onclick="submitMovement('${id}','in')">${t('stock.btn.in')}</button>
     </div>`)
+  wireRecipientField()
   window.submitMovement = submitMovement
 }
 
@@ -235,6 +290,7 @@ function openOutModal(id) {
         <label class="form-label">${t('stock.modal.quantity')}</label>
         <input class="form-input" id="mvt-qty" type="number" min="1" max="${item?.quantity||9999}" value="1">
       </div>
+      ${recipientFieldHtml()}
       <div class="form-row">
         <label class="form-label">${t('stock.modal.note')}</label>
         <input class="form-input" id="mvt-note" placeholder="${t('stock.modal.note_placeholder')}">
@@ -244,6 +300,7 @@ function openOutModal(id) {
       <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
       <button class="btn btn-primary" onclick="submitMovement('${id}','out')">${t('stock.btn.out')}</button>
     </div>`)
+  wireRecipientField()
   window.submitMovement = submitMovement
 }
 
@@ -252,7 +309,7 @@ async function submitMovement(id, type) {
   const note = document.getElementById('mvt-note')?.value?.trim()
   if (!qty || qty < 1) { showToast(t('stock.modal.qty_required'), 'error'); return }
   try {
-    const { item } = await window.api.addMovement(id, { type, quantity: qty, note })
+    const { item } = await window.api.addMovement(id, { type, quantity: qty, note, ...getRecipientPayload() })
     const idx = _items.findIndex(i => i.id === id)
     if (idx !== -1) _items[idx] = { ..._items[idx], ...item }
     closeModal()

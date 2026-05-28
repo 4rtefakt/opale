@@ -361,6 +361,8 @@ export default {
   'stock.panel.movements':    'Recent movements',
   'stock.panel.no_movements': 'No movements',
   'stock.modal.quantity':     'Quantity',
+  'stock.modal.recipient':    'Concerned person (optional)',
+  'stock.modal.recipient_placeholder': 'Name — directory or free text',
   'stock.modal.note':         'Note (optional)',
   'stock.modal.note_placeholder': 'Reason, order number...',
   'stock.modal.qty_required': 'Invalid quantity',

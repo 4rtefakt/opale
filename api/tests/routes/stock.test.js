@@ -157,6 +157,67 @@ test('POST /api/stock/:id/movements — out dépasse le stock → 409', { skip: 
   assert.match(res.json().error, /[Ss]tock/)
 })
 
+test('POST /api/stock/:id/movements — destinataire annuaire (recipient_user_id)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-stock-rcpt-adm')
+  const recipient = await seedNonAdmin(db, { entraId: 'oid-stock-rcpt-bob', displayName: 'Bob Receveur', email: 'bob-rcpt@x' })
+  const item = await seedStockItem(db, { name: 'Clavier', quantity: 5 })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/stock/${item.id}/movements`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { type: 'out', quantity: 1, note: 'remplacement', recipient_user_id: recipient.entraId },
+  })
+  assert.equal(res.statusCode, 201)
+
+  const hist = await fastify.inject({
+    method: 'GET', url: `/api/stock/${item.id}/movements`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  const mvt = hist.json()[0]
+  assert.equal(mvt.recipient_user_id, recipient.entraId)
+  assert.equal(mvt.recipient_name, 'Bob Receveur', 'le nom annuaire est joint au GET')
+})
+
+test('POST /api/stock/:id/movements — destinataire texte libre (recipient_label)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-stock-rcpt-label')
+  const item = await seedStockItem(db, { name: 'Souris', quantity: 5 })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/stock/${item.id}/movements`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { type: 'out', quantity: 1, recipient_label: 'Atelier maintenance' },
+  })
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.json().movement.recipient_label, 'Atelier maintenance')
+  assert.equal(res.json().movement.recipient_user_id, null)
+})
+
+test('POST /api/stock/:id/movements — recipient_user_id inconnu → 400', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-stock-rcpt-404')
+  const item = await seedStockItem(db, { name: 'Câble', quantity: 5 })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/stock/${item.id}/movements`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { type: 'out', quantity: 1, recipient_user_id: 'oid-inexistant' },
+  })
+  assert.equal(res.statusCode, 400)
+})
+
+test('POST /api/stock/:id/movements — sans destinataire → OK (champ optionnel)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-stock-rcpt-none')
+  const item = await seedStockItem(db, { name: 'Adaptateur', quantity: 5 })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/stock/${item.id}/movements`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { type: 'out', quantity: 1 },
+  })
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.json().movement.recipient_user_id, null)
+  assert.equal(res.json().movement.recipient_label, null)
+})
+
 test('GET /api/stock/:id/movements — retourne l\'historique', { skip: SKIP }, async () => {
   const token = await adminToken('oid-stock-hist')
   const item = await seedStockItem(db, { name: 'Item Historique', quantity: 10 })

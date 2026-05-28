@@ -126,12 +126,17 @@ export default async function stockRoute(fastify) {
           quantity:  { type: 'integer', minimum: 1 },
           note:      { type: 'string', maxLength: 500 },
           device_id: { type: 'string' },
+          // Destinataire optionnel (à qui part / d'où vient le consommable).
+          // recipient_user_id : entra_id si choisi dans l'annuaire.
+          // recipient_label   : texte libre (hors annuaire, ou simple note).
+          recipient_user_id: { type: 'string' },
+          recipient_label:   { type: 'string', maxLength: 200 },
         },
         additionalProperties: false,
       },
     },
   }, async (req, reply) => {
-    const { type, quantity, note, device_id } = req.body
+    const { type, quantity, note, device_id, recipient_user_id, recipient_label } = req.body
     // type et quantity sont validés par le schéma (requis + enum + minimum 1)
 
     const qty = parseInt(quantity, 10)
@@ -144,12 +149,24 @@ export default async function stockRoute(fastify) {
       return reply.code(409).send({ error: 'Stock insuffisant' })
     }
 
+    // Si un recipient_user_id est fourni, vérifier qu'il existe (FK explicite
+    // → 400 clair plutôt qu'une erreur SQL 23503).
+    if (recipient_user_id) {
+      const { rows: u } = await fastify.db.query(
+        'SELECT 1 FROM users_cache WHERE entra_id = $1', [recipient_user_id]
+      )
+      if (!u.length) return reply.code(400).send({ error: 'Destinataire introuvable dans l\'annuaire' })
+    }
+
     const delta = type === 'in' ? qty : -qty
 
     const { rows: mvt } = await fastify.db.query(`
-      INSERT INTO stock_movements (item_id, type, quantity, note, device_id, user_id, by_name)
-      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *
-    `, [req.params.id, type, qty, note || null, device_id || null, entraId, displayName])
+      INSERT INTO stock_movements
+        (item_id, type, quantity, note, device_id, user_id, by_name,
+         recipient_user_id, recipient_label)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *
+    `, [req.params.id, type, qty, note || null, device_id || null, entraId, displayName,
+        recipient_user_id || null, recipient_label || null])
 
     const { rows: updated } = await fastify.db.query(`
       UPDATE stock_items
@@ -173,9 +190,11 @@ export default async function stockRoute(fastify) {
     },
   }, async (req, reply) => {
     const { rows } = await fastify.db.query(`
-      SELECT m.*, d.hostname
+      SELECT m.*, d.hostname,
+             u.display_name AS recipient_name
       FROM stock_movements m
-      LEFT JOIN devices d ON d.id = m.device_id
+      LEFT JOIN devices d     ON d.id = m.device_id
+      LEFT JOIN users_cache u ON u.entra_id = m.recipient_user_id
       WHERE m.item_id = $1
       ORDER BY COALESCE(m.created_at, m.date) DESC
       LIMIT 50

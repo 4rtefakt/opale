@@ -549,6 +549,8 @@ export default {
   'stock.panel.movements':    'Mouvements récents',
   'stock.panel.no_movements': 'Aucun mouvement',
   'stock.modal.quantity':     'Quantité',
+  'stock.modal.recipient':    'Personne concernée (optionnel)',
+  'stock.modal.recipient_placeholder': 'Nom — annuaire ou texte libre',
   'stock.modal.note':         'Note (optionnel)',
   'stock.modal.note_placeholder': 'Motif, numéro de commande...',
   'stock.modal.qty_required': 'Quantité invalide',
