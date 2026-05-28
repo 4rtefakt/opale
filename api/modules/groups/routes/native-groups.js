@@ -21,6 +21,24 @@ export default async function nativeGroupsRoute(fastify) {
     reply.send(rows)
   })
 
+  // ─── GET /api/groups/overlaps ────────────────────────────────────────────
+  // Pour le diagramme : pour chaque paire de groupes partageant ≥1 membre
+  // (user OU device), le nombre de membres communs. Le front en dérive
+  // l'overlap visuel (shared > 0) et l'inclusion (shared == member_count du
+  // plus petit). Déclaré AVANT /:id pour ne pas être pris pour un id.
+  fastify.get('/overlaps', { preHandler: auth }, async (_req, reply) => {
+    const { rows } = await fastify.db.query(`
+      SELECT a.group_id AS a, b.group_id AS b, COUNT(*)::int AS shared
+      FROM group_members a
+      JOIN group_members b
+        ON a.group_id < b.group_id
+       AND ( (a.user_id   IS NOT NULL AND a.user_id   = b.user_id)
+          OR (a.device_id IS NOT NULL AND a.device_id = b.device_id) )
+      GROUP BY a.group_id, b.group_id
+    `)
+    reply.send(rows)
+  })
+
   // ─── POST /api/groups ────────────────────────────────────────────────────
   fastify.post('/', { preHandler: auth }, async (req, reply) => {
     const name        = String(req.body?.name        ?? '').trim()

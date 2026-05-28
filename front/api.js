@@ -269,6 +269,7 @@ class API {
   // Groupes natifs
   getGroups()                           { return this._fetch('/groups') }
   getGroup(id)                          { return this._fetch(`/groups/${id}`) }
+  getGroupOverlaps()                    { return this._fetch('/groups/overlaps') }
   createGroup(body)                     { return this._fetch('/groups', { method: 'POST', body }) }
   updateGroup(id, body)                 { return this._fetch(`/groups/${id}`, { method: 'PATCH', body }) }
   deleteGroup(id)                       { return this._fetch(`/groups/${id}`, { method: 'DELETE' }) }
