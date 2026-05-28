@@ -88,3 +88,52 @@ test('generateSuggestion : Ollama 500 → throw', async () => {
     /Ollama 500/
   )
 })
+
+test('generateSuggestion anthropic : /v1/messages, x-api-key, texte depuis content[]', async () => {
+  let captured
+  const fetchImpl = async (url, opts) => {
+    captured = { url, headers: opts.headers, body: JSON.parse(opts.body) }
+    return { ok: true, json: async () => ({ content: [
+      { type: 'text', text: '  Vérifiez la connexion VPN.  ' },
+    ] }) }
+  }
+  const out = await generateSuggestion({
+    title: 'T', provider: 'anthropic', apiKey: 'sk-ant', model: 'claude-haiku-4-5-20251001', fetchImpl,
+  })
+  assert.equal(out, 'Vérifiez la connexion VPN.')
+  assert.match(captured.url, /\/v1\/messages$/)
+  assert.equal(captured.headers['x-api-key'], 'sk-ant')
+  assert.equal(captured.body.model, 'claude-haiku-4-5-20251001')
+  assert.equal(captured.body.messages[0].role, 'user')
+  assert.match(captured.body.system, /support informatique interne/)
+})
+
+test('generateSuggestion anthropic : clé manquante → throw', async () => {
+  await assert.rejects(
+    () => generateSuggestion({ title: 'T', provider: 'anthropic', model: 'm', fetchImpl: async () => ({}) }),
+    /clé API manquante/
+  )
+})
+
+test('generateSuggestion anthropic : statut non-ok → throw avec détail', async () => {
+  const fetchImpl = async () => ({ ok: false, status: 401, text: async () => 'bad key' })
+  await assert.rejects(
+    () => generateSuggestion({ title: 'T', provider: 'anthropic', apiKey: 'k', model: 'm', fetchImpl }),
+    /Anthropic 401 — bad key/
+  )
+})
+
+test('generateSuggestion : provider inconnu → throw', async () => {
+  await assert.rejects(
+    () => generateSuggestion({ title: 'T', provider: 'gemini', model: 'm', fetchImpl: async () => ({}) }),
+    /provider inconnu/
+  )
+})
+
+test('generateSuggestion anthropic : réponse sans texte → throw', async () => {
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ content: [] }) })
+  await assert.rejects(
+    () => generateSuggestion({ title: 'T', provider: 'anthropic', apiKey: 'k', model: 'm', fetchImpl }),
+    /réponse vide/
+  )
+})

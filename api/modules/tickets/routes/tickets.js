@@ -569,15 +569,26 @@ export default async function ticketsRoute(fastify) {
 
     const { rows: cfgRows } = await fastify.db.query(
       `SELECT key, value FROM settings WHERE key IN
-        ('tickets.assistant.enabled','tickets.assistant.url','tickets.assistant.model',
-         'tickets.assistant.system_prompt')`
+        ('tickets.assistant.enabled','tickets.assistant.provider','tickets.assistant.url',
+         'tickets.assistant.model','tickets.assistant.system_prompt')`
     )
     const cfg = Object.fromEntries(cfgRows.map(r => [r.key, r.value]))
     if (cfg['tickets.assistant.enabled'] !== 'true') {
       return reply.code(409).send({ error: 'Assistant IA désactivé' })
     }
-    const url = cfg['tickets.assistant.url'], model = cfg['tickets.assistant.model']
-    if (!url || !model) return reply.code(409).send({ error: 'Assistant IA non configuré' })
+    // Provider : 'ollama' (local) ou 'anthropic' (Claude). La clé Anthropic est
+    // partagée avec Ask Opale (env OPALE_ASK_API_KEY), jamais en settings.
+    const provider = cfg['tickets.assistant.provider'] || 'ollama'
+    const model = cfg['tickets.assistant.model']
+    const url = cfg['tickets.assistant.url']
+    const apiKey = process.env.OPALE_ASK_API_KEY || ''
+    if (!model) return reply.code(409).send({ error: 'Assistant IA non configuré' })
+    if (provider === 'anthropic' && !apiKey) {
+      return reply.code(409).send({ error: 'Assistant IA non configuré (clé API manquante)' })
+    }
+    if (provider === 'ollama' && !url) {
+      return reply.code(409).send({ error: 'Assistant IA non configuré (url Ollama manquante)' })
+    }
 
     const { rows: tk } = await fastify.db.query(
       `SELECT title, description, priority, status FROM tickets WHERE id = $1`, [req.params.id]
@@ -617,12 +628,16 @@ export default async function ticketsRoute(fastify) {
         title: tk[0].title, description: tk[0].description,
         priority: tk[0].priority, status: tk[0].status,
         device: dev, requester, tags: tagsR.rows.map(r => r.name),
-        messages: msgsR.rows, url, model,
+        messages: msgsR.rows, model,
+        provider,
+        // url ne sert qu'à Ollama ; Anthropic utilise son endpoint par défaut.
+        url: provider === 'ollama' ? url : undefined,
+        apiKey: provider === 'anthropic' ? apiKey : undefined,
         systemPrompt: cfg['tickets.assistant.system_prompt'],
       })
     } catch (err) {
       req.log?.warn({ err: err.message, ticketId: req.params.id }, 'ai-suggest: génération échouée')
-      return reply.code(502).send({ error: 'La génération IA a échoué (Ollama indisponible ?)' })
+      return reply.code(502).send({ error: 'La génération IA a échoué (modèle indisponible ?)' })
     }
 
     // email_sent_at=now() : sécurité anti-outbox (en plus du filtre type).

@@ -39,41 +39,81 @@ export function buildAssistantPrompt({
   return lines.join('\n')
 }
 
-// Appelle Ollama /api/chat (texte libre, pas de format JSON). Retourne la
-// suggestion en texte. fetchImpl injectable pour les tests.
+const ANTHROPIC_DEFAULT_URL = 'https://api.anthropic.com'
+const TEMPERATURE = 0.4  // un peu de souplesse, mais pas trop
+
+// Génère une suggestion (texte libre). Deux backends possibles :
+//   - 'ollama'    : instance locale via /api/chat (défaut historique)
+//   - 'anthropic' : Claude via /v1/messages (clé en apiKey)
+// Le classifieur mail, lui, reste TOUJOURS sur Ollama (hors de ce module).
+// fetchImpl injectable pour les tests.
 export async function generateSuggestion(
-  { systemPrompt, url, model, fetchImpl = fetch, timeoutMs = 45_000, ...ctx } = {}
+  { systemPrompt, provider = 'ollama', url, model, apiKey, fetchImpl = fetch, timeoutMs = 45_000, ...ctx } = {}
 ) {
-  if (!url)   throw new Error('assistant: url manquante')
   if (!model) throw new Error('assistant: model manquant')
+  const system = (systemPrompt && systemPrompt.trim()) || DEFAULT_SYSTEM_PROMPT
+  const userPrompt = buildAssistantPrompt(ctx)
 
-  const body = {
-    model,
-    stream: false,
-    options: { temperature: 0.4 },  // un peu de souplesse, mais pas trop
-    messages: [
-      { role: 'system', content: (systemPrompt && systemPrompt.trim()) || DEFAULT_SYSTEM_PROMPT },
-      { role: 'user',   content: buildAssistantPrompt(ctx) },
-    ],
-  }
+  if (provider === 'anthropic') return callAnthropic({ system, userPrompt, url, model, apiKey, fetchImpl, timeoutMs })
+  if (provider === 'ollama')    return callOllama({ system, userPrompt, url, model, fetchImpl, timeoutMs })
+  throw new Error(`assistant: provider inconnu (${provider})`)
+}
 
+async function withTimeout(timeoutMs, fn) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
-  let res
-  try {
-    res = await fetchImpl(`${url.replace(/\/$/, '')}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    })
-  } finally {
-    clearTimeout(timer)
-  }
+  try { return await fn(ctrl.signal) }
+  finally { clearTimeout(timer) }
+}
 
+async function callOllama({ system, userPrompt, url, model, fetchImpl, timeoutMs }) {
+  if (!url) throw new Error('assistant: url manquante')
+  const res = await withTimeout(timeoutMs, (signal) => fetchImpl(`${url.replace(/\/$/, '')}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model, stream: false, options: { temperature: TEMPERATURE },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user',   content: userPrompt },
+      ],
+    }),
+    signal,
+  }))
   if (!res.ok) throw new Error(`Ollama ${res.status}`)
   const data = await res.json()
   const text = (data.message?.content || '').trim()
+  if (!text) throw new Error('assistant: réponse vide')
+  return text
+}
+
+async function callAnthropic({ system, userPrompt, url, model, apiKey, fetchImpl, timeoutMs }) {
+  if (!apiKey) throw new Error('assistant: clé API manquante')
+  const base = (url || ANTHROPIC_DEFAULT_URL).replace(/\/$/, '')
+  const res = await withTimeout(timeoutMs, (signal) => fetchImpl(`${base}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 1024,
+      temperature: TEMPERATURE,
+      system,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+    signal,
+  }))
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`Anthropic ${res.status}${detail ? ` — ${detail.slice(0, 200)}` : ''}`)
+  }
+  const data = await res.json()
+  const text = (Array.isArray(data.content)
+    ? data.content.filter(b => b?.type === 'text').map(b => b.text).join('')
+    : '').trim()
   if (!text) throw new Error('assistant: réponse vide')
   return text
 }
