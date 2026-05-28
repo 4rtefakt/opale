@@ -119,6 +119,12 @@ export default async function rapportsRoute(fastify) {
                    t.created_at
                  ) AS effective_at
           FROM tickets t
+          -- Exclure les statuts terminaux "morts" :
+          --   - 'merged' : ticket dédupliqué vers un autre, le compter
+          --     créerait un double-comptage (ses tags/contenu sont sur la cible).
+          --   - 'closed' : archives, pas représentatif du travail récent
+          --     (et l'UI les cache aussi du tab "Tous" par défaut).
+          WHERE t.status NOT IN ('merged', 'closed')
         ),
         ticket_weeks AS (
           SELECT te.id, DATE_TRUNC('week', te.effective_at) AS week_start
