@@ -1,16 +1,22 @@
-// Envoi d'un mail via Microsoft Graph (Phase 4, issue #8).
+// Envoi d'un mail via Microsoft Graph (issue #8).
 //
-// Endpoint : POST /users/{sender}/sendMail. Le corps `message` accepte des
-// headers RFC custom via `internetMessageHeaders`. ATTENTION : ces headers
-// doivent être préfixés `x-` selon la doc Graph officielle... SAUF que
-// In-Reply-To et References sont des exceptions documentées : Graph les
-// accepte tels quels et les pose sur le mail sortant. C'est ce qui rend ce
-// scénario faisable côté API ; sans cette exception, le threading serait
-// impossible en app-only.
+// Deux modes :
 //
-// Le corps du mail est en HTML brut (text → HTML basique). On garde simple :
-// pas de templating, pas de signature ajoutée — le maintainer écrit ce qu'il
-// veut envoyer.
+//   1. sendReply() — RÉPONSE THREADÉE (mode normal). Graph crée un brouillon
+//      via POST /messages/{id}/createReply : il pose lui-même In-Reply-To,
+//      References et conversationId corrects, hérite du destinataire et du
+//      sujet "RE: …". On PATCH ensuite le corps puis on /send. C'est la SEULE
+//      façon fiable de répondre dans un fil en app-only.
+//
+//   2. sendMail() — ENVOI SIMPLE (fallback). Quand on n'a pas le message
+//      Graph d'origine (vieux mapping sans graph_message_id), on envoie un
+//      mail neuf. On NE pose PAS In-Reply-To/References : contrairement à ce
+//      qu'affirmait un ancien commentaire, Graph REJETTE ces headers via
+//      internetMessageHeaders (400 InvalidInternetMessageHeader — ils ne
+//      sont pas préfixés x-). Le mail part donc sans threading natif.
+//
+// Le corps du mail est en HTML basique (text → HTML). Pas de templating ni
+// de signature ajoutée.
 
 import { getAppToken } from '../../core/lib/graph.js'
 
@@ -43,22 +49,18 @@ function textToHtml(text) {
 // RFC, peuvent être null.
 export async function sendMail({
   sender, to, subject, bodyText,
-  inReplyTo = null, references = null,
   fetchImpl = fetch,
 } = {}) {
   if (!sender) throw new Error('sendMail: sender manquant')
   if (!to)     throw new Error('sendMail: to manquant')
 
-  const internetMessageHeaders = []
-  if (inReplyTo)  internetMessageHeaders.push({ name: 'In-Reply-To', value: inReplyTo })
-  if (references) internetMessageHeaders.push({ name: 'References',  value: references })
-
+  // Pas de In-Reply-To/References : Graph les rejette via
+  // internetMessageHeaders. Le threading natif passe par sendReply().
   const message = {
     subject: subject || '(sans sujet)',
     body: { contentType: 'HTML', content: textToHtml(bodyText) },
     toRecipients: [{ emailAddress: { address: to } }],
   }
-  if (internetMessageHeaders.length) message.internetMessageHeaders = internetMessageHeaders
 
   const token = await getAppToken()
   const res = await fetchImpl(`${GRAPH_BASE}/users/${encodeMailbox(sender)}/sendMail`, {
@@ -90,4 +92,60 @@ export async function sendMail({
   // chaîne de sa propre réponse → le worker inbound matche via
   // conversationId OU via un Message-ID inbound présent dans References.
   return { ok: true, status: res.status }
+}
+
+// Répond à un mail existant dans un fil, de façon NATIVEMENT threadée.
+// `mailbox` = boîte qui détient le message d'origine (celle qui l'a reçu).
+// `graphMessageId` = id Graph de ce message (email_thread_mapping.graph_message_id).
+//
+// Séquence Graph : createReply (draft threadé) → PATCH body → send. Graph
+// gère In-Reply-To / References / conversationId / destinataire / sujet
+// "RE: …" tout seul. Le PATCH remplace le corps du draft par notre texte
+// (on n'inclut pas la citation de l'original — réponse de support concise).
+export async function sendReply({
+  mailbox, graphMessageId, bodyText, fetchImpl = fetch, getToken = getAppToken,
+} = {}) {
+  if (!mailbox)        throw new Error('sendReply: mailbox manquant')
+  if (!graphMessageId) throw new Error('sendReply: graphMessageId manquant')
+
+  const token = await getToken()
+  const base = `${GRAPH_BASE}/users/${encodeMailbox(mailbox)}`
+  const authJson = {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  }
+
+  const fail = async (res, step) => {
+    const body = await res.text().catch(() => '')
+    const snippet = body ? ` — ${body.slice(0, 300)}` : ''
+    throw new Error(`Graph sendReply/${step}: ${res.status}${snippet}`)
+  }
+
+  // 1. Brouillon de réponse threadé.
+  const createRes = await fetchImpl(
+    `${base}/messages/${encodeURIComponent(graphMessageId)}/createReply`,
+    { method: 'POST', headers: authJson, body: '{}' }
+  )
+  if (!createRes.ok) return fail(createRes, 'createReply')
+  const draft = await createRes.json()
+  if (!draft?.id) throw new Error('sendReply: createReply sans id de brouillon')
+
+  // 2. Remplace le corps du brouillon par notre réponse.
+  const patchRes = await fetchImpl(
+    `${base}/messages/${encodeURIComponent(draft.id)}`,
+    {
+      method: 'PATCH', headers: authJson,
+      body: JSON.stringify({ body: { contentType: 'HTML', content: textToHtml(bodyText) } }),
+    }
+  )
+  if (!patchRes.ok) return fail(patchRes, 'patch')
+
+  // 3. Envoi du brouillon.
+  const sendRes = await fetchImpl(
+    `${base}/messages/${encodeURIComponent(draft.id)}/send`,
+    { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+  )
+  if (!sendRes.ok) return fail(sendRes, 'send')
+
+  return { ok: true }
 }
