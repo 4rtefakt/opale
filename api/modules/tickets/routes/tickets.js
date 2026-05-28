@@ -151,7 +151,10 @@ export default async function ticketsRoute(fastify) {
     }
     if (device_id) { conds.push(`t.device_id = $${i++}`); params.push(device_id) }
     if (q) {
-      // Recherche : titre, description, ET messages (commentaires/résolutions)
+      // Recherche : titre, description, messages (commentaires/résolutions/
+      // notes internes), ET personnes concernées (requester + involved,
+      // par display_name ou email). Tous les sous-critères en OR sur le
+      // même paramètre $i pour rester un seul slot.
       conds.push(`(
         t.title ILIKE $${i} OR t.description ILIKE $${i}
         OR EXISTS (
@@ -159,6 +162,12 @@ export default async function ticketsRoute(fastify) {
           WHERE tm.ticket_id = t.id
             AND tm.type != 'system'
             AND tm.content ILIKE $${i}
+        )
+        OR EXISTS (
+          SELECT 1 FROM ticket_users tu
+          JOIN users_cache u ON u.entra_id = tu.user_entra_id
+          WHERE tu.ticket_id = t.id
+            AND (u.display_name ILIKE $${i} OR u.email ILIKE $${i})
         )
       )`)
       params.push(`%${q}%`); i++

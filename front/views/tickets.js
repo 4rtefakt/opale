@@ -194,6 +194,11 @@ function filtersToParams() {
   if (_filters.assigned_to)        p.assigned_to = _filters.assigned_to
   if (_filters.created_from)       p.created_from = _filters.created_from
   if (_filters.created_to)         p.created_to   = _filters.created_to
+  // Recherche fulltext (titre + description + messages + personnes concernées)
+  // déléguée au backend pour pouvoir trouver dans tous les tickets, pas
+  // seulement la page chargée. Le filtre local de fallback (kanban, list)
+  // continue de matcher sur title/hostname pour réactivité immédiate.
+  if (_localQ?.trim())             p.q = _localQ.trim()
   return p
 }
 
@@ -1544,7 +1549,18 @@ async function refreshTicket(id) {
 
 // ─── Filtres : statut, recherche locale ──────────────────────────────────────
 
-function filterTickets(q) { _localQ = q; renderListOrKanban() }
+// Debounce 250 ms : évite un appel API à chaque touche. Le filtre local
+// (renderListOrKanban → matche title + hostname) reste appelé immédiatement
+// pour que la liste se restreigne visuellement sans flicker pendant la
+// frappe ; loadTickets() rafraîchit ensuite avec le résultat backend complet
+// (qui matche aussi description, messages, personnes).
+let _searchDebounce = null
+function filterTickets(q) {
+  _localQ = q
+  renderListOrKanban()
+  if (_searchDebounce) clearTimeout(_searchDebounce)
+  _searchDebounce = setTimeout(() => { _searchDebounce = null; loadTickets() }, 250)
+}
 
 async function setStatusFilter(s) {
   _filters.status = s
