@@ -139,6 +139,30 @@ test('GET / — activity reflète les audit_logs avec automation_costs', { skip:
   assert.ok(entry.total_eur >= 0, 'total_eur calculé')
 })
 
+test('GET / — actions enrichies (migration 061) sont mappées et comptées', { skip: SKIP }, async () => {
+  // Régression migration 061 : ces action_types doivent avoir un mapping
+  // automation_costs, sinon l'INNER JOIN les exclut du KPI.
+  await db.query(
+    `INSERT INTO audit_logs (action, by_user, target, created_at) VALUES
+       ('compliance_changed',   'oid-rpt-061', 'PC-X', now()),
+       ('agent_console_open',   'oid-rpt-061', 'PC-X', now()),
+       ('laps_viewed',          'oid-rpt-061', 'PC-X', now())`
+  )
+  const token = await adminToken('oid-rpt-061')
+  const res = await fastify.inject({
+    method: 'GET', url: '/api/rapports/',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 200)
+  const { activity } = res.json()
+
+  for (const [type, mins] of [['compliance_changed', 5], ['agent_console_open', 10], ['laps_viewed', 15]]) {
+    const entry = activity.find(a => a.action_type === type)
+    assert.ok(entry, `${type} doit apparaître dans activity (mapping 061)`)
+    assert.equal(entry.estimated_minutes, mins, `${type} = ${mins} min`)
+  }
+})
+
 test('GET / — cost_per_hour absent → fallback 22.54 utilisé', { skip: SKIP }, async () => {
   // Supprimer le setting cost_per_hour pour tester le fallback.
   await db.query(`DELETE FROM settings WHERE key = 'cost_per_hour'`)
