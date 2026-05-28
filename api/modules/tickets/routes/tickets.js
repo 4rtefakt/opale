@@ -569,7 +569,8 @@ export default async function ticketsRoute(fastify) {
 
     const { rows: cfgRows } = await fastify.db.query(
       `SELECT key, value FROM settings WHERE key IN
-        ('tickets.assistant.enabled','tickets.assistant.url','tickets.assistant.model')`
+        ('tickets.assistant.enabled','tickets.assistant.url','tickets.assistant.model',
+         'tickets.assistant.system_prompt')`
     )
     const cfg = Object.fromEntries(cfgRows.map(r => [r.key, r.value]))
     if (cfg['tickets.assistant.enabled'] !== 'true') {
@@ -579,23 +580,45 @@ export default async function ticketsRoute(fastify) {
     if (!url || !model) return reply.code(409).send({ error: 'Assistant IA non configuré' })
 
     const { rows: tk } = await fastify.db.query(
-      `SELECT title, description FROM tickets WHERE id = $1`, [req.params.id]
+      `SELECT title, description, priority, status FROM tickets WHERE id = $1`, [req.params.id]
     )
     if (!tk.length) return reply.code(404).send({ error: 'Ticket introuvable' })
 
-    // Contexte : derniers échanges humains (pas system ni suggestions IA).
-    const { rows: msgs } = await fastify.db.query(
-      `SELECT author, content FROM ticket_messages
-       WHERE ticket_id = $1 AND type IN ('comment','internal_note')
-       ORDER BY created_at ASC LIMIT 20`,
-      [req.params.id]
-    )
+    // Contexte enrichi pour le diagnostic : échanges + poste concerné +
+    // demandeur + tags. (Premier pas ; le RAG sur tout Opale viendra après.)
+    const [msgsR, devR, reqR, tagsR] = await Promise.all([
+      fastify.db.query(
+        `SELECT author, content FROM ticket_messages
+         WHERE ticket_id = $1 AND type IN ('comment','internal_note')
+         ORDER BY created_at ASC LIMIT 20`, [req.params.id]),
+      fastify.db.query(
+        `SELECT d.hostname, d.os, d.model FROM ticket_devices td
+         JOIN devices d ON d.id = td.device_id
+         WHERE td.ticket_id = $1 ORDER BY td.added_at ASC LIMIT 1`, [req.params.id]),
+      fastify.db.query(
+        `SELECT u.display_name, u.job_title, u.department FROM ticket_users tu
+         JOIN users_cache u ON u.entra_id = tu.user_entra_id
+         WHERE tu.ticket_id = $1 AND tu.role = 'requester' LIMIT 1`, [req.params.id]),
+      fastify.db.query(
+        `SELECT g.name FROM ticket_tags tt JOIN tags g ON g.id = tt.tag_id
+         WHERE tt.ticket_id = $1`, [req.params.id]),
+    ])
+    const dev = devR.rows[0]
+      ? [devR.rows[0].hostname, devR.rows[0].os, devR.rows[0].model].filter(Boolean).join(' · ')
+      : null
+    const requester = reqR.rows[0]
+      ? [reqR.rows[0].display_name, reqR.rows[0].job_title, reqR.rows[0].department].filter(Boolean).join(', ')
+      : null
 
     let suggestion
     try {
       const gen = fastify.generateSuggestion || generateSuggestion
       suggestion = await gen({
-        title: tk[0].title, description: tk[0].description, messages: msgs, url, model,
+        title: tk[0].title, description: tk[0].description,
+        priority: tk[0].priority, status: tk[0].status,
+        device: dev, requester, tags: tagsR.rows.map(r => r.name),
+        messages: msgsR.rows, url, model,
+        systemPrompt: cfg['tickets.assistant.system_prompt'],
       })
     } catch (err) {
       req.log?.warn({ err: err.message, ticketId: req.params.id }, 'ai-suggest: génération échouée')

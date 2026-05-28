@@ -15,6 +15,44 @@ test('buildAssistantPrompt : inclut titre, description et échanges', () => {
   assert.match(p, /Marie : Voyant rouge/)
 })
 
+test('buildAssistantPrompt : inclut le contexte diagnostic (poste, demandeur, tags, priorité)', () => {
+  const p = buildAssistantPrompt({
+    title: 'VPN', priority: 'high', status: 'in_progress',
+    device: 'PC-MARIE · Windows 11 · Latitude 5540',
+    requester: 'Marie Durand, Chercheuse, Pôle lagunes',
+    tags: ['Réseau', 'VPN'],
+  })
+  assert.match(p, /Priorité : high/)
+  assert.match(p, /Statut : in_progress/)
+  assert.match(p, /PC-MARIE/)
+  assert.match(p, /Marie Durand/)
+  assert.match(p, /Réseau, VPN/)
+})
+
+test('generateSuggestion : utilise le systemPrompt fourni (override)', async () => {
+  let captured
+  const fetchImpl = async (_url, opts) => {
+    captured = JSON.parse(opts.body)
+    return { ok: true, json: async () => ({ message: { content: 'ok' } }) }
+  }
+  await generateSuggestion({
+    title: 'T', url: 'u', model: 'm', fetchImpl,
+    systemPrompt: 'PROMPT PERSONNALISÉ XYZ',
+  })
+  assert.equal(captured.messages[0].role, 'system')
+  assert.match(captured.messages[0].content, /PROMPT PERSONNALISÉ XYZ/)
+})
+
+test('generateSuggestion : systemPrompt vide → fallback défaut', async () => {
+  let captured
+  const fetchImpl = async (_url, opts) => {
+    captured = JSON.parse(opts.body)
+    return { ok: true, json: async () => ({ message: { content: 'ok' } }) }
+  }
+  await generateSuggestion({ title: 'T', url: 'u', model: 'm', fetchImpl, systemPrompt: '   ' })
+  assert.match(captured.messages[0].content, /support informatique interne/)
+})
+
 test('generateSuggestion : appelle Ollama /api/chat et retourne le texte', async () => {
   let captured
   const fetchImpl = async (url, opts) => {
