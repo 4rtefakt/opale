@@ -536,6 +536,27 @@ export default async function ticketsRoute(fastify) {
       reply.send(rows[0])
     })
 
+  // POST /api/tickets/:id/messages/:msgId/retry-send
+  // Relance l'envoi d'un message passé en dead-letter (outbound_failed_at).
+  // Reset le compteur + la marque d'échec → le worker outbound le reprend
+  // au prochain tick. 404 si le message n'est pas en échec.
+  fastify.post('/:id/messages/:msgId/retry-send',
+    { preHandler: [fastify.authenticate] }, async (req, reply) => {
+      const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
+      if (!acl) return
+
+      const { rows } = await fastify.db.query(`
+        UPDATE ticket_messages
+        SET outbound_failed_at = NULL, outbound_attempts = 0,
+            outbound_error = NULL, email_sent_at = NULL
+        WHERE id = $1 AND ticket_id = $2 AND outbound_failed_at IS NOT NULL
+        RETURNING *
+      `, [req.params.msgId, req.params.id])
+      if (!rows.length) return reply.code(404).send({ error: 'Message non en échec ou introuvable' })
+      await fastify.db.query('UPDATE tickets SET updated_at = now() WHERE id = $1', [req.params.id])
+      reply.send(rows[0])
+    })
+
   // ───────────────────────────────────────────────────────────────────────────
   // Phase 2 — Relations M2M users / devices + merge
   // ───────────────────────────────────────────────────────────────────────────

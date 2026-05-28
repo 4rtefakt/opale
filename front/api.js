@@ -67,6 +67,9 @@ class API {
   sendMessageByMail(ticketId, msgId) {
     return this._fetch(`/tickets/${ticketId}/messages/${msgId}/send-by-mail`, { method: 'POST' })
   }
+  retrySendMessage(ticketId, msgId) {
+    return this._fetch(`/tickets/${ticketId}/messages/${msgId}/retry-send`, { method: 'POST' })
+  }
   // Pièces jointes (upload manuel)
   async uploadAttachment(ticketId, file) {
     const token = await window.auth.getToken()

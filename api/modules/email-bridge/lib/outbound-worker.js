@@ -26,6 +26,7 @@ import { buildSubject } from './thread-headers.js'
 
 const DEFAULT_INTERVAL_MS = 10_000
 const MAX_BATCH = 20  // bound le travail par tick pour ne pas bloquer
+const MAX_ATTEMPTS = 5 // au-delà → dead-letter (≈ 50s de retries à 10s/tick)
 let _timer = null
 
 async function getSetting(db, key) {
@@ -57,10 +58,12 @@ async function pickPending(db, limit) {
            tm.author,
            tm.content,
            tm.created_at,
+           tm.outbound_attempts,
            t.title        AS ticket_title
     FROM ticket_messages tm
     JOIN tickets t ON t.id = tm.ticket_id
     WHERE tm.email_sent_at IS NULL
+      AND tm.outbound_failed_at IS NULL   -- exclut les dead-letters
       AND tm.type = 'comment'
       AND EXISTS (
         SELECT 1 FROM email_thread_mapping etm
@@ -124,6 +127,23 @@ async function markSent(db, messageId, sentAt) {
     `UPDATE ticket_messages SET email_sent_at = $1 WHERE id = $2`,
     [sentAt, messageId]
   )
+}
+
+// Gère un échec d'envoi : incrémente le compteur, annule la marque d'envoi,
+// et passe en dead-letter (outbound_failed_at) si on a épuisé les tentatives.
+// Retourne true si dead-letter (abandon), false si on retentera.
+async function markFailure(db, messageId, attemptsBefore, errMsg) {
+  const attempts = (attemptsBefore || 0) + 1
+  const deadLetter = attempts >= MAX_ATTEMPTS
+  await db.query(`
+    UPDATE ticket_messages
+    SET email_sent_at = NULL,
+        outbound_attempts = $1,
+        outbound_error = $2,
+        outbound_failed_at = $3
+    WHERE id = $4
+  `, [attempts, (errMsg || '').slice(0, 500), deadLetter ? new Date() : null, messageId])
+  return deadLetter
 }
 
 // Process un message : envoie via Graph (réponse threadée si possible,
@@ -198,10 +218,18 @@ export async function sendOne(db, log, {
     }, 'outbound: mail envoyé')
     return 'sent'
   } catch (err) {
-    // Échec → on annule la marque pour autoriser un retry au prochain tick.
-    await markSent(db, message.message_id, null)
-    log?.warn({ err: err.message, messageId: message.message_id }, 'outbound: send a échoué, retry au prochain tick')
-    return 'error'
+    // Échec → compteur + éventuel dead-letter. markFailure annule la marque
+    // d'envoi (retry possible) tant qu'on n'a pas atteint MAX_ATTEMPTS ;
+    // au-delà, le message est mis de côté (outbound_failed_at) et n'est plus
+    // repris automatiquement — l'admin le relance manuellement depuis l'UI.
+    const deadLetter = await markFailure(db, message.message_id, message.outbound_attempts, err.message)
+    log?.warn({
+      err: err.message, messageId: message.message_id,
+      attempts: (message.outbound_attempts || 0) + 1, deadLetter,
+    }, deadLetter
+      ? 'outbound: abandon après MAX_ATTEMPTS, message en échec (dead-letter)'
+      : 'outbound: send a échoué, retry au prochain tick')
+    return deadLetter ? 'dead_letter' : 'error'
   }
 }
 
@@ -212,14 +240,15 @@ export async function flushOutbox(db, log, { sendImpl, sendReplyImpl } = {}) {
   if (!cfg.sender)  return { skipped: 'no-sender-configured' }
 
   const pending = await pickPending(db, MAX_BATCH)
-  if (!pending.length) return { sent: 0, skipped_no_recipient: 0, errors: 0 }
+  if (!pending.length) return { sent: 0, skipped_no_recipient: 0, errors: 0, dead_letter: 0 }
 
-  const stats = { sent: 0, skipped_no_recipient: 0, errors: 0 }
+  const stats = { sent: 0, skipped_no_recipient: 0, errors: 0, dead_letter: 0 }
   for (const message of pending) {
     try {
       const r = await sendOne(db, log, { message, sender: cfg.sender, sendImpl, sendReplyImpl })
       if      (r === 'sent')                  stats.sent++
       else if (r === 'skipped_no_recipient')  stats.skipped_no_recipient++
+      else if (r === 'dead_letter')           stats.dead_letter++
       else                                    stats.errors++
     } catch (err) {
       stats.errors++

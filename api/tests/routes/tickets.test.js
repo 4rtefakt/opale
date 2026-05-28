@@ -395,6 +395,49 @@ test('send-by-mail : non-membre → 403', { skip: SKIP }, async () => {
   assert.equal(res.statusCode, 403)
 })
 
+test('retry-send : message dead-letter → reset (repris par l\'outbox)', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-retry')
+  const created = await createTicketAs(admin.token, { title: 'Retry' })
+  const ticketId = created.json().id
+  // Seed un message en dead-letter directement.
+  const { rows } = await db.query(`
+    INSERT INTO ticket_messages (ticket_id, type, author, content, email_sent_at, outbound_attempts, outbound_failed_at, outbound_error)
+    VALUES ($1, 'comment', 'Admin', 'En échec', NULL, 5, now(), 'Graph 503')
+    RETURNING id
+  `, [ticketId])
+  const msgId = rows[0].id
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${ticketId}/messages/${msgId}/retry-send`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.equal(res.statusCode, 200)
+
+  const { rows: after } = await db.query(
+    `SELECT outbound_attempts, outbound_failed_at, outbound_error, email_sent_at FROM ticket_messages WHERE id = $1`, [msgId]
+  )
+  assert.equal(after[0].outbound_attempts, 0)
+  assert.equal(after[0].outbound_failed_at, null)
+  assert.equal(after[0].outbound_error, null)
+  assert.equal(after[0].email_sent_at, null, 'remis dans la file outbox')
+})
+
+test('retry-send : message pas en échec → 404', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-retry-404')
+  const created = await createTicketAs(admin.token, { title: 'Pas échec' })
+  const ticketId = created.json().id
+  const msgRes = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${ticketId}/messages`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { content: 'Note normale' },
+  })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${ticketId}/messages/${msgRes.json().id}/retry-send`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.equal(res.statusCode, 404)
+})
+
 test('GET /:id — expose has_inbound_mail selon présence d\'email_thread_mapping inbound',
   { skip: SKIP }, async () => {
     const admin = await adminAuth('oid-tk-has-inbound')

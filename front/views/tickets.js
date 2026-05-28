@@ -270,6 +270,7 @@ export async function renderTickets(container, opts = {}) {
   window.selectTicket         = selectTicket
   window.sendReply            = sendReply
   window.sendMsgByMail        = sendMsgByMail
+  window.tkRetrySend          = tkRetrySend
   window.tkRemoveUser         = tkRemoveUser
   window.tkRemoveDevice       = tkRemoveDevice
   window.tkOpenMergeModal     = tkOpenMergeModal
@@ -1099,6 +1100,14 @@ function renderMsg(m, tk) {
         <i class="ti ti-mail-forward" style="font-size:11px"></i> ${esc(t('tickets.msg.send_by_mail'))}
       </button>`
     }
+  } else if (m.type === 'comment' && m.outbound_failed_at) {
+    // Dead-letter : l'envoi a échoué après plusieurs tentatives.
+    stateBadge = `<span class="msg-badge msg-badge-failed" title="${esc(m.outbound_error || t('tickets.msg.send_failed'))}">
+      <i class="ti ti-mail-x" style="font-size:11px"></i> ${esc(t('tickets.msg.send_failed'))}
+    </span>`
+    mailAction = `<button class="btn btn-sm msg-send-mail" onclick="tkRetrySend('${tk.id}','${m.id}')" title="${esc(t('tickets.msg.retry_send'))}">
+      <i class="ti ti-refresh" style="font-size:11px"></i> ${esc(t('tickets.msg.retry_send'))}
+    </button>`
   } else if (m.type === 'comment' && !m.email_sent_at) {
     stateBadge = `<span class="msg-badge msg-badge-sending" title="${esc(t('tickets.msg.sending'))}">
       <i class="ti ti-mail-fast" style="font-size:11px"></i> ${esc(t('tickets.msg.sending'))}
@@ -1441,6 +1450,17 @@ async function tkClearRequester(id) {
   try {
     await window.api.updateTicket(id, { user_id: null })
     await refreshTicket(id)
+  } catch { showToast(t('error.generic'), 'error') }
+}
+
+// Relance l'envoi d'un message en échec (dead-letter). Le worker outbound
+// le reprend au prochain tick.
+async function tkRetrySend(ticketId, msgId) {
+  try {
+    await window.api.retrySendMessage(ticketId, msgId)
+    const tk = await window.api.getTicket(ticketId)
+    renderDetail(tk)
+    showToast(t('tickets.msg.retry_queued'), 'success')
   } catch { showToast(t('error.generic'), 'error') }
 }
 
