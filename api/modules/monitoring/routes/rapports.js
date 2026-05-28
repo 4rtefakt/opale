@@ -92,7 +92,12 @@ export default async function rapportsRoute(fastify) {
       `),
 
       // ── Tickets par tag, 12 semaines ──
-      // Bucketing ISO sur DATE_TRUNC('week', created_at).
+      // Bucketing ISO. Date effective = date du mail original quand le
+      // ticket vient du pont mail (pour ne pas concentrer tous les tickets
+      // backfillés sur la semaine d'acceptation des propositions), sinon
+      // created_at du ticket. min(received_at) parmi :
+      //   - les mappings linkés directement (message_appended)
+      //   - les mappings d'une proposal acceptée vers ce ticket
       fastify.db.query(`
         WITH weeks AS (
           SELECT generate_series(
@@ -101,10 +106,24 @@ export default async function rapportsRoute(fastify) {
             interval '1 week'
           ) AS week_start
         ),
-        ticket_weeks AS (
-          SELECT t.id, DATE_TRUNC('week', t.created_at) AS week_start
+        ticket_effective AS (
+          SELECT t.id,
+                 COALESCE(
+                   (SELECT MIN(etm.received_at)
+                    FROM email_thread_mapping etm
+                    WHERE etm.ticket_id = t.id AND etm.direction = 'inbound'),
+                   (SELECT MIN(etm.received_at)
+                    FROM email_thread_mapping etm
+                    JOIN ticket_proposals p ON p.id = etm.proposal_id
+                    WHERE p.ticket_id = t.id AND etm.direction = 'inbound'),
+                   t.created_at
+                 ) AS effective_at
           FROM tickets t
-          WHERE t.created_at >= DATE_TRUNC('week', now() - interval '11 weeks')
+        ),
+        ticket_weeks AS (
+          SELECT te.id, DATE_TRUNC('week', te.effective_at) AS week_start
+          FROM ticket_effective te
+          WHERE te.effective_at >= DATE_TRUNC('week', now() - interval '11 weeks')
         ),
         tt AS (
           SELECT tw.week_start, COALESCE(g.name, '__none__') AS tag_name, COALESCE(g.color, 'slate') AS tag_color
