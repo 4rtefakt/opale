@@ -121,7 +121,8 @@ export async function sendReply({
     throw new Error(`Graph sendReply/${step}: ${res.status}${snippet}`)
   }
 
-  // 1. Brouillon de réponse threadé.
+  // 1. Brouillon de réponse threadé. Graph pré-remplit son body avec la
+  // citation du fil ("De: … Envoyé: … <message d'origine>") — on la garde.
   const createRes = await fetchImpl(
     `${base}/messages/${encodeURIComponent(graphMessageId)}/createReply`,
     { method: 'POST', headers: authJson, body: '{}' }
@@ -130,12 +131,18 @@ export async function sendReply({
   const draft = await createRes.json()
   if (!draft?.id) throw new Error('sendReply: createReply sans id de brouillon')
 
-  // 2. Remplace le corps du brouillon par notre réponse.
+  // 2. Préfixe notre réponse AU-DESSUS de la citation héritée du brouillon
+  // (comportement "Répondre" standard : nouveau texte en haut, fil cité en
+  // dessous). Sans ça le destinataire reçoit un message threadé mais vide
+  // de contexte. Si Graph n'a pas renvoyé de body (cas rare), on n'a que
+  // notre texte.
+  const quoted = draft.body?.content || ''
+  const content = quoted ? `${textToHtml(bodyText)}<br>${quoted}` : textToHtml(bodyText)
   const patchRes = await fetchImpl(
     `${base}/messages/${encodeURIComponent(draft.id)}`,
     {
       method: 'PATCH', headers: authJson,
-      body: JSON.stringify({ body: { contentType: 'HTML', content: textToHtml(bodyText) } }),
+      body: JSON.stringify({ body: { contentType: 'HTML', content } }),
     }
   )
   if (!patchRes.ok) return fail(patchRes, 'patch')
