@@ -51,7 +51,7 @@ export async function renderMenu(el) {
           <i class="ti ti-list-details"></i>
           <span>Logs</span>
         </button>
-        <button class="m-menu-tile blue" style="background:var(--indigo,#6366f1)" onclick="window.location.hash='#/packages'">
+        <button class="m-menu-tile indigo" onclick="window.location.hash='#/packages'">
           <i class="ti ti-rocket"></i>
           <span>Déploiement</span>
         </button>
