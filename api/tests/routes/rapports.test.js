@@ -163,6 +163,44 @@ test('GET / — actions enrichies (migration 061) sont mappées et comptées', {
   }
 })
 
+test('GET / — gains tickets/mail comptés dans activity (migration 063, approche A)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-rpt-tickets-gains')
+
+  // Seed des sources métier dans la fenêtre 30j :
+  //  - 1 mail rattaché auto (message_appended)
+  //  - 1 ticket créé depuis un mail (source=email)
+  //  - 1 ticket fusionné (status=merged)
+  const { rows: tk } = await db.query(
+    `INSERT INTO tickets (title, source) VALUES ('Ticket mail', 'email') RETURNING id`
+  )
+  await db.query(
+    `INSERT INTO tickets (title, status, updated_at) VALUES ('Doublon', 'merged', now())`
+  )
+  await db.query(`
+    INSERT INTO email_thread_mapping
+      (internet_message_id, mailbox, direction, received_at, ticket_id, action)
+    VALUES ($1, 'helpdesk@test', 'inbound', now(), $2, 'message_appended')
+  `, [`<gain-${Math.random().toString(36).slice(2)}@x>`, tk[0].id])
+
+  const res = await fastify.inject({
+    method: 'GET', url: '/api/rapports/',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 200)
+  const { activity } = res.json()
+
+  const appended = activity.find(a => a.action_type === 'ticket_mail_appended')
+  const fromMail = activity.find(a => a.action_type === 'ticket_from_email')
+  const merged   = activity.find(a => a.action_type === 'ticket_merged')
+
+  assert.ok(appended && appended.count >= 1, 'ticket_mail_appended présent')
+  assert.equal(appended.estimated_minutes, 5)
+  assert.ok(fromMail && fromMail.count >= 1, 'ticket_from_email présent')
+  assert.equal(fromMail.estimated_minutes, 8)
+  assert.ok(merged && merged.count >= 1, 'ticket_merged présent')
+  assert.equal(merged.estimated_minutes, 10)
+})
+
 test('GET / — cost_per_hour absent → fallback 22.54 utilisé', { skip: SKIP }, async () => {
   // Supprimer le setting cost_per_hour pour tester le fallback.
   await db.query(`DELETE FROM settings WHERE key = 'cost_per_hour'`)
