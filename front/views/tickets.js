@@ -271,6 +271,9 @@ export async function renderTickets(container, opts = {}) {
   window.sendReply            = sendReply
   window.sendMsgByMail        = sendMsgByMail
   window.tkRetrySend          = tkRetrySend
+  window.tkAiSuggest          = tkAiSuggest
+  window.tkUseSuggestion      = tkUseSuggestion
+  window.tkDeleteSuggestion   = tkDeleteSuggestion
   window.tkRemoveUser         = tkRemoveUser
   window.tkRemoveDevice       = tkRemoveDevice
   window.tkOpenMergeModal     = tkOpenMergeModal
@@ -911,6 +914,10 @@ function renderDetail(tk, container) {
           <div class="reply-box">
             <textarea class="reply-input" id="reply-input" placeholder="${t('tickets.reply_placeholder')}"></textarea>
             <div class="reply-actions">
+              <button class="btn btn-sm" id="tk-ai-btn" onclick="tkAiSuggest('${tk.id}')" title="${esc(t('tickets.ai.hint'))}">
+                <i class="ti ti-sparkles" style="font-size:13px"></i> ${t('tickets.ai.suggest')}
+              </button>
+              <span style="flex:1"></span>
               <button class="btn btn-primary btn-sm" onclick="sendReply('${tk.id}')">${t('tickets.send')}</button>
             </div>
           </div>
@@ -1080,6 +1087,28 @@ function renderMsg(m, tk) {
       </div>
     </div>`
   }
+  if (m.type === 'ai_suggestion') {
+    // Brouillon IA : bulle distincte (jamais envoyée). Actions : reprendre
+    // dans le composer pour éditer/envoyer, ou supprimer le brouillon.
+    return `<div class="msg">
+      <div class="msg-av" style="background:rgba(124,58,237,0.15);color:#7c3aed"><i class="ti ti-sparkles" style="font-size:14px"></i></div>
+      <div class="msg-bubble">
+        <div class="msg-author">${esc(m.author)}
+          <span class="msg-badge" style="background:rgba(124,58,237,0.12);color:#7c3aed">${esc(t('tickets.ai.badge'))}</span>
+          <span class="msg-time">${formatRelative(m.created_at)}</span>
+        </div>
+        <div class="msg-content ai-suggestion" style="white-space:pre-wrap;line-height:1.5">${esc(m.content)}</div>
+        <div class="msg-actions">
+          <button class="btn btn-sm" data-content="${esc(m.content)}" onclick="tkUseSuggestion(this)" title="${esc(t('tickets.ai.use_hint'))}">
+            <i class="ti ti-corner-up-left" style="font-size:11px"></i> ${esc(t('tickets.ai.use'))}
+          </button>
+          <button class="btn btn-sm" style="color:var(--text-tertiary)" onclick="tkDeleteSuggestion('${tk.id}','${m.id}')" title="${esc(t('tickets.ai.discard'))}">
+            <i class="ti ti-x" style="font-size:11px"></i>
+          </button>
+        </div>
+      </div>
+    </div>`
+  }
   const initials = (m.author || '?').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
 
   // Phase 1c — badge d'état d'envoi mail + bouton "Envoyer par mail" sur
@@ -1129,6 +1158,41 @@ function renderMsg(m, tk) {
       ${mailAction ? `<div class="msg-actions">${mailAction}</div>` : ''}
     </div>
   </div>`
+}
+
+// ─── Assistant IA ─────────────────────────────────────────────────────────────
+
+async function tkAiSuggest(id) {
+  const btn = document.getElementById('tk-ai-btn')
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6' }
+  try {
+    await window.api.aiSuggest(id)
+    const tk = await window.api.getTicket(id)
+    renderDetail(tk)
+    // Scroll en bas pour voir la suggestion fraîche.
+    const thread = document.getElementById('msg-thread')
+    if (thread) thread.scrollTop = thread.scrollHeight
+  } catch (err) {
+    showToast(err?.body?.error || t('tickets.ai.failed'), 'error')
+    if (btn) { btn.disabled = false; btn.style.opacity = '1' }
+  }
+}
+
+// Reprend une suggestion IA dans le composer pour l'éditer/l'envoyer.
+function tkUseSuggestion(btn) {
+  const input = document.getElementById('reply-input')
+  if (!input) return
+  input.value = btn.dataset.content || ''
+  input.focus()
+  input.scrollIntoView({ block: 'nearest' })
+}
+
+async function tkDeleteSuggestion(ticketId, msgId) {
+  try {
+    await window.api.deleteTicketMessage(ticketId, msgId)
+    const tk = await window.api.getTicket(ticketId)
+    renderDetail(tk)
+  } catch { showToast(t('error.generic'), 'error') }
 }
 
 // ─── Actions sur ticket ──────────────────────────────────────────────────────

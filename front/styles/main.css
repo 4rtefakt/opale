@@ -824,6 +824,12 @@ kbd {
   border-left: 3px solid #d97706;
   color: var(--text-primary);
 }
+/* Brouillon généré par l'assistant IA — visuellement distinct, jamais envoyé. */
+.msg-content.ai-suggestion {
+  background: rgba(124,58,237,0.07);
+  border-left: 3px solid #7c3aed;
+  color: var(--text-primary);
+}
 .msg-badge {
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 10px; font-weight: 500;

@@ -70,6 +70,8 @@ class API {
   retrySendMessage(ticketId, msgId) {
     return this._fetch(`/tickets/${ticketId}/messages/${msgId}/retry-send`, { method: 'POST' })
   }
+  aiSuggest(ticketId)                  { return this._fetch(`/tickets/${ticketId}/ai-suggest`, { method: 'POST' }) }
+  deleteTicketMessage(ticketId, msgId) { return this._fetch(`/tickets/${ticketId}/messages/${msgId}`, { method: 'DELETE' }) }
   // Pièces jointes (upload manuel)
   async uploadAttachment(ticketId, file) {
     const token = await window.auth.getToken()

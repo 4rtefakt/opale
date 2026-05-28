@@ -20,6 +20,9 @@ const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
 let schema, db, release, fastify, jwt
 let prevEnv = {}
+// Stub mutable de l'assistant IA (évite tout appel Ollama réseau). Les
+// tests le réassignent selon le cas (succès / panne).
+let _aiStub = async () => 'Suggestion IA de test.'
 
 before(async () => {
   if (!isDbAvailable()) return
@@ -34,6 +37,9 @@ before(async () => {
   fastify = await buildApp({
     db,
     jwks: jwt.jwks,
+    // Override de l'assistant IA : la route utilise fastify.generateSuggestion
+    // s'il existe, sinon le module réel. On délègue à _aiStub (mutable).
+    decorators: { generateSuggestion: (...args) => _aiStub(...args) },
     routes: async (f) => {
       await f.register(ticketsRoute, { prefix: '/api/tickets' })
     },
@@ -436,6 +442,101 @@ test('retry-send : message pas en échec → 404', { skip: SKIP }, async () => {
     headers: { authorization: `Bearer ${admin.token}` },
   })
   assert.equal(res.statusCode, 404)
+})
+
+// ─── Assistant IA ──────────────────────────────────────────────────────────
+
+test('POST /:id/ai-suggest — crée une bulle ai_suggestion (non envoyée)', { skip: SKIP }, async () => {
+  _aiStub = async () => 'Vérifiez le câble réseau puis redémarrez.'
+  const admin = await adminAuth('oid-tk-ai-ok', 'AI Admin')
+  const tk = await createTicketAs(admin.token, { title: 'PC lent' })
+  const id = tk.json().id
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${id}/ai-suggest`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.equal(res.statusCode, 201)
+  const msg = res.json()
+  assert.equal(msg.type, 'ai_suggestion')
+  assert.equal(msg.author, 'Assistant IA')
+  assert.match(msg.content, /câble réseau/)
+  // email_sent_at posé → jamais pické par l'outbox.
+  assert.ok(msg.email_sent_at, 'ai_suggestion ne doit pas être envoyable')
+
+  // Exposé dans le fil via GET /:id.
+  const det = await fastify.inject({
+    method: 'GET', url: `/api/tickets/${id}`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.ok(det.json().messages.some(m => m.type === 'ai_suggestion'))
+})
+
+test('POST /:id/ai-suggest — assistant désactivé → 409', { skip: SKIP }, async () => {
+  await db.query(`UPDATE settings SET value='false' WHERE key='tickets.assistant.enabled'`)
+  try {
+    const admin = await adminAuth('oid-tk-ai-off')
+    const id = (await createTicketAs(admin.token, { title: 'X' })).json().id
+    const res = await fastify.inject({
+      method: 'POST', url: `/api/tickets/${id}/ai-suggest`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    assert.equal(res.statusCode, 409)
+  } finally {
+    await db.query(`UPDATE settings SET value='true' WHERE key='tickets.assistant.enabled'`)
+  }
+})
+
+test('POST /:id/ai-suggest — génération échoue → 502', { skip: SKIP }, async () => {
+  _aiStub = async () => { throw new Error('Ollama down') }
+  const admin = await adminAuth('oid-tk-ai-502')
+  const id = (await createTicketAs(admin.token, { title: 'Y' })).json().id
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${id}/ai-suggest`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.equal(res.statusCode, 502)
+  _aiStub = async () => 'Suggestion IA de test.'  // reset
+})
+
+test('POST /:id/ai-suggest — non-membre → 403', { skip: SKIP }, async () => {
+  const owner = await adminAuth('oid-tk-ai-owner')
+  const other = await userAuth('oid-tk-ai-outsider')
+  const id = (await createTicketAs(owner.token, { title: 'Privé' })).json().id
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${id}/ai-suggest`,
+    headers: { authorization: `Bearer ${other.token}` },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
+test('DELETE message — supprime une ai_suggestion mais pas un message normal', { skip: SKIP }, async () => {
+  _aiStub = async () => 'À supprimer'
+  const admin = await adminAuth('oid-tk-ai-del')
+  const id = (await createTicketAs(admin.token, { title: 'Del' })).json().id
+
+  // Une suggestion → supprimable
+  const sug = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${id}/ai-suggest`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  const delSug = await fastify.inject({
+    method: 'DELETE', url: `/api/tickets/${id}/messages/${sug.json().id}`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.equal(delSug.statusCode, 204)
+
+  // Un message normal (note interne) → protégé (404, pas supprimable)
+  const note = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${id}/messages`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { content: 'Vraie note' },
+  })
+  const delNote = await fastify.inject({
+    method: 'DELETE', url: `/api/tickets/${id}/messages/${note.json().id}`,
+    headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.equal(delNote.statusCode, 404, 'un message non-IA ne doit pas être supprimable')
 })
 
 test('GET /:id — expose has_inbound_mail selon présence d\'email_thread_mapping inbound',
