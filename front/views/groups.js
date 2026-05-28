@@ -24,6 +24,7 @@ const COLOR_LABELS = {
 const COLOR_KEYS = Object.keys(PALETTE)
 
 let _groups   = []
+let _overlaps = []     // [{ a, b, shared }] membres communs par paire (diagramme)
 let _selected = null   // group id sélectionné
 let _detail   = null   // { devices, users } du groupe sélectionné
 
@@ -71,7 +72,14 @@ export async function renderGroupes(container) {
 
 async function loadGroups(keepSelected = false) {
   try {
-    _groups = await window.api.getGroups()
+    // overlaps en parallèle ; best-effort (le diagramme dégrade en bulles
+    // simples si l'appel échoue).
+    const [groups, overlaps] = await Promise.all([
+      window.api.getGroups(),
+      window.api.getGroupOverlaps().catch(() => []),
+    ])
+    _groups = groups
+    _overlaps = overlaps || []
   } catch (e) {
     showError(e)
     return
@@ -120,6 +128,31 @@ function renderSidebar() {
 
 // ─── SVG bubble map ──────────────────────────────────────────────────────────
 
+const grpRadius = count => Math.max(34, Math.min(78, 20 + 7 * Math.sqrt(count || 0)))
+const grpCount  = g => g.member_count || 0
+
+// Construit les relations d'inclusion à partir des overlaps : un groupe est
+// "enfant" d'un autre si TOUS ses membres sont aussi dans l'autre
+// (shared === son member_count) et qu'il est strictement plus petit. On
+// retient le parent direct = le plus petit groupe englobant.
+function computeNesting(groups, overlaps) {
+  const byId = new Map(groups.map(g => [g.id, g]))
+  const parentOf = new Map()
+  const consider = (childId, parentId) => {
+    const parent = byId.get(parentId)
+    const cur = parentOf.get(childId)
+    if (!cur || grpCount(parent) < grpCount(byId.get(cur))) parentOf.set(childId, parentId)
+  }
+  for (const { a, b, shared } of overlaps) {
+    const ga = byId.get(a), gb = byId.get(b)
+    if (!ga || !gb) continue
+    const ca = grpCount(ga), cb = grpCount(gb)
+    if (shared === ca && ca < cb) consider(a, b)       // a ⊆ b
+    else if (shared === cb && cb < ca) consider(b, a)  // b ⊆ a
+  }
+  return parentOf
+}
+
 function renderMap() {
   const svg = document.getElementById('grp-svg')
   const empty = document.getElementById('grp-map-empty')
@@ -136,77 +169,138 @@ function renderMap() {
   const H = svg.clientHeight || svg.parentElement.clientHeight || 340
   const cx = W / 2, cy = H / 2
 
-  // Init positions en cercle
-  const n = _groups.length
-  const nodes = _groups.map((g, i) => {
-    const angle = (2 * Math.PI * i) / n - Math.PI / 2
+  const byId = new Map(_groups.map(g => [g.id, g]))
+  const parentOf = computeNesting(_groups, _overlaps)
+  // Overlaps "partiels" (intersection sans inclusion) entre racines : ils
+  // rapprochent/chevauchent les bulles proportionnellement au Jaccard.
+  const sharedByPair = new Map()
+  for (const { a, b, shared } of _overlaps) {
+    sharedByPair.set(a < b ? `${a}|${b}` : `${b}|${a}`, shared)
+  }
+
+  // Racines = groupes sans parent. Seules elles passent par la force ;
+  // les enfants sont ensuite placés dans leur parent.
+  const roots = _groups.filter(g => !parentOf.has(g.id))
+  const n = roots.length
+  const nodes = roots.map((g, i) => {
+    const angle = (2 * Math.PI * i) / Math.max(n, 1) - Math.PI / 2
     const spread = Math.min(cx, cy) * 0.55
     return {
-      g,
+      g, root: true,
       x: cx + spread * Math.cos(angle),
       y: cy + spread * Math.sin(angle),
-      vx: 0, vy: 0,
-      r: Math.max(38, Math.min(72, 22 + 7 * Math.sqrt(g.member_count || 0))),
+      vx: 0, vy: 0, r: grpRadius(grpCount(g)),
     }
   })
 
-  // Répulsion simple (80 itérations)
-  for (let iter = 0; iter < 80; iter++) {
+  // Force-directed sur les racines.
+  for (let iter = 0; iter < 90; iter++) {
     for (let i = 0; i < n; i++) {
       let fx = 0, fy = 0
-      // Répulsion inter-nœuds
       for (let j = 0; j < n; j++) {
         if (i === j) continue
         const dx = nodes[i].x - nodes[j].x || 0.1
         const dy = nodes[i].y - nodes[j].y || 0.1
-        const d2 = dx * dx + dy * dy
-        const d  = Math.sqrt(d2)
-        const minD = nodes[i].r + nodes[j].r + 24
+        const d  = Math.sqrt(dx * dx + dy * dy)
+        const key = nodes[i].g.id < nodes[j].g.id
+          ? `${nodes[i].g.id}|${nodes[j].g.id}` : `${nodes[j].g.id}|${nodes[i].g.id}`
+        const shared = sharedByPair.get(key) || 0
+        let minD
+        if (shared > 0) {
+          // Chevauchement proportionnel au Jaccard : plus ils partagent de
+          // membres, plus les bulles se recouvrent.
+          const jac = shared / (grpCount(nodes[i].g) + grpCount(nodes[j].g) - shared)
+          minD = (nodes[i].r + nodes[j].r) * (1 - 0.55 * Math.min(1, jac))
+        } else {
+          minD = nodes[i].r + nodes[j].r + 22   // pas de membre commun → écartés
+        }
         if (d < minD) {
           const f = (minD - d) * 0.5
           fx += (dx / d) * f
           fy += (dy / d) * f
         }
       }
-      // Rappel vers le centre
       const dx = cx - nodes[i].x, dy = cy - nodes[i].y
-      fx += dx * 0.02
-      fy += dy * 0.02
-
+      fx += dx * 0.02; fy += dy * 0.02
       nodes[i].vx = (nodes[i].vx + fx) * 0.6
       nodes[i].vy = (nodes[i].vy + fy) * 0.6
       nodes[i].x += nodes[i].vx
       nodes[i].y += nodes[i].vy
     }
   }
-
-  // Clamp dans le SVG
   for (const nd of nodes) {
     nd.x = Math.max(nd.r + 4, Math.min(W - nd.r - 4, nd.x))
     nd.y = Math.max(nd.r + 4, Math.min(H - nd.r - 4, nd.y))
   }
 
-  // Rendu SVG
-  svg.innerHTML = nodes.map(nd => {
+  // Place les enfants dans leur parent, par vagues de profondeur (gère le
+  // multi-niveau A⊆B⊆C). Un enfant est un cercle plus petit logé dans la
+  // moitié basse du parent (le label parent reste lisible en haut).
+  const placed = new Map(nodes.map(nd => [nd.g.id, nd]))
+  let remaining = _groups.filter(g => parentOf.has(g.id))
+  let guard = 0
+  while (remaining.length && guard++ < 10) {
+    const next = []
+    // Regroupe les enfants par parent déjà placé.
+    const childrenByParent = new Map()
+    for (const g of remaining) {
+      const pid = parentOf.get(g.id)
+      if (placed.has(pid)) {
+        if (!childrenByParent.has(pid)) childrenByParent.set(pid, [])
+        childrenByParent.get(pid).push(g)
+      } else {
+        next.push(g)
+      }
+    }
+    for (const [pid, kids] of childrenByParent) {
+      const parent = placed.get(pid)
+      kids.forEach((g, k) => {
+        const r = Math.min(grpRadius(grpCount(g)), parent.r * 0.52)
+        // Répartis en arc dans la moitié basse du parent.
+        const slots = kids.length
+        const t = slots === 1 ? 0 : (k / (slots - 1) - 0.5)  // -0.5..0.5
+        const offX = t * parent.r * 0.7
+        const offY = parent.r * 0.34
+        const nd = {
+          g, root: false, r,
+          x: parent.x + offX,
+          y: parent.y + offY,
+        }
+        placed.set(g.id, nd)
+        nodes.push(nd)
+      })
+    }
+    if (next.length === remaining.length) break  // cycle / parent absent
+    remaining = next
+  }
+
+  // Rendu : grands cercles d'abord (dessous), petits au-dessus. fill-opacity
+  // pour que les zones de chevauchement restent visibles.
+  const ordered = [...nodes].sort((a, b) => b.r - a.r)
+  svg.innerHTML = ordered.map(nd => {
     const p = PALETTE[nd.g.color] || PALETTE.slate
     const isActive = _selected === nd.g.id
-    const stroke  = isActive ? p.bg : 'transparent'
-    const opacity = _selected && !isActive ? 0.45 : 1
-    const label   = nd.g.name.length > 14 ? nd.g.name.slice(0, 13) + '…' : nd.g.name
-    // Détermine couleur texte selon luminosité
-    const textColor = isActive ? p.bg : 'var(--text-primary)'
+    const stroke  = isActive ? p.bg : (nd.root ? 'transparent' : p.bg)
+    const strokeW = isActive ? 2.5 : (nd.root ? 0 : 1.5)
+    const opacity = _selected && !isActive ? 0.4 : 1
+    const hasKids = [...parentOf.values()].includes(nd.g.id)
+    const max = nd.r < 44 ? 9 : 14
+    const label = nd.g.name.length > max ? nd.g.name.slice(0, max - 1) + '…' : nd.g.name
+    // Si le cercle a des enfants logés au centre-bas, on remonte le label.
+    const labelY = hasKids ? nd.y - nd.r + 16 : nd.y - 4
+    const countY = hasKids ? nd.y - nd.r + 30 : nd.y + 11
     return `
       <g style="cursor:pointer;opacity:${opacity};transition:opacity .2s"
          onclick="groupesSelectGroup(${jsArg(nd.g.id)})">
         <circle cx="${nd.x}" cy="${nd.y}" r="${nd.r}"
-          fill="${p.light}" stroke="${stroke}" stroke-width="2.5"
+          fill="${p.light}" fill-opacity="0.78" stroke="${stroke}" stroke-width="${strokeW}"
           style="transition:all .2s"/>
-        <text x="${nd.x}" y="${nd.y - 6}" text-anchor="middle"
-          style="font-size:12px;font-weight:600;fill:${textColor};pointer-events:none;user-select:none">
+        <text x="${nd.x}" y="${labelY}" text-anchor="middle"
+          style="font-size:${nd.r < 44 ? 10 : 12}px;font-weight:600;fill:${p.bg};pointer-events:none;user-select:none">
           ${esc(label)}
         </text>
-        <text x="${nd.x}" y="${nd.y + 11}" text-anchor="middle"
-          style="font-size:11px;fill:${p.bg};pointer-events:none;user-select:none">
+        <text x="${nd.x}" y="${countY}" text-anchor="middle"
+          style="font-size:${nd.r < 44 ? 9 : 11}px;fill:${p.bg};opacity:0.8;pointer-events:none;user-select:none">
           ${nd.g.member_count} membre${nd.g.member_count !== 1 ? 's' : ''}
         </text>
       </g>`
