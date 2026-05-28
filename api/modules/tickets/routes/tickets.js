@@ -1,9 +1,16 @@
+import multipart from '@fastify/multipart'
 import {
   syncRequester, addInvolvedUser, removeUserFromTicket,
   addDeviceToTicket, removeDeviceFromTicket,
   loadRelatedUsersFor, loadRelatedDevicesFor,
   mergeTicketInto,
 } from '../lib/relations.js'
+import {
+  saveAttachmentStream, openAttachment, deleteAttachmentFile, contentDisposition,
+} from '../lib/attachments.js'
+
+// Taille max d'une pièce jointe : 25 Mo.
+const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 
 // Couleurs autorisées pour les tags : palette fermée alignée avec le front.
 const TAG_COLORS = ['slate', 'blue', 'green', 'amber', 'red', 'violet', 'pink', 'teal']
@@ -59,6 +66,14 @@ async function checkTicketAccess(fastify, request, reply, ticketId) {
 }
 
 export default async function ticketsRoute(fastify) {
+
+  // Multipart pour l'upload de pièces jointes. Enregistré au scope de ce
+  // plugin (suffisant : seules les routes attachments l'utilisent). La
+  // limite fileSize coupe le stream au-delà de 25 Mo → on détecte via
+  // file.truncated côté handler pour répondre 413.
+  await fastify.register(multipart, {
+    limits: { fileSize: ATTACHMENT_MAX_BYTES, files: 1 },
+  })
 
   // ───────────────────────────────────────────────────────────────────────────
   // Routes statiques — déclarées AVANT /:id pour ne pas être confondues
@@ -366,12 +381,18 @@ export default async function ticketsRoute(fastify) {
 
     // Phase 2 : exposer les relations M2M complètes (le front affichera des
     // listes éditables au lieu de juste tk.user_id + tk.device_id).
-    const [usersMap, devicesMap] = await Promise.all([
+    const [usersMap, devicesMap, attachments] = await Promise.all([
       loadRelatedUsersFor(fastify.db, [tk.id]),
       loadRelatedDevicesFor(fastify.db, [tk.id]),
+      fastify.db.query(
+        `SELECT id, filename, mime_type, size_bytes, uploaded_by_name, created_at
+         FROM ticket_attachments WHERE ticket_id = $1 ORDER BY created_at ASC`,
+        [req.params.id]
+      ),
     ])
     tk.related_users   = usersMap.get(tk.id) || []
     tk.related_devices = devicesMap.get(tk.id) || []
+    tk.attachments     = attachments.rows
 
     reply.send(tk)
   })
@@ -648,6 +669,93 @@ export default async function ticketsRoute(fastify) {
         client.release()
       }
       reply.send({ merged_from: req.params.id, merged_into: target_ticket_id })
+    })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Pièces jointes (upload manuel, stockage disque)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  // POST /api/tickets/:id/attachments  (multipart, 1 fichier, ≤ 25 Mo)
+  // ACL : admin OU requester OU assignee (checkTicketAccess).
+  fastify.post('/:id/attachments', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
+    if (!acl) return
+
+    const part = await req.file()
+    if (!part) return reply.code(400).send({ error: 'Aucun fichier' })
+
+    let saved
+    try {
+      saved = await saveAttachmentStream(req.params.id, part.file)
+    } catch (err) {
+      req.log?.warn({ err: err.message }, 'attachment: échec écriture disque')
+      return reply.code(500).send({ error: 'Échec de l\'enregistrement du fichier' })
+    }
+
+    // @fastify/multipart positionne file.truncated quand la limite fileSize
+    // est dépassée — le fichier sur disque est alors incomplet, on le purge.
+    if (part.file.truncated) {
+      await deleteAttachmentFile(saved.storagePath).catch(() => {})
+      return reply.code(413).send({ error: 'Fichier trop volumineux (max 25 Mo)' })
+    }
+
+    const { entraId, displayName } = acl
+    const { rows } = await fastify.db.query(`
+      INSERT INTO ticket_attachments
+        (ticket_id, filename, mime_type, size_bytes, storage_path,
+         uploaded_by_entra_id, uploaded_by_name)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      RETURNING id, filename, mime_type, size_bytes, uploaded_by_name, created_at
+    `, [req.params.id, part.filename, part.mimetype || null, saved.sizeBytes,
+        saved.storagePath, entraId, displayName])
+
+    await fastify.db.query('UPDATE tickets SET updated_at = now() WHERE id = $1', [req.params.id])
+    reply.code(201).send(rows[0])
+  })
+
+  // GET /api/tickets/:id/attachments/:attId/download
+  fastify.get('/:id/attachments/:attId/download',
+    { preHandler: [fastify.authenticate] }, async (req, reply) => {
+      const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
+      if (!acl) return
+
+      const { rows } = await fastify.db.query(
+        `SELECT filename, mime_type, storage_path FROM ticket_attachments
+         WHERE id = $1 AND ticket_id = $2`,
+        [req.params.attId, req.params.id]
+      )
+      if (!rows.length) return reply.code(404).send({ error: 'Pièce jointe introuvable' })
+      const a = rows[0]
+
+      // application/octet-stream + attachment : on ne sert jamais le fichier
+      // en inline (un SVG/HTML uploadé ne doit pas s'exécuter dans l'origin).
+      reply
+        .header('Content-Type', 'application/octet-stream')
+        .header('Content-Disposition', contentDisposition(a.filename))
+        .header('X-Content-Type-Options', 'nosniff')
+      try {
+        return reply.send(openAttachment(a.storage_path))
+      } catch (err) {
+        req.log?.warn({ err: err.message }, 'attachment: fichier disque manquant')
+        return reply.code(410).send({ error: 'Fichier non disponible' })
+      }
+    })
+
+  // DELETE /api/tickets/:id/attachments/:attId
+  fastify.delete('/:id/attachments/:attId',
+    { preHandler: [fastify.authenticate] }, async (req, reply) => {
+      const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
+      if (!acl) return
+
+      const { rows } = await fastify.db.query(
+        `DELETE FROM ticket_attachments WHERE id = $1 AND ticket_id = $2
+         RETURNING storage_path`,
+        [req.params.attId, req.params.id]
+      )
+      if (!rows.length) return reply.code(404).send({ error: 'Pièce jointe introuvable' })
+      // Best-effort : la row est partie, on nettoie le fichier disque.
+      await deleteAttachmentFile(rows[0].storage_path).catch(() => {})
+      reply.code(204).send()
     })
 
   // POST /api/tickets/:id/tags  { tag_id }

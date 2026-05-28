@@ -273,6 +273,9 @@ export async function renderTickets(container, opts = {}) {
   window.tkRemoveUser         = tkRemoveUser
   window.tkRemoveDevice       = tkRemoveDevice
   window.tkOpenMergeModal     = tkOpenMergeModal
+  window.tkUploadAttachment   = tkUploadAttachment
+  window.tkDownloadAttachment = tkDownloadAttachment
+  window.tkRemoveAttachment   = tkRemoveAttachment
   window.resolveTicket        = resolveTicket
   window.reopenTicket         = reopenTicket
   window.archiveTicket        = archiveTicket
@@ -963,6 +966,19 @@ function renderDetail(tk, container) {
           </div>
         </div>
 
+        <div class="info-section">
+          <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
+            <span>${t('tickets.info.attachments')}</span>
+            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="document.getElementById('tk-att-input-${tk.id}').click()" title="${esc(t('tickets.attachments.add'))}">
+              <i class="ti ti-paperclip" style="font-size:11px"></i> ${t('tickets.attachments.add')}
+            </button>
+          </div>
+          <input type="file" id="tk-att-input-${tk.id}" style="display:none" onchange="tkUploadAttachment('${tk.id}', this)">
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${renderAttachments(tk)}
+          </div>
+        </div>
+
         ${window.OPALE.moduleEnabled('inventory') ? `
         <div class="info-section">
           <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
@@ -1022,6 +1038,32 @@ function renderRelatedDevices(tk) {
     <div style="font-size:13px;flex:1;min-width:0">${deviceLink(d.id, d.hostname || d.id)}</div>
     <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text-tertiary)"
       onclick="tkRemoveDevice('${tk.id}','${d.id}')" title="${esc(t('tickets.related_devices.remove'))}">
+      <i class="ti ti-x" style="font-size:11px"></i>
+    </button>
+  </div>`).join('')
+}
+
+// Formatage taille lisible (Ko / Mo).
+function formatBytes(n) {
+  if (n == null) return ''
+  if (n < 1024) return `${n} o`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} Ko`
+  return `${(n / (1024 * 1024)).toFixed(1)} Mo`
+}
+
+function renderAttachments(tk) {
+  const atts = Array.isArray(tk.attachments) ? tk.attachments : []
+  if (!atts.length) {
+    return `<span style="color:var(--text-tertiary);font-size:12px">${t('tickets.attachments.none')}</span>`
+  }
+  return atts.map(a => `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+    <div style="flex:1;min-width:0;font-size:13px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+      onclick="tkDownloadAttachment('${tk.id}','${a.id}', this.dataset.fn)" data-fn="${esc(a.filename)}" title="${esc(a.filename)}">
+      <i class="ti ti-paperclip" style="font-size:11px"></i> ${esc(a.filename)}
+      <span style="color:var(--text-tertiary);font-size:11px">· ${formatBytes(a.size_bytes)}</span>
+    </div>
+    <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text-tertiary)"
+      onclick="tkRemoveAttachment('${tk.id}','${a.id}')" title="${esc(t('tickets.attachments.remove'))}">
       <i class="ti ti-x" style="font-size:11px"></i>
     </button>
   </div>`).join('')
@@ -1399,6 +1441,34 @@ async function tkClearRequester(id) {
   try {
     await window.api.updateTicket(id, { user_id: null })
     await refreshTicket(id)
+  } catch { showToast(t('error.generic'), 'error') }
+}
+
+// Pièces jointes
+async function tkUploadAttachment(ticketId, inputEl) {
+  const file = inputEl?.files?.[0]
+  if (!file) return
+  try {
+    await window.api.uploadAttachment(ticketId, file)
+    inputEl.value = '' // permet de re-uploader le même fichier ensuite
+    await refreshTicket(ticketId)
+    showToast(t('tickets.attachments.uploaded'), 'success')
+  } catch (err) {
+    showToast(err?.status === 413 ? t('tickets.attachments.too_large') : (err?.body?.error || t('error.generic')), 'error')
+  }
+}
+
+async function tkDownloadAttachment(ticketId, attId, filename) {
+  try {
+    await window.api.downloadAttachment(ticketId, attId, filename)
+  } catch { showToast(t('error.generic'), 'error') }
+}
+
+async function tkRemoveAttachment(ticketId, attId) {
+  if (!confirm(t('tickets.attachments.confirm_remove'))) return
+  try {
+    await window.api.deleteAttachment(ticketId, attId)
+    await refreshTicket(ticketId)
   } catch { showToast(t('error.generic'), 'error') }
 }
 
