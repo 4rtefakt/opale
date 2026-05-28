@@ -155,23 +155,46 @@ export async function sendOne(db, log, {
   const now = new Date()
   await markSent(db, message.message_id, now)
 
+  // Envoi en mail neuf (fallback) : pas de threading, pas de headers
+  // In-Reply-To/References (rejetés par Graph). Réutilisé par le chemin
+  // "pas de cible" ET par le fallback 404 ci-dessous.
+  const sendNew = () => {
+    const subject = buildSubject(pickSubject(mappings, message.ticket_title), message.ticket_id)
+    return sendImpl({ sender, to: recipient, subject, bodyText: message.content })
+  }
+
   try {
+    let mode = 'new'
     if (replyTarget) {
       // Mode normal : réponse nativement threadée (Graph gère headers + sujet).
-      await sendReplyImpl({
-        mailbox: replyTarget.mailbox,
-        graphMessageId: replyTarget.graphMessageId,
-        bodyText: message.content,
-      })
+      try {
+        await sendReplyImpl({
+          mailbox: replyTarget.mailbox,
+          graphMessageId: replyTarget.graphMessageId,
+          bodyText: message.content,
+        })
+        mode = 'reply'
+      } catch (err) {
+        // Le mail d'origine n'existe plus côté Outlook (supprimé, déplacé,
+        // archivé) → createReply renvoie 404 ItemNotFound. Inutile de
+        // retenter à l'infini : on bascule sur un mail neuf. Les autres
+        // erreurs (réseau, throttling, 5xx) restent transitoires → on
+        // relance pour permettre un vrai retry au prochain tick.
+        if (/createReply: 404/.test(err.message)) {
+          log?.warn({ ticketId: message.ticket_id, messageId: message.message_id },
+            'outbound: mail d\'origine introuvable (404), fallback mail neuf')
+          await sendNew()
+          mode = 'new-fallback'
+        } else {
+          throw err
+        }
+      }
     } else {
-      // Fallback : pas de message Graph d'origine (vieux mapping) → mail neuf
-      // sans threading. Pas de headers In-Reply-To/References (rejetés par Graph).
-      const subject = buildSubject(pickSubject(mappings, message.ticket_title), message.ticket_id)
-      await sendImpl({ sender, to: recipient, subject, bodyText: message.content })
+      await sendNew()
     }
     log?.info({
       ticketId: message.ticket_id, messageId: message.message_id,
-      recipient, mode: replyTarget ? 'reply' : 'new',
+      recipient, mode,
     }, 'outbound: mail envoyé')
     return 'sent'
   } catch (err) {

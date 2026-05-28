@@ -128,6 +128,38 @@ test('flushOutbox : fallback sendMail si pas de graph_message_id (sans headers I
   assert.equal(s.sent[0].references, undefined)
 })
 
+test('flushOutbox : createReply 404 (mail d\'origine supprimé) → fallback sendMail', { skip: SKIP }, async () => {
+  const tid = await seedTicket()
+  await seedInboundMapping(tid, { from: 'gone@example.com', subject: 'Thread perdu' })
+  await seedMessage(tid, { content: 'Réponse malgré tout' })
+
+  const sent = []
+  const reply404 = async () => { throw new Error('Graph sendReply/createReply: 404 — ItemNotFound') }
+  const stats = await flushOutbox(db, null, { sendReplyImpl: reply404, sendImpl: stubSend(sent) })
+
+  assert.equal(stats.sent, 1, 'le mail part via le fallback')
+  assert.equal(stats.errors, 0)
+  assert.equal(sent.length, 1, 'sendMail (fallback) appelé après le 404')
+  assert.equal(sent[0].to, 'gone@example.com')
+  assert.equal(sent[0].inReplyTo, undefined)
+})
+
+test('flushOutbox : createReply erreur transitoire (5xx) → PAS de fallback, retry', { skip: SKIP }, async () => {
+  const tid = await seedTicket()
+  await seedInboundMapping(tid)
+  const msgId = await seedMessage(tid, { content: 'Erreur transitoire' })
+
+  const sent = []
+  const reply503 = async () => { throw new Error('Graph sendReply/createReply: 503 — throttled') }
+  const stats = await flushOutbox(db, null, { sendReplyImpl: reply503, sendImpl: stubSend(sent) })
+
+  assert.equal(stats.errors, 1)
+  assert.equal(stats.sent, 0)
+  assert.equal(sent.length, 0, 'pas de fallback sur erreur transitoire')
+  const { rows } = await db.query(`SELECT email_sent_at FROM ticket_messages WHERE id = $1`, [msgId])
+  assert.equal(rows[0].email_sent_at, null, 'retry possible au prochain tick')
+})
+
 test('flushOutbox : loop-protection — message inbound déjà marqué non renvoyé', { skip: SKIP }, async () => {
   const tid = await seedTicket()
   await seedInboundMapping(tid)
