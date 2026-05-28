@@ -60,6 +60,16 @@ export default {
   'dashboard.omni.error':          'Erreur lors de la recherche',
   'dashboard.ticket.auto_alert':   'Alerte automatique',
 
+  'ask.placeholder':       'Demandez en français… (ex : postes hors ligne depuis 3 jours)',
+  'ask.hint':              'Posez une question sur votre parc, vos tickets ou la conformité.',
+  'ask.searching':         'Recherche…',
+  'ask.results':           'résultat(s)',
+  'ask.no_results':        'Aucun résultat.',
+  'ask.more':              '{shown} affichés sur {total}.',
+  'ask.error':             'Erreur lors de la recherche.',
+  'ask.unknown_resource':  'Type de résultat non géré.',
+  'ask.config_hint':       'Ask Opale est désactivé ou non configuré (modèle / clé API). Voir Paramètres.',
+
   'dashboard.unhealthy.title':       'Postes à surveiller',
   'dashboard.unhealthy.empty':       'Aucun poste à surveiller',
   'dashboard.unhealthy.crit_fails':  'règles critical en échec',

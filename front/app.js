@@ -83,15 +83,23 @@ window.closeModal = () => {
 }
 
 // ─── Search ───
+// Cmd/Ctrl+K : ouvre la palette Ask Opale (recherche en langage naturel) si le
+// module `ask` est activé. Sinon, fallback historique = focus de l'omni-search
+// du dashboard (zéro régression si Ask est désactivé).
 document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
     e.preventDefault()
+    if (window.OPALE?.moduleEnabled('ask')) {
+      import('/views/ask.js').then(m => m.openAskPalette())
+      return
+    }
     const input = document.getElementById('omni-input')
     if (input) { input.focus(); input.select() }
     else { navigateTo('/dashboard'); setTimeout(() => document.getElementById('omni-input')?.focus(), 200) }
   }
   if (e.key === 'Escape') {
     closeModal()
+    window.closeAskPalette?.()
     document.getElementById('omni-input')?.blur()
   }
 })

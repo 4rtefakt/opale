@@ -553,6 +553,51 @@ kbd {
   padding: 1.5rem;
 }
 
+/* ─── ASK OPALE (palette Cmd+K) ─── */
+.ask-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+  z-index: 250; display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 12vh;
+}
+.ask-panel {
+  width: 100%; max-width: 600px; margin: 0 16px;
+  background: var(--bg-primary); border: 0.5px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: 0 24px 64px rgba(0,0,0,0.28);
+  overflow: hidden; display: flex; flex-direction: column; max-height: 70vh;
+}
+.ask-inputwrap {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-bottom: 0.5px solid var(--border);
+}
+.ask-inputicon { font-size: 18px; color: var(--blue); flex-shrink: 0; }
+.ask-input {
+  flex: 1; border: none; background: transparent; outline: none;
+  font-size: 15px; color: var(--text-primary);
+}
+.ask-input::placeholder { color: var(--text-tertiary); }
+.ask-body { overflow-y: auto; }
+.ask-hint { padding: 16px 16px 8px; font-size: 13px; color: var(--text-secondary); }
+.ask-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 16px 18px; }
+.ask-chip {
+  font-size: 12px; padding: 5px 10px; cursor: pointer;
+  background: var(--bg-secondary); border: 0.5px solid var(--border);
+  border-radius: 999px; color: var(--text-secondary); transition: all 0.12s;
+}
+.ask-chip:hover { border-color: var(--blue); color: var(--text-primary); }
+.ask-specline {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 14px; font-size: 11px; color: var(--text-tertiary);
+  border-bottom: 0.5px solid var(--border); background: var(--bg-secondary);
+}
+.ask-count { font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+.ask-results { padding: 4px 0; }
+.ask-more { padding: 8px 14px; font-size: 11px; color: var(--text-tertiary); text-align: center; }
+.ask-err { color: var(--red); }
+.ask-errlist { margin: 0; padding: 4px 16px 14px 32px; font-size: 12px; color: var(--text-tertiary); }
+.ask-errlist li { margin: 2px 0; }
+.ask-spin { display: inline-block; animation: ask-spin 0.8s linear infinite; }
+@keyframes ask-spin { to { transform: rotate(360deg); } }
+
 /* ─── TOAST ─── */
 .toast {
   position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 300;

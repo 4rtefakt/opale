@@ -280,6 +280,13 @@ class API {
   importGroupFromEntra(body)            { return this._fetch('/groups/import-from-entra', { method: 'POST', body }) }
   syncGroupFromEntra(id)                { return this._fetch(`/groups/${id}/sync-from-entra`, { method: 'POST', body: {} }) }
   detachGroupFromEntra(id)              { return this._fetch(`/groups/${id}/detach-entra`, { method: 'POST', body: {} }) }
+
+  // Ask Opale — recherche du parc en langage naturel.
+  // ask() peut lever ApiError : 503 (désactivé / non configuré), 502
+  // (provider indispo), 422 (question non traduisible — body.details liste
+  // les raisons). Le caller affiche le détail.
+  askOpale(question)    { return this._fetch('/ask', { method: 'POST', body: { question } }) }
+  getAskCapabilities()  { return this._fetch('/ask/capabilities') }
 }
 
 window.api = new API()
