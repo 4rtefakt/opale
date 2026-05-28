@@ -21,8 +21,8 @@
 // on UPDATE email_sent_at PRÉ-envoi avec un timestamp, on tente l'envoi,
 // si échec on annule le UPDATE. Trade-off : le retry est volontaire.
 
-import { sendMail } from './graph-send.js'
-import { buildThreadHeaders, buildSubject } from './thread-headers.js'
+import { sendMail, sendReply } from './graph-send.js'
+import { buildSubject } from './thread-headers.js'
 
 const DEFAULT_INTERVAL_MS = 10_000
 const MAX_BATCH = 20  // bound le travail par tick pour ne pas bloquer
@@ -74,10 +74,11 @@ async function pickPending(db, limit) {
 }
 
 // Charge tous les mappings d'un ticket, triés chronologiquement.
-// Sert à construire In-Reply-To/References + retrouver le destinataire.
+// Sert à retrouver le destinataire + la cible de réponse threadée.
 async function loadTicketMappings(db, ticketId) {
   const { rows } = await db.query(`
-    SELECT internet_message_id, direction, from_address, subject, received_at
+    SELECT internet_message_id, graph_message_id, mailbox, direction,
+           from_address, subject, received_at
     FROM email_thread_mapping
     WHERE ticket_id = $1
     ORDER BY received_at ASC NULLS FIRST, created_at ASC
@@ -90,6 +91,19 @@ function pickRecipient(mappings) {
   for (let i = mappings.length - 1; i >= 0; i--) {
     const m = mappings[i]
     if (m.direction === 'inbound' && m.from_address) return m.from_address
+  }
+  return null
+}
+
+// Cible de réponse threadée : dernier mail INBOUND ayant un graph_message_id
+// (+ sa mailbox). Permet le createReply natif. null si aucun (vieux mappings
+// pré-graph_message_id) → le caller fait un fallback sendMail.
+function pickReplyTarget(mappings) {
+  for (let i = mappings.length - 1; i >= 0; i--) {
+    const m = mappings[i]
+    if (m.direction === 'inbound' && m.graph_message_id && m.mailbox) {
+      return { mailbox: m.mailbox, graphMessageId: m.graph_message_id }
+    }
   }
   return null
 }
@@ -112,14 +126,18 @@ async function markSent(db, messageId, sentAt) {
   )
 }
 
-// Process un message : assemble le mail, envoie via Graph, marque la row.
-// Retourne 'sent' | 'skipped_no_recipient' | 'error'.
-export async function sendOne(db, log, { message, sender, sendImpl = sendMail }) {
+// Process un message : envoie via Graph (réponse threadée si possible,
+// sinon mail simple), marque la row. Retourne 'sent' |
+// 'skipped_no_recipient' | 'error'.
+//
+// sendReplyImpl / sendImpl injectables pour les tests.
+export async function sendOne(db, log, {
+  message, sender, sendImpl = sendMail, sendReplyImpl = sendReply,
+}) {
   const mappings = await loadTicketMappings(db, message.ticket_id)
   if (!mappings.length) {
-    // Théoriquement impossible : la requête pickPending exige EXISTS d'un
-    // inbound. Garde-fou défensif au cas où le mapping serait supprimé
-    // entre-temps.
+    // Théoriquement impossible : pickPending exige EXISTS d'un inbound.
+    // Garde-fou si le mapping a été supprimé entre-temps.
     return 'skipped_no_recipient'
   }
 
@@ -130,9 +148,7 @@ export async function sendOne(db, log, { message, sender, sendImpl = sendMail })
     return 'skipped_no_recipient'
   }
 
-  const baseSubject = pickSubject(mappings, message.ticket_title)
-  const subject = buildSubject(baseSubject, message.ticket_id)
-  const { inReplyTo, references } = buildThreadHeaders(mappings)
+  const replyTarget = pickReplyTarget(mappings)
 
   // Marquer PRÉ-envoi : évite un double-send si le worker tick deux fois
   // pendant que Graph est lent. Si l'envoi échoue, on réinitialise.
@@ -140,17 +156,22 @@ export async function sendOne(db, log, { message, sender, sendImpl = sendMail })
   await markSent(db, message.message_id, now)
 
   try {
-    await sendImpl({
-      sender,
-      to: recipient,
-      subject,
-      bodyText: message.content,
-      inReplyTo,
-      references,
-    })
+    if (replyTarget) {
+      // Mode normal : réponse nativement threadée (Graph gère headers + sujet).
+      await sendReplyImpl({
+        mailbox: replyTarget.mailbox,
+        graphMessageId: replyTarget.graphMessageId,
+        bodyText: message.content,
+      })
+    } else {
+      // Fallback : pas de message Graph d'origine (vieux mapping) → mail neuf
+      // sans threading. Pas de headers In-Reply-To/References (rejetés par Graph).
+      const subject = buildSubject(pickSubject(mappings, message.ticket_title), message.ticket_id)
+      await sendImpl({ sender, to: recipient, subject, bodyText: message.content })
+    }
     log?.info({
       ticketId: message.ticket_id, messageId: message.message_id,
-      recipient, subject,
+      recipient, mode: replyTarget ? 'reply' : 'new',
     }, 'outbound: mail envoyé')
     return 'sent'
   } catch (err) {
@@ -162,7 +183,7 @@ export async function sendOne(db, log, { message, sender, sendImpl = sendMail })
 }
 
 // Un tick de l'outbox.
-export async function flushOutbox(db, log, { sendImpl } = {}) {
+export async function flushOutbox(db, log, { sendImpl, sendReplyImpl } = {}) {
   const cfg = await getConfig(db)
   if (!cfg.enabled) return { skipped: 'disabled' }
   if (!cfg.sender)  return { skipped: 'no-sender-configured' }
@@ -173,7 +194,7 @@ export async function flushOutbox(db, log, { sendImpl } = {}) {
   const stats = { sent: 0, skipped_no_recipient: 0, errors: 0 }
   for (const message of pending) {
     try {
-      const r = await sendOne(db, log, { message, sender: cfg.sender, sendImpl })
+      const r = await sendOne(db, log, { message, sender: cfg.sender, sendImpl, sendReplyImpl })
       if      (r === 'sent')                  stats.sent++
       else if (r === 'skipped_no_recipient')  stats.skipped_no_recipient++
       else                                    stats.errors++
