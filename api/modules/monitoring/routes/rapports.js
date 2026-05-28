@@ -18,6 +18,7 @@ export default async function rapportsRoute(fastify) {
       diskTop,
       batteryStats,
       activeDevicesCount,
+      ticketGains,
     ] = await Promise.all([
 
       // ── KPI Parc supervisé : postes vus < 7 jours / total ──
@@ -180,6 +181,24 @@ export default async function rapportsRoute(fastify) {
         WHERE last_seen > now() - interval '30 days'
       `),
 
+      // ── Gains tickets/mail sur 30j (actions synthétiques, pas dans
+      // audit_logs) : comptées directement depuis les tables métier.
+      //   ticket_mail_appended : mails de suivi rattachés auto
+      //   ticket_from_email    : tickets créés depuis un mail
+      //   ticket_merged        : tickets fusionnés (doublons évités)
+      fastify.db.query(`
+        SELECT
+          (SELECT COUNT(*) FROM email_thread_mapping
+             WHERE action = 'message_appended'
+               AND received_at > now() - interval '30 days')        AS mail_appended,
+          (SELECT COUNT(*) FROM tickets
+             WHERE source = 'email'
+               AND created_at > now() - interval '30 days')         AS from_email,
+          (SELECT COUNT(*) FROM tickets
+             WHERE status = 'merged'
+               AND updated_at > now() - interval '30 days')         AS merged
+      `),
+
     ])
 
     // ── Construction de l'activity breakdown ──
@@ -214,6 +233,28 @@ export default async function rapportsRoute(fastify) {
           total_eur:         Math.round(n * mins * hourlyRate / 60),
         })
       }
+    }
+
+    // Ajouts synthétiques : gains tickets/mail (comptés depuis les tables
+    // métier sur 30j, durées dans automation_costs cf. migration 063).
+    const tg = ticketGains.rows[0]
+    const ticketSynthetic = [
+      ['ticket_mail_appended', parseInt(tg.mail_appended)],
+      ['ticket_from_email',    parseInt(tg.from_email)],
+      ['ticket_merged',        parseInt(tg.merged)],
+    ]
+    for (const [type, count] of ticketSynthetic) {
+      const ac = acMap[type]
+      if (!ac || count <= 0) continue
+      const mins = parseInt(ac.estimated_minutes)
+      activity.push({
+        action_type:       type,
+        label:             ac.label,
+        count,
+        estimated_minutes: mins,
+        total_minutes:     count * mins,
+        total_eur:         Math.round(count * mins * hourlyRate / 60),
+      })
     }
 
     const totalMinutes = activity.reduce((s, r) => s + r.total_minutes, 0)
