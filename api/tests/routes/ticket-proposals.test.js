@@ -164,6 +164,46 @@ test('POST /:id/accept — crée un ticket + proposal devient accepted', { skip:
   assert.equal(rows[0].ticket_id, tk.id)
 })
 
+test('POST /:id/accept — email_thread_mapping repointé vers le ticket créé (fix bouton Envoyer par mail)',
+  { skip: SKIP }, async () => {
+    const { token } = await adminAuth('oid-tp-accept-mapping-fix')
+    const prop = await seedProposal(db, {
+      source: 'email',
+      suggestedTitle: 'Avec mapping',
+      sourcePayload: { from: 'expert@ex.fr', fromName: 'Expert', receivedAt: '2026-02-05T10:00:00Z' },
+    })
+
+    // Seed le mapping inbound comme le ferait processOne au moment de l'ingestion
+    const internetMessageId = `<acc-fix-${Math.random().toString(36).slice(2)}@x>`
+    const { rows: mapInsert } = await db.query(`
+      INSERT INTO email_thread_mapping
+        (internet_message_id, mailbox, direction, from_address, subject,
+         received_at, proposal_id, action, processed_at)
+      VALUES ($1, 'helpdesk@test', 'inbound', 'expert@ex.fr', 'Avec mapping',
+              now(), $2, 'proposal_created', now())
+      RETURNING id
+    `, [internetMessageId, prop.id])
+    const mappingId = mapInsert[0].id
+
+    const res = await fastify.inject({
+      method: 'POST', url: `/api/ticket-proposals/${prop.id}/accept`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {},
+    })
+    assert.equal(res.statusCode, 201)
+    const ticketId = res.json().ticket.id
+
+    // Le mapping doit maintenant pointer vers le ticket créé. Sans ça
+    // has_inbound_mail reste false et le bouton "Envoyer par mail" reste
+    // invisible sur le ticket (cf. Phase 1c).
+    const { rows } = await db.query(
+      `SELECT ticket_id, proposal_id FROM email_thread_mapping WHERE id = $1`, [mappingId]
+    )
+    assert.equal(rows[0].ticket_id, ticketId, 'mapping ticket_id repointé sur le ticket accepté')
+    assert.equal(rows[0].proposal_id, prop.id, 'proposal_id conservé pour traçabilité')
+  }
+)
+
 test('POST /:id/accept — surcharge title/description/priority fonctionne', { skip: SKIP }, async () => {
   const { token } = await adminAuth('oid-tp-accept-override')
   const prop = await seedProposal(db, { suggestedTitle: 'Titre original', suggestedPriority: 'low' })

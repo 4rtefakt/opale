@@ -222,6 +222,19 @@ export default async function ticketProposalsRoute(fastify) {
         WHERE id = $4
       `, [tk.id, entraId, displayName, p.id])
 
+      // Repointe les email_thread_mapping qui pointaient sur cette proposal
+      // vers le ticket créé. Sans ça :
+      //   - has_inbound_mail reste false côté GET /tickets/:id → le bouton
+      //     "Envoyer par mail" (Phase 1c) n'apparaît jamais
+      //   - le worker outbound filtre `ticket_id IS NOT NULL` → l'envoi
+      //     vers le requester est impossible
+      // Concerne uniquement source='email' en pratique, mais on update
+      // sans filtre source pour rester insensible aux futurs sources.
+      await client.query(
+        `UPDATE email_thread_mapping SET ticket_id = $1 WHERE proposal_id = $2`,
+        [tk.id, p.id]
+      )
+
       await client.query('COMMIT')
       reply.code(201).send({ ticket: tk, proposal_id: p.id })
     } catch (err) {
