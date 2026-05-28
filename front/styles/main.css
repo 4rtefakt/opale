@@ -931,13 +931,14 @@ kbd {
 .form-row { display: flex; flex-direction: column; gap: 4px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .form-label { font-size: 12px; font-weight: 500; color: var(--text-secondary); }
-.form-input, .form-select, .form-textarea {
+.form-input, .form-select, .form-textarea, .search-input {
   padding: 8px 10px; font-size: 13px; font-family: inherit;
   background: var(--bg-secondary); border: 0.5px solid var(--border);
   border-radius: var(--radius-md); color: var(--text-primary);
   outline: none; width: 100%; box-sizing: border-box;
 }
-.form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--blue); }
+.form-input:focus, .form-select:focus, .form-textarea:focus, .search-input:focus { border-color: var(--blue); }
+.search-input::placeholder { color: var(--text-tertiary); }
 .form-textarea { resize: vertical; min-height: 72px; }
 .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
 .modal-footer { margin-top: 20px; display: flex; justify-content: flex-end; gap: 8px; }

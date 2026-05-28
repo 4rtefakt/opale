@@ -514,6 +514,45 @@ test('GET /?status=closed — retourne uniquement les archives',
   }
 )
 
+test('GET /?q=… — recherche matche aussi le nom/email d\'une personne concernée',
+  { skip: SKIP }, async () => {
+    const admin = await adminAuth('oid-tk-q-user', 'Q Admin')
+    const alice = await userAuth('oid-tk-q-alice', 'Alice Wonderland')
+    const carol = await userAuth('oid-tk-q-carol', 'Carol Smith')
+
+    // Ticket 1 : Alice = requester
+    const t1 = await createTicketAs(admin.token, {
+      title: 'Sujet neutre A', user_id: alice.user.entraId,
+    })
+    // Ticket 2 : Carol = involved (ajouté via /users)
+    const t2 = await createTicketAs(admin.token, { title: 'Sujet neutre B' })
+    await fastify.inject({
+      method: 'POST', url: `/api/tickets/${t2.json().id}/users`,
+      headers: { authorization: `Bearer ${admin.token}` },
+      payload: { entra_id: carol.user.entraId },
+    })
+    // Ticket 3 : aucune des deux
+    const t3 = await createTicketAs(admin.token, { title: 'Sujet neutre C' })
+
+    // Recherche "wonder" → matche Alice (requester de t1)
+    const r1 = await fastify.inject({
+      method: 'GET', url: '/api/tickets/?q=wonder',
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    const ids1 = r1.json().map(r => r.id)
+    assert.ok(ids1.includes(t1.json().id), 'ticket avec Alice requester remonté')
+    assert.ok(!ids1.includes(t3.json().id), 'ticket sans Alice ignoré')
+
+    // Recherche par email → matche Carol (involved de t2)
+    const r2 = await fastify.inject({
+      method: 'GET', url: `/api/tickets/?q=${encodeURIComponent('oid-tk-q-carol@x')}`,
+      headers: { authorization: `Bearer ${admin.token}` },
+    })
+    const ids2 = r2.json().map(r => r.id)
+    assert.ok(ids2.includes(t2.json().id), 'ticket avec Carol involved remonté par email')
+  }
+)
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase 2 — Multi-relations users/devices + merge
 // ═══════════════════════════════════════════════════════════════════════════
