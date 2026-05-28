@@ -60,6 +60,16 @@ export default {
   'dashboard.omni.error':          'Search error',
   'dashboard.ticket.auto_alert':   'Automatic alert',
 
+  'ask.placeholder':       'Ask in plain language… (e.g. devices offline for 3 days)',
+  'ask.hint':              'Ask a question about your fleet, tickets or compliance.',
+  'ask.searching':         'Searching…',
+  'ask.results':           'result(s)',
+  'ask.no_results':        'No results.',
+  'ask.more':              'showing {shown} of {total}.',
+  'ask.error':             'Search error.',
+  'ask.unknown_resource':  'Unsupported result type.',
+  'ask.config_hint':       'Ask Opale is disabled or not configured (model / API key). See Settings.',
+
   'dashboard.unhealthy.title':       'Devices needing attention',
   'dashboard.unhealthy.empty':       'No device needs attention',
   'dashboard.unhealthy.crit_fails':  'critical rules failing',

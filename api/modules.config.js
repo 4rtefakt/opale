@@ -21,5 +21,10 @@ export const modulesConfig = {
   //   - envoi       : mail.send_enabled + mail.sender_address
   // Tous vides par défaut → le module se charge mais ne fait rien tant
   // qu'on ne configure pas. Pas d'impact si on l'active sans config.
-  'email-bridge': true
+  'email-bridge': true,
+  // Ask Opale : recherche du parc en langage naturel (LLM → QuerySpec →
+  // SQL). Défaut = Claude Haiku, activé (setting ask.enabled). La clé API
+  // vit en env OPALE_ASK_API_KEY ; tant qu'elle manque, la route répond
+  // 503 « non configuré » proprement.
+  ask: true,
 }

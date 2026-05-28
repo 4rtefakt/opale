@@ -145,6 +145,9 @@ export default async function settingsRoute(fastify) {
       // Conformité : toggle push + ticket_proposal sur transitions critical/high
       // (cf. api/lib/compliance.js, lu à chaque checkin)
       'compliance_alerts_enabled',
+      // Ask Opale : config NON secrète (la clé API vit dans l'env
+      // OPALE_ASK_API_KEY, jamais en settings). Cf. modules/ask.
+      'ask.enabled', 'ask.provider', 'ask.url', 'ask.model',
     ]
     // Validation des valeurs sensibles côté serveur — defense in depth.
     // Le client valide déjà et l'agent Go refuse les noms sensibles, mais
@@ -168,6 +171,19 @@ export default async function settingsRoute(fastify) {
         return reply.code(400).send({
           error: "compliance_alerts_enabled doit valoir 'true' ou 'false'",
         })
+      }
+    }
+    // Ask Opale : enabled bool strict, provider dans la liste fermée.
+    if (req.body?.['ask.enabled'] !== undefined) {
+      const v = String(req.body['ask.enabled'])
+      if (v !== 'true' && v !== 'false') {
+        return reply.code(400).send({ error: "ask.enabled doit valoir 'true' ou 'false'" })
+      }
+    }
+    if (req.body?.['ask.provider'] !== undefined) {
+      const v = String(req.body['ask.provider'])
+      if (v !== 'mistral' && v !== 'anthropic') {
+        return reply.code(400).send({ error: "ask.provider doit valoir 'mistral' ou 'anthropic'" })
       }
     }
 
