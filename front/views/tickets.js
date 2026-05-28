@@ -482,15 +482,31 @@ function renderKanbanLayout(main) {
   if (_activeId) tkOpenDrawer(_activeId)
 }
 
+// Filtre local pour réactivité immédiate pendant la frappe (avant que le
+// debounce ne déclenche loadTickets). Match sur les champs présents dans
+// le payload list : title, hostname, requester_name.
+//
+// Cas limite : le backend cherche aussi dans description, contenu des
+// messages, et involved users — ces critères ne sont pas dans le payload
+// list. Donc si l'utilisateur cherche par exemple un involved et que le
+// filtre local renvoie 0 alors que `_tickets` (fraîchement chargé par le
+// backend filtré) en a, on garde la liste backend telle quelle. Sinon le
+// filtre local masquerait le résultat backend correct.
+function applyLocalSearch(tickets, q) {
+  if (!q?.trim()) return tickets
+  const lower = q.toLowerCase()
+  const matched = tickets.filter(tk =>
+    tk.title.toLowerCase().includes(lower) ||
+    (tk.hostname || '').toLowerCase().includes(lower) ||
+    (tk.requester_name || '').toLowerCase().includes(lower)
+  )
+  return (matched.length === 0 && tickets.length > 0) ? tickets : matched
+}
+
 // ─── Kanban : remplit les colonnes ───────────────────────────────────────────
 
 function renderKanbanCards() {
-  // Filtre local (search bar)
-  const lower = _localQ.toLowerCase()
-  const visible = _localQ
-    ? _tickets.filter(tk => tk.title.toLowerCase().includes(lower) ||
-                            (tk.hostname || '').toLowerCase().includes(lower))
-    : _tickets
+  const visible = applyLocalSearch(_tickets, _localQ)
 
   const groups = { open: [], in_progress: [], resolved: [] }
   for (const tk of visible) {
@@ -758,11 +774,7 @@ function renderListOrKanban() {
 function renderList() {
   const el = document.getElementById('ticket-list')
   if (!el) return
-  const lower = _localQ.toLowerCase()
-  const filtered = _localQ
-    ? _tickets.filter(tk => tk.title.toLowerCase().includes(lower) ||
-                             (tk.hostname || '').toLowerCase().includes(lower))
-    : _tickets
+  const filtered = applyLocalSearch(_tickets, _localQ)
 
   if (!filtered.length) {
     el.innerHTML = `<div class="empty-state" style="padding:2rem"><i class="ti ti-ticket"></i><p>${t('tickets.empty')}</p></div>`
