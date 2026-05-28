@@ -156,8 +156,34 @@ test('flushOutbox : createReply erreur transitoire (5xx) → PAS de fallback, re
   assert.equal(stats.errors, 1)
   assert.equal(stats.sent, 0)
   assert.equal(sent.length, 0, 'pas de fallback sur erreur transitoire')
-  const { rows } = await db.query(`SELECT email_sent_at FROM ticket_messages WHERE id = $1`, [msgId])
+  const { rows } = await db.query(`SELECT email_sent_at, outbound_attempts, outbound_failed_at FROM ticket_messages WHERE id = $1`, [msgId])
   assert.equal(rows[0].email_sent_at, null, 'retry possible au prochain tick')
+  assert.equal(rows[0].outbound_attempts, 1, 'compteur incrémenté')
+  assert.equal(rows[0].outbound_failed_at, null, 'pas encore dead-letter')
+})
+
+test('flushOutbox : échec persistant → dead-letter après MAX_ATTEMPTS, plus repris', { skip: SKIP }, async () => {
+  const tid = await seedTicket()
+  await seedInboundMapping(tid)
+  const msgId = await seedMessage(tid, { content: 'Toujours en erreur' })
+
+  const reply503 = async () => { throw new Error('Graph sendReply/createReply: 503 — throttled') }
+  // 5 ticks d'échec → au 5e, dead-letter.
+  let lastStats
+  for (let i = 0; i < 5; i++) {
+    lastStats = await flushOutbox(db, null, { sendReplyImpl: reply503, sendImpl: async () => ({}) })
+  }
+  assert.equal(lastStats.dead_letter, 1, 'le 5e échec marque dead-letter')
+
+  const { rows } = await db.query(`SELECT outbound_attempts, outbound_failed_at, outbound_error FROM ticket_messages WHERE id = $1`, [msgId])
+  assert.equal(rows[0].outbound_attempts, 5)
+  assert.ok(rows[0].outbound_failed_at, 'outbound_failed_at posé')
+  assert.match(rows[0].outbound_error, /503/)
+
+  // Tick suivant : le message n'est PLUS repris (exclu par pickPending).
+  let reprised = false
+  await flushOutbox(db, null, { sendReplyImpl: async () => { reprised = true; return {} }, sendImpl: async () => { reprised = true; return {} } })
+  assert.equal(reprised, false, 'dead-letter ignoré par le worker')
 })
 
 test('flushOutbox : loop-protection — message inbound déjà marqué non renvoyé', { skip: SKIP }, async () => {

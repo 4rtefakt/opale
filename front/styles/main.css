@@ -834,6 +834,7 @@ kbd {
 .msg-badge-internal { background: rgba(217,119,6,0.12); color: #d97706; }
 .msg-badge-sending  { background: rgba(59,130,246,0.12); color: #2563eb; }
 .msg-badge-sent     { background: rgba(34,197,94,0.12);  color: #16a34a; }
+.msg-badge-failed   { background: rgba(220,38,38,0.12);  color: #dc2626; }
 .msg-actions { margin-top: 6px; display: flex; gap: 6px; }
 .msg-send-mail { font-size: 11px; padding: 3px 8px; }
 .reply-box {
