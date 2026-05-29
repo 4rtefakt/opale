@@ -13,6 +13,13 @@
 //       on ne stocke pas le courrier perso non lié à un ticket (vie privée +
 //       volume). Conséquence : un mail non-matché sera ré-évalué si re-scanné,
 //       mais matchThread est bon marché et idempotent (pas d'append en double).
+//   3c. Match ticket MAIS le ticket contient déjà un message au contenu
+//       identique → 'skipped_duplicate'. Cas critique : la boîte scannée est
+//       AUSSI mail.sender_address, donc les réponses qu'on envoie DEPUIS Opale
+//       retombent dans ce dossier "Éléments envoyés". Sans ce garde on les
+//       ré-ingère en double du message déjà présent dans le ticket. La
+//       comparaison est normalisée (espaces compactés) car le round-trip
+//       texte→HTML→texte d'Opale introduit des différences de blancs.
 //
 // Volontairement PAS de classifieur, PAS de création de ticket, PAS de
 // pending_review : la demande est "seulement les mails liés à un ticket déjà
@@ -35,6 +42,14 @@ function safeBodyPreview(graphMessage) {
   return htmlToText(graphMessage?.bodyPreview || '').slice(0, 1000)
 }
 
+// Normalise un texte pour comparer deux contenus "au sens humain" : compacte
+// toute suite de blancs (espaces, tabs, sauts de ligne) en un seul espace et
+// trim. Aligne le texte saisi dans Opale et le texte ré-extrait du HTML du
+// mail envoyé, qui ne diffèrent que par des blancs après round-trip.
+function normalizeContent(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim()
+}
+
 // Date de référence du mail sortant : sentDateTime en priorité, fallback sur
 // receivedDateTime puis maintenant. Sert à la fois pour created_at (placement
 // dans le fil) et email_sent_at (marqueur "déjà envoyé").
@@ -51,11 +66,14 @@ async function appendSentMessageToTicket(client, { ticketId, authorName, content
 }
 
 // Traite un seul mail envoyé. `getMessageFn` est injectable pour les tests.
+// `dryRun` (utilisé par le backfill --check) : exécute toute la décision
+// (match, dédup, garde anti-doublon) mais N'ÉCRIT RIEN et retourne l'action
+// qui SERAIT prise — pas de divergence de logique avec le vrai traitement.
 //
 // Retour : { action, ticket_id? }
-//   action : 'message_appended' | 'skipped_no_match' | 'already_ingested'
-//            | 'skipped_error'
-export async function processSentOne(db, log, { graphMessage, mailbox, getMessageFn = getMessage }) {
+//   action : 'message_appended' | 'skipped_no_match' | 'skipped_duplicate'
+//            | 'already_ingested' | 'skipped_error'
+export async function processSentOne(db, log, { graphMessage, mailbox, getMessageFn = getMessage, dryRun = false }) {
   const internetMessageId = graphMessage?.internetMessageId
   if (!internetMessageId) {
     log?.warn({ mailbox, graphId: graphMessage?.id }, 'sent: mail sans internetMessageId, skip')
@@ -105,6 +123,23 @@ export async function processSentOne(db, log, { graphMessage, mailbox, getMessag
   const authorName = sender.user_name || fromAddress || 'Email'
   const content = bodyText || safeBodyPreview(graphMessage) || '(corps vide)'
   const when = sentAt(graphMessage)
+
+  // Garde anti-doublon : si ce ticket contient déjà un message au contenu
+  // normalisé identique, c'est qu'on a envoyé cette réponse DEPUIS Opale
+  // (sender_address = boîte scannée) — le message est déjà dans le fil. On
+  // ne l'ajoute pas une seconde fois.
+  {
+    const { rows } = await db.query(
+      `SELECT 1 FROM ticket_messages
+       WHERE ticket_id = $1
+         AND btrim(regexp_replace(content, '\\s+', ' ', 'g')) = $2
+       LIMIT 1`,
+      [threadMatch.ticket_id, normalizeContent(content)]
+    )
+    if (rows.length) return { action: 'skipped_duplicate', ticket_id: threadMatch.ticket_id }
+  }
+
+  if (dryRun) return { action: 'message_appended', ticket_id: threadMatch.ticket_id, dryRun: true }
 
   const client = await db.connect()
   try {

@@ -193,6 +193,44 @@ test('processSentOne : mail déjà ingéré → already_ingested, pas de doublon
   }
 )
 
+test('processSentOne : réponse déjà envoyée DEPUIS Opale → skipped_duplicate, pas de doublon',
+  { skip: SKIP }, async () => {
+    // Reproduit le bug : sender_address = boîte scannée. Le message a déjà été
+    // créé dans Opale (texte saisi par l'agent), puis l'envoi Graph l'a déposé
+    // dans les Éléments envoyés. Le sent-worker le retrouve → ne doit PAS le
+    // ré-ajouter. Le contenu en DB diffère du HTML ré-extrait par des blancs.
+    const parentMsgId = `<parent-${Math.random().toString(36).slice(2)}@x>`
+    const ticketId = await seedTicketWithThread(parentMsgId)
+    // Message déjà présent (origine Opale), avec des blancs différents.
+    await db.query(`
+      INSERT INTO ticket_messages (ticket_id, type, author, content, email_sent_at)
+      VALUES ($1, 'comment', 'Clément Boutin', $2, now())
+    `, [ticketId, 'Bonjour,\n\nVoici la solution.\n\nCordialement'])
+
+    const msg = fakeSentMessage({
+      internetMessageHeaders: [{ name: 'In-Reply-To', value: parentMsgId }],
+    })
+    // Le corps ré-extrait : même texte, blancs différents (espaces multiples).
+    const out = await processSentOne(db, null, {
+      graphMessage: msg, mailbox: 'agent@tourduvalat.org',
+      getMessageFn: async () => ({ body: { contentType: 'html',
+        content: '<p>Bonjour,</p><p>Voici la   solution.</p><p>Cordialement</p>' } }),
+    })
+
+    assert.equal(out.action, 'skipped_duplicate')
+    const { rows } = await db.query(
+      `SELECT COUNT(*)::int n FROM ticket_messages WHERE ticket_id = $1`, [ticketId]
+    )
+    assert.equal(rows[0].n, 1, 'le message Opale d\'origine reste seul, pas de doublon')
+
+    // Et aucun mapping outbound écrit pour un doublon.
+    const { rows: m } = await db.query(
+      `SELECT 1 FROM email_thread_mapping WHERE internet_message_id = $1`, [msg.internetMessageId]
+    )
+    assert.equal(m.length, 0)
+  }
+)
+
 test('processSentOne : mail sans internetMessageId → skipped_error',
   { skip: SKIP }, async () => {
     const msg = fakeSentMessage({ internetMessageId: undefined })

@@ -57,7 +57,7 @@ export async function pollSentOnce(db, log, injection = {}) {
 
   const stats = {
     mailboxes: mailboxes.length,
-    actions: { message_appended: 0, skipped_no_match: 0, already_ingested: 0, skipped_error: 0 },
+    actions: { message_appended: 0, skipped_no_match: 0, skipped_duplicate: 0, already_ingested: 0, skipped_error: 0 },
     errors: 0,
   }
 
