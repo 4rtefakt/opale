@@ -23,6 +23,14 @@ export async function renderMenu(el) {
 
       <!-- Grille d'accès rapide -->
       <div class="m-menu-grid">
+        <button class="m-menu-tile blue" onclick="window.location.hash='#/ask'">
+          <i class="ti ti-sparkles"></i>
+          <span>${esc(t('mobile.menu.ask'))}</span>
+        </button>
+        <button class="m-menu-tile green" onclick="window.location.hash='#/conformite'">
+          <i class="ti ti-shield-check"></i>
+          <span>${esc(t('mobile.menu.compliance'))}</span>
+        </button>
         <button class="m-menu-tile blue" onclick="window.location.hash='#/settings'">
           <i class="ti ti-settings"></i>
           <span>Paramètres</span>

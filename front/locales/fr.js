@@ -1067,4 +1067,37 @@ export default {
   'mobile.stock.new.name_required':    'Nom requis',
   'mobile.stock.new.toast_created':    'Article créé',
   'mobile.stock.new.toast_error':      'Erreur création',
+
+  // — mobile/menu (tuiles) —
+  'mobile.menu.ask':                   'Ask Opale',
+  'mobile.menu.compliance':            'Conformité',
+
+  // — mobile/ask —
+  'mobile.ask.placeholder':            'Demandez en français…',
+  'mobile.ask.sug.offline':            'postes hors ligne depuis 3 jours',
+  'mobile.ask.sug.tickets':            'tickets critiques ouverts',
+  'mobile.ask.sug.bitlocker':          'postes sans BitLocker actif',
+  'mobile.ask.sug.department':         'postes du département Compta',
+  'mobile.ask.ticket.resolved':        'Résolu',
+  'mobile.ask.ticket.in_progress':     'En cours',
+  'mobile.ask.ticket.open':            'Ouvert',
+
+  // — mobile/conformite —
+  'mobile.conformite.title':           'Conformité',
+  'mobile.conformite.kpi.score':       'Score parc',
+  'mobile.conformite.kpi.compliant':   'conformes',
+  'mobile.conformite.kpi.failing':     'en échec',
+  'mobile.conformite.kpi.in_critical': 'critique',
+  'mobile.conformite.kpi.unevaluated': 'non évalués',
+  'mobile.conformite.rules':           'Règles',
+  'mobile.conformite.fail_short':      'échec',
+  'mobile.conformite.error':           'Erreur de chargement',
+  'mobile.conformite.unknown_rule':    'Règle inconnue',
+  'mobile.conformite.status.fail':           'Non conforme',
+  'mobile.conformite.status.pass':           'Conforme',
+  'mobile.conformite.status.not_applicable': 'Non applicable',
+  'mobile.conformite.sev.critical':    'Critique',
+  'mobile.conformite.sev.high':        'Élevée',
+  'mobile.conformite.sev.medium':      'Moyenne',
+  'mobile.conformite.sev.low':         'Faible',
 }

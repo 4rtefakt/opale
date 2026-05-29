@@ -110,7 +110,8 @@ window.addPullToRefresh = (scrollEl, onRefresh) => {
 
 // ── Router ────────────────────────────────────────────────────────────────────
 const SCREENS = ['dashboard','postes','poste','ssh','tickets','ticket','menu','settings',
-                 'scripts','stock','onboarding','rapports','audit','search','alertes','packages']
+                 'scripts','stock','onboarding','rapports','audit','search','alertes','packages',
+                 'ask','conformite']
 
 window.mNavigateTo = (route) => { window.location.hash = '#/' + route }
 
@@ -134,7 +135,9 @@ function setActiveNav(route) {
       (route === 'rapports' && btn.dataset.route === 'menu')    ||
       (route === 'audit'    && btn.dataset.route === 'menu')    ||
       (route === 'search'   && btn.dataset.route === 'menu')    ||
-      (route === 'packages' && btn.dataset.route === 'menu')
+      (route === 'packages' && btn.dataset.route === 'menu')    ||
+      (route === 'ask'      && btn.dataset.route === 'menu')    ||
+      (route === 'conformite' && btn.dataset.route === 'menu')
     )
   })
   const nav = document.getElementById('m-bottom-nav')
@@ -204,6 +207,12 @@ async function router() {
   } else if (route === 'packages') {
     const { renderPackages } = await import('/views/mobile/packages.js')
     await renderPackages(container)
+  } else if (route === 'ask') {
+    const { renderAsk } = await import('/views/mobile/ask.js')
+    renderAsk(container)
+  } else if (route === 'conformite') {
+    const { renderConformite } = await import('/views/mobile/conformite.js')
+    await renderConformite(container, id)
   }
 
   // Pull-to-refresh automatique sur tous les scroll containers
