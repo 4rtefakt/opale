@@ -17,8 +17,7 @@ export async function renderPoste(el, id) {
     _device = await window.api.getDevice(id)
     renderBody(el)
   } catch (err) {
-    document.getElementById('m-poste-body').innerHTML =
-      `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    document.getElementById('m-poste-body').innerHTML = mErrorBox(err.message, () => renderPoste(el, id))
   }
 }
 
@@ -27,7 +26,11 @@ function renderBody(el) {
   document.getElementById('m-poste-title').textContent = d.hostname
 
   const pillCls = d.status === 'online' ? 'on' : d.status === 'critical' ? 'crit' : d.status === 'warn' ? 'warn' : 'off'
-  const pillTxt = d.status === 'online' ? 'En ligne' : d.status === 'critical' ? 'Critique' : d.status === 'warn' ? 'Alerte' : 'Hors ligne'
+  const pillKey = d.status === 'online' ? 'mobile.device.status.online'
+                : d.status === 'critical' ? 'mobile.device.status.critical'
+                : d.status === 'warn' ? 'mobile.device.status.warn'
+                : 'mobile.device.status.offline'
+  const pillTxt = t(pillKey)
   document.getElementById('m-poste-badge').outerHTML =
     `<span id="m-poste-badge" class="m-pill m-pill-${pillCls}">${pillTxt}</span>`
 
@@ -48,11 +51,11 @@ function renderBody(el) {
         <i class="ti ti-ticket"></i>
         <span>Ticket</span>
       </button>
-      <button class="m-action-btn" onclick="mForceCheckin()">
+      <button class="m-action-btn" onclick="mForceCheckin(this)">
         <i class="ti ti-refresh"></i>
         <span>Sync RMM</span>
       </button>
-      <button class="m-action-btn" onclick="mSyncDevice()">
+      <button class="m-action-btn" onclick="mSyncDevice(this)">
         <i class="ti ti-brand-azure"></i>
         <span>Intune</span>
       </button>
@@ -237,50 +240,42 @@ function renderBody(el) {
           <div class="m-label">Description</div>
           <textarea class="m-input" id="m-nt-desc" rows="3" style="resize:none"></textarea>
         </div>
-        <button class="m-btn-primary" onclick="mSubmitNewTicket()">Créer le ticket</button>
+        <button class="m-btn-primary" onclick="mSubmitNewTicket(this)">Créer le ticket</button>
       </div>`)
-    window.mSubmitNewTicket = async () => {
+    window.mSubmitNewTicket = async (btn) => {
       const title = document.getElementById('m-nt-title')?.value?.trim()
       if (!title) return
-      try {
-        await window.api.createTicket({
-          title,
-          priority: document.getElementById('m-nt-prio')?.value,
-          description: document.getElementById('m-nt-desc')?.value?.trim(),
-          device_id: d.id
-        })
-        window.mCloseSheet()
-        window.showToast('Ticket créé', 'success')
-      } catch { window.showToast('Erreur', 'error') }
+      await withBusy(btn, async () => {
+        try {
+          await window.api.createTicket({
+            title,
+            priority: document.getElementById('m-nt-prio')?.value,
+            description: document.getElementById('m-nt-desc')?.value?.trim(),
+            device_id: d.id
+          })
+          window.mCloseSheet()
+          window.showToast('Ticket créé', 'success')
+        } catch { window.showToast('Erreur', 'error') }
+      })
     }
   }
 
-  // Verrous anti-double-click : un click pendant qu'une action est en
-  // cours (ssh, deploy) est ignoré. Évite les doubles audit_logs et SSH
-  // multiples sur le même PC.
-  let _mForceCheckinPending = false
-  let _mSyncDevicePending   = false
-
-  window.mForceCheckin = async () => {
-    if (_mForceCheckinPending) { window.showToast('Action déjà en cours…', 'info'); return }
-    _mForceCheckinPending = true
+  // Anti double-submit : withBusy désactive le bouton + spinner pendant l'appel,
+  // ce qui empêche les doubles audit_logs / actions sur le même PC.
+  window.mForceCheckin = (btn) => withBusy(btn, async () => {
     try {
       const res = await window.api.forceCheckinDevices([d.id])
       if (res.errors?.length) window.showToast(res.errors[0], 'error')
       else window.showToast('Checkin RMM déclenché', 'success')
     } catch { window.showToast('Erreur', 'error') }
-    finally { _mForceCheckinPending = false }
-  }
+  })
 
-  window.mSyncDevice = async () => {
-    if (_mSyncDevicePending) { window.showToast('Action déjà en cours…', 'info'); return }
-    _mSyncDevicePending = true
+  window.mSyncDevice = (btn) => withBusy(btn, async () => {
     try {
       await window.api.forceSyncDevices([d.id])
       window.showToast('Sync Intune lancée', 'success')
     } catch { window.showToast('Erreur', 'error') }
-    finally { _mSyncDevicePending = false }
-  }
+  })
 
   window.mRunScript = async () => {
     let scripts = []
@@ -294,17 +289,19 @@ function renderBody(el) {
           ${scripts.map(s => `<option value="${esc(s.id)}">${esc(s.name)}${s.category ? ` (${esc(s.category)})` : ''}</option>`).join('')}
         </select>
         <p style="font-size:11px;color:var(--text-tertiary);margin:10px 0">L'exécution se fera au prochain checkin de l'agent (max 15 min).</p>
-        <button class="m-btn-primary" style="margin-top:4px" onclick="mSubmitRunScript()">Mettre en file</button>
+        <button class="m-btn-primary" style="margin-top:4px" onclick="mSubmitRunScript(this)">Mettre en file</button>
       </div>`)
-    window.mSubmitRunScript = async () => {
+    window.mSubmitRunScript = async (btn) => {
       const scriptId = document.getElementById('m-run-script-sel')?.value
       if (!scriptId) return
-      try {
-        await window.api.runScript(scriptId, d.id)
-        window.mCloseSheet()
-        window.showToast('Script mis en file', 'success')
-        loadExecHistory(d.id)
-      } catch { window.showToast('Erreur', 'error') }
+      await withBusy(btn, async () => {
+        try {
+          await window.api.runScript(scriptId, d.id)
+          window.mCloseSheet()
+          window.showToast('Script mis en file', 'success')
+          loadExecHistory(d.id)
+        } catch { window.showToast('Erreur', 'error') }
+      })
     }
   }
 }
@@ -366,9 +363,9 @@ async function loadExecHistory(deviceId, offset = 0) {
       if (chev) chev.style.transform = open ? '' : 'rotate(90deg)'
     }
     window.mLoadMoreExec = (deviceId, nextOffset) => loadExecHistory(deviceId, nextOffset)
-  } catch {
+  } catch (err) {
     const el2 = document.getElementById('m-exec-history')
-    if (el2) el2.innerHTML = `<div style="text-align:center;padding:16px;font-size:12px;color:var(--text-tertiary)">Erreur</div>`
+    if (el2) el2.innerHTML = mErrorBox(err.message, () => loadExecHistory(deviceId, offset))
   }
 }
 

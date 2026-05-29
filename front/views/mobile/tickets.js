@@ -39,32 +39,36 @@ function proposalMobileCard(p) {
       </div>
       ${p.suggested_description ? `<div style="font-size:12px;color:var(--text-secondary);white-space:pre-wrap;max-height:80px;overflow:auto;margin-bottom:6px">${esc(p.suggested_description)}</div>` : ''}
       <div style="display:flex;gap:6px;justify-content:flex-end">
-        <button class="m-pill m-pill-off" style="border:none;font-size:12px;padding:6px 12px" onclick="mTkRejectProposal('${esc(p.id)}')">Rejeter</button>
-        <button class="m-pill m-pill-on" style="border:none;font-size:12px;padding:6px 12px" onclick="mTkAcceptProposal('${esc(p.id)}')">Accepter</button>
+        <button class="m-pill m-pill-off" style="border:none;font-size:12px;padding:6px 12px" onclick="mTkRejectProposal('${esc(p.id)}',this)">Rejeter</button>
+        <button class="m-pill m-pill-on" style="border:none;font-size:12px;padding:6px 12px" onclick="mTkAcceptProposal('${esc(p.id)}',this)">Accepter</button>
       </div>
     </div>`
 }
 
-async function mTkAcceptProposal(id) {
-  try {
-    await window.api.acceptProposal(id, {})
-    window.showToast('Ticket créé depuis proposition', 'success')
-    loadTickets()
-  } catch (err) {
-    window.showToast(err.message || 'Erreur', 'error')
-  }
+async function mTkAcceptProposal(id, btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.acceptProposal(id, {})
+      window.showToast('Ticket créé depuis proposition', 'success')
+      loadTickets()
+    } catch (err) {
+      window.showToast(err.message || 'Erreur', 'error')
+    }
+  })
 }
 
-async function mTkRejectProposal(id) {
+async function mTkRejectProposal(id, btn) {
   const reason = prompt('Raison du rejet (optionnel) :')
   if (reason === null) return
-  try {
-    await window.api.rejectProposal(id, reason || null)
-    window.showToast('Proposition rejetée', 'info')
-    loadTickets()
-  } catch (err) {
-    window.showToast(err.message || 'Erreur', 'error')
-  }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.rejectProposal(id, reason || null)
+      window.showToast('Proposition rejetée', 'info')
+      loadTickets()
+    } catch (err) {
+      window.showToast(err.message || 'Erreur', 'error')
+    }
+  })
 }
 
 export async function renderTickets(el) {
@@ -187,7 +191,7 @@ export async function renderTickets(el) {
           <textarea class="m-input" id="m-nti-desc" rows="3" style="resize:none" placeholder="${t('mobile.tickets.new.placeholder.description')}"></textarea>
         </div>
 
-        <button class="m-btn-primary" onclick="mSubmitNewTicket()">${t('mobile.tickets.new.create')}</button>
+        <button class="m-btn-primary" onclick="mSubmitNewTicket(this)">${t('mobile.tickets.new.create')}</button>
       </div>`)
 
     // ─── Assignee : self-assign uniquement (pas de picker tiers en mobile) ───
@@ -374,7 +378,7 @@ export async function renderTickets(el) {
       }).join('')
       if (q && !exact) {
         html += `<div style="padding:8px 10px;border-top:0.5px solid var(--border)">
-          <button class="m-pill m-pill-on" style="border:none;cursor:pointer;font-size:11px" onclick="mNtiCreateAndAddTag(${mJsArg(q)})">
+          <button class="m-pill m-pill-on" style="border:none;cursor:pointer;font-size:11px" onclick="mNtiCreateAndAddTag(${mJsArg(q)}, this)">
             <i class="ti ti-plus" style="font-size:11px"></i> ${t('mobile.tickets.new.tag_create')} « ${esc(q)} »
           </button>
         </div>`
@@ -389,43 +393,47 @@ export async function renderTickets(el) {
       renderTags()
       renderTagSearch()
     }
-    window.mNtiCreateAndAddTag = async (name) => {
-      try {
-        const newTag = await window.api.createTag({ name: name.trim(), color: 'slate' })
-        _allTags.push(newTag)
-        _allTags.sort((a, b) => a.name.localeCompare(b.name))
-        selectedTags.push(newTag)
-        const inp = document.getElementById('m-nti-tq'); if (inp) inp.value = ''
-        renderTags()
-        renderTagSearch()
-      } catch { window.showToast(t('mobile.tickets.new.tag_create_error'), 'error') }
+    window.mNtiCreateAndAddTag = async (name, btn) => {
+      await withBusy(btn, async () => {
+        try {
+          const newTag = await window.api.createTag({ name: name.trim(), color: 'slate' })
+          _allTags.push(newTag)
+          _allTags.sort((a, b) => a.name.localeCompare(b.name))
+          selectedTags.push(newTag)
+          const inp = document.getElementById('m-nti-tq'); if (inp) inp.value = ''
+          renderTags()
+          renderTagSearch()
+        } catch { window.showToast(t('mobile.tickets.new.tag_create_error'), 'error') }
+      })
     }
     setTimeout(() => {
       document.getElementById('m-nti-tq')?.addEventListener('input', renderTagSearch)
     }, 0)
 
     // ─── Submit ────────────────────────────────────────────────────────────
-    window.mSubmitNewTicket = async () => {
+    window.mSubmitNewTicket = async (btn) => {
       const title = document.getElementById('m-nti-title')?.value?.trim()
       if (!title) { window.showToast(t('mobile.tickets.new.title_required'), 'error'); return }
-      try {
-        const tk = await window.api.createTicket({
-          title,
-          priority:    document.getElementById('m-nti-prio')?.value,
-          description: document.getElementById('m-nti-desc')?.value?.trim(),
-          assigned_to_entra_id: pickedAssignee?.entra_id   || null,
-          assigned_to_name:     pickedAssignee?.display_name || null,
-          user_id:              pickedRequester?.entra_id || null,
-          device_id:            pickedDevice?.id || null,
-          tag_ids:              selectedTags.map(g => g.id),
-        })
-        window.mCloseSheet()
-        _tickets.unshift(tk)
-        renderList()
-        window.showToast(t('mobile.tickets.new.toast_created'), 'success')
-      } catch {
-        window.showToast(t('mobile.tickets.new.toast_error'), 'error')
-      }
+      await withBusy(btn, async () => {
+        try {
+          const tk = await window.api.createTicket({
+            title,
+            priority:    document.getElementById('m-nti-prio')?.value,
+            description: document.getElementById('m-nti-desc')?.value?.trim(),
+            assigned_to_entra_id: pickedAssignee?.entra_id   || null,
+            assigned_to_name:     pickedAssignee?.display_name || null,
+            user_id:              pickedRequester?.entra_id || null,
+            device_id:            pickedDevice?.id || null,
+            tag_ids:              selectedTags.map(g => g.id),
+          })
+          window.mCloseSheet()
+          _tickets.unshift(tk)
+          renderList()
+          window.showToast(t('mobile.tickets.new.toast_created'), 'success')
+        } catch {
+          window.showToast(t('mobile.tickets.new.toast_error'), 'error')
+        }
+      })
     }
 
     // Render initial des sections dynamiques
@@ -479,7 +487,7 @@ async function loadTickets() {
     }
     renderList()
   } catch (err) {
-    list.innerHTML = `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    list.innerHTML = mErrorBox(err.message, () => loadTickets())
   }
 }
 

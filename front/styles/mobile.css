@@ -260,6 +260,28 @@ html, body {
 }
 @keyframes m-spin { to { transform: rotate(360deg); } }
 
+/* Spinner inline pour les boutons en cours (withBusy) */
+.m-spinner-inline {
+  display: inline-block; width: 14px; height: 14px; vertical-align: middle;
+  border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%;
+  animation: m-spin .7s linear infinite; opacity: .7;
+}
+button[data-busy] { opacity: .7; cursor: default; }
+
+/* ── État d'erreur réutilisable (avec bouton Réessayer) ── */
+.m-error-state {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 40px 24px; text-align: center;
+}
+.m-error-state > .ti { font-size: 32px; color: var(--red); opacity: .7; }
+.m-error-msg { font-size: 13px; color: var(--text-secondary); max-width: 280px; }
+.m-error-retry {
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px;
+  background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text-primary); font-size: 13px; font-weight: 500; cursor: pointer;
+}
+.m-error-retry:active { opacity: .85; }
+
 /* ── Toast ── */
 #m-toast {
   position: fixed; bottom: calc(90px + env(safe-area-inset-bottom));

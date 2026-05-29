@@ -6,7 +6,7 @@ const mScJsArg = window.jsArg
 export async function renderScripts(el) {
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
+      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
         <i class="ti ti-arrow-left"></i>
       </button>
       <h1 style="flex:1">${t('mobile.scripts.title')}</h1>
@@ -32,7 +32,7 @@ export async function renderScripts(el) {
     renderList()
   } catch (err) {
     const list = document.getElementById('m-scripts-list')
-    if (list) list.innerHTML = `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    if (list) list.innerHTML = mErrorBox(err.message, () => renderScripts(el))
   }
 }
 
@@ -91,7 +91,7 @@ function renderList() {
           <i class="ti ti-info-circle"></i> ${t('mobile.scripts.checkin_hint')}
         </p>
         <div style="height:1px;background:var(--border);margin:4px 0"></div>
-        <button class="m-sheet-btn m-sheet-btn-danger" onclick="mScriptDelete('${esc(s.id)}', ${mScJsArg(s.name)})">
+        <button class="m-sheet-btn m-sheet-btn-danger" onclick="mScriptDelete('${esc(s.id)}', ${mScJsArg(s.name)}, this)">
           <i class="ti ti-trash"></i> ${t('mobile.scripts.btn.delete')}
         </button>
       </div>`)
@@ -106,7 +106,7 @@ function renderList() {
           (d.user?.name || '').toLowerCase().includes(q.toLowerCase())
         ).slice(0, 5)
         res.innerHTML = devices.map(d => `
-          <div class="m-device-card" style="padding:8px 12px" onclick="mRunScriptOn('${esc(s.id)}', '${esc(d.id)}', ${jsArg(d.hostname)})">
+          <div class="m-device-card" style="padding:8px 12px" onclick="mRunScriptOn('${esc(s.id)}', '${esc(d.id)}', ${jsArg(d.hostname)}, this)">
             <div class="m-device-info">
               <div class="m-device-name" style="font-size:12px">${esc(d.hostname)}</div>
               ${d.user?.name ? `<div class="m-device-sub">${esc(d.user.name)}</div>` : ''}
@@ -116,12 +116,14 @@ function renderList() {
       } catch {}
     }
 
-    window.mRunScriptOn = async (scriptId, deviceId, hostname) => {
-      try {
-        await window.api.runScript(scriptId, deviceId)
-        window.mCloseSheet()
-        window.showToast(t('mobile.scripts.toast.launched', { host: hostname }), 'success')
-      } catch { window.showToast(t('mobile.scripts.toast.error'), 'error') }
+    window.mRunScriptOn = async (scriptId, deviceId, hostname, btn) => {
+      await withBusy(btn, async () => {
+        try {
+          await window.api.runScript(scriptId, deviceId)
+          window.mCloseSheet()
+          window.showToast(t('mobile.scripts.toast.launched', { host: hostname }), 'success')
+        } catch { window.showToast(t('mobile.scripts.toast.error'), 'error') }
+      })
     }
   }
 }
@@ -162,13 +164,13 @@ function mScriptNew() {
       <p style="font-size:11px;color:var(--text-tertiary);margin:0">
         <i class="ti ti-info-circle"></i> ${t('mobile.scripts.new.code_hint')}
       </p>
-      <button class="m-btn-primary" onclick="mSubmitNewScript()">
+      <button class="m-btn-primary" onclick="mSubmitNewScript(this)">
         ${t('mobile.scripts.new.create')}
       </button>
     </div>`)
 }
 
-async function mSubmitNewScript() {
+async function mSubmitNewScript(btn) {
   const name        = document.getElementById('m-ns-name')?.value?.trim()
   const category    = document.getElementById('m-ns-cat')?.value?.trim()
   const shell_type  = document.getElementById('m-ns-shell')?.value
@@ -177,31 +179,35 @@ async function mSubmitNewScript() {
     window.showToast(t('mobile.scripts.new.name_required'), 'error')
     return
   }
-  try {
-    const script = await window.api.createScript({
-      name, category, shell_type, description,
-      code: shell_type === 'powershell' ? '# Script PowerShell\n' : '#!/bin/bash\n'
-    })
-    _scripts.unshift(script)
-    window.mCloseSheet()
-    renderList()
-    window.showToast(t('mobile.scripts.new.toast_created'), 'success')
-  } catch {
-    window.showToast(t('mobile.scripts.new.toast_error'), 'error')
-  }
+  await withBusy(btn, async () => {
+    try {
+      const script = await window.api.createScript({
+        name, category, shell_type, description,
+        code: shell_type === 'powershell' ? '# Script PowerShell\n' : '#!/bin/bash\n'
+      })
+      _scripts.unshift(script)
+      window.mCloseSheet()
+      renderList()
+      window.showToast(t('mobile.scripts.new.toast_created'), 'success')
+    } catch {
+      window.showToast(t('mobile.scripts.new.toast_error'), 'error')
+    }
+  })
 }
 
 // ── Suppression (avec confirm) ───────────────────────────────────────────────
 
-async function mScriptDelete(id, name) {
+async function mScriptDelete(id, name, btn) {
   if (!window.confirm(t('mobile.scripts.delete.confirm', { name }))) return
-  try {
-    await window.api.deleteScript(id)
-    _scripts = _scripts.filter(s => s.id !== id)
-    window.mCloseSheet()
-    renderList()
-    window.showToast(t('mobile.scripts.delete.toast_ok'), 'success')
-  } catch {
-    window.showToast(t('mobile.scripts.delete.toast_error'), 'error')
-  }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.deleteScript(id)
+      _scripts = _scripts.filter(s => s.id !== id)
+      window.mCloseSheet()
+      renderList()
+      window.showToast(t('mobile.scripts.delete.toast_ok'), 'success')
+    } catch {
+      window.showToast(t('mobile.scripts.delete.toast_error'), 'error')
+    }
+  })
 }

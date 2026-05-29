@@ -5,7 +5,7 @@ export async function renderDashboard(el) {
       <button class="m-icon-btn" onclick="window.location.hash='#/search'" title="${t('mobile.dashboard.search_title')}">
         <i class="ti ti-search"></i>
       </button>
-      <button class="m-icon-btn" onclick="window.api.syncIntune().then(()=>showToast(t('mobile.dashboard.toast.sync_started'),'success')).catch(()=>showToast(t('mobile.dashboard.toast.error'),'error'))" title="${t('mobile.dashboard.sync_title')}">
+      <button class="m-icon-btn" onclick="withBusy(this, () => window.api.syncIntune().then(()=>showToast(t('mobile.dashboard.toast.sync_started'),'success')).catch(()=>showToast(t('mobile.dashboard.toast.error'),'error')))" title="${t('mobile.dashboard.sync_title')}">
         <i class="ti ti-refresh"></i>
       </button>
     </div>
@@ -55,8 +55,7 @@ export async function renderDashboard(el) {
       ${recent.map(d => deviceCard(d)).join('')}
     `
   } catch (err) {
-    document.getElementById('m-dash-body').innerHTML =
-      `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    document.getElementById('m-dash-body').innerHTML = mErrorBox(err.message, () => renderDashboard(el))
   }
 }
 
@@ -64,10 +63,10 @@ function deviceCard(d) {
   const dotColor = d.status === 'online' ? 'var(--green)' : d.status === 'critical' ? 'var(--red)' : d.status === 'warn' ? 'var(--amber)' : 'var(--text-tertiary)'
   const pct = parseFloat(d.disk_used_pct) || 0
   const barColor = pct >= 90 ? 'var(--red)' : pct >= 80 ? 'var(--amber)' : 'var(--green)'
-  const pillKey = d.status === 'online' ? 'mobile.dashboard.status.online'
-                : d.status === 'critical' ? 'mobile.dashboard.status.critical'
-                : d.status === 'warn' ? 'mobile.dashboard.status.warn'
-                : 'mobile.dashboard.status.offline'
+  const pillKey = d.status === 'online' ? 'mobile.device.status.online'
+                : d.status === 'critical' ? 'mobile.device.status.critical'
+                : d.status === 'warn' ? 'mobile.device.status.warn'
+                : 'mobile.device.status.offline'
   return `
     <div class="m-device-card" onclick="window.location.hash='#/poste/${esc(d.id)}'">
       <div class="m-status-dot" style="background:${dotColor}"></div>

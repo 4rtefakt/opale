@@ -54,6 +54,47 @@ window.showToast = (msg, type = 'info') => {
   el._t = setTimeout(() => el.className = '', 3000)
 }
 
+// ── Busy state (anti double-submit) ────────────────────────────────────────────
+// Désactive le(s) bouton(s) déclencheur(s) et affiche un spinner pendant l'appel
+// réseau, puis restaure l'état initial à la fin (succès comme échec). `el` accepte
+// un élément, un tableau d'éléments, ou null (no-op). Retourne le résultat de fn.
+window.withBusy = async (el, fn) => {
+  const btns  = (Array.isArray(el) ? el : [el]).filter(b => b && b.nodeType === 1 && !b.dataset.busy)
+  const saved = btns.map(b => ({ b, html: b.innerHTML }))
+  btns.forEach(b => {
+    b.dataset.busy   = '1'
+    b.disabled       = true
+    b.style.minWidth = b.offsetWidth + 'px'   // évite le saut de layout quand on remplace le contenu
+    b.innerHTML      = '<span class="m-spinner-inline"></span>'
+  })
+  try {
+    return await fn()
+  } finally {
+    saved.forEach(({ b, html }) => {
+      delete b.dataset.busy
+      b.disabled       = false
+      b.style.minWidth = ''
+      b.innerHTML      = html
+    })
+  }
+}
+
+// ── État d'erreur réutilisable (avec bouton Réessayer) ──────────────────────────
+// Retourne le HTML d'un état d'erreur centré + bouton qui relance `retryFn`.
+// La closure est stockée dans un registre, référencée par l'onclick inline.
+window._mRetries = {}
+window.mErrorBox = (message, retryFn) => {
+  const key = 'r' + (window._mRetrySeq = (window._mRetrySeq || 0) + 1)
+  window._mRetries[key] = retryFn
+  return `<div class="m-error-state">
+    <i class="ti ti-alert-circle"></i>
+    <div class="m-error-msg">${esc(message || t('mobile.common.error'))}</div>
+    <button class="m-error-retry" onclick="window._mRetries['${key}']?.()">
+      <i class="ti ti-refresh"></i> ${t('mobile.common.retry')}
+    </button>
+  </div>`
+}
+
 // ── Sheet ─────────────────────────────────────────────────────────────────────
 window.mShowSheet = (html) => {
   document.getElementById('m-sheet-inner').innerHTML = html

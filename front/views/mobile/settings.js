@@ -3,7 +3,7 @@ let _data = null
 export async function renderSettings(el) {
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
+      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
         <i class="ti ti-arrow-left"></i>
       </button>
       <h1>${t('mobile.settings.title')}</h1>
@@ -27,8 +27,7 @@ async function loadSettings() {
     renderBody()
   } catch (err) {
     const body = document.getElementById('m-settings-body')
-    if (body) body.innerHTML =
-      `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    if (body) body.innerHTML = mErrorBox(err.message, () => loadSettings())
   }
 }
 
@@ -77,7 +76,7 @@ function renderBody() {
               <div style="font-size:13px;font-weight:500">${esc(k.label)}</div>
               <div style="font-size:10px;color:var(--text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace">${esc(k.public_key.slice(0, 40))}…</div>
             </div>
-            <button class="m-icon-btn" style="color:var(--red)" onclick="mDeleteSSHKey('${esc(k.id)}','${esc(k.label)}')">
+            <button class="m-icon-btn" style="color:var(--red)" onclick="mDeleteSSHKey('${esc(k.id)}','${esc(k.label)}',this)">
               <i class="ti ti-trash"></i>
             </button>
           </div>`).join('')
@@ -98,7 +97,7 @@ function renderBody() {
               <div style="font-size:13px;font-weight:500">${esc(tk.label)}</div>
               <div style="font-size:11px;color:var(--text-tertiary)">${formatRelative(tk.created_at)}</div>
             </div>
-            <button class="m-icon-btn" style="color:var(--red)" onclick="mRevokeToken('${esc(tk.id)}','${esc(tk.label)}')">
+            <button class="m-icon-btn" style="color:var(--red)" onclick="mRevokeToken('${esc(tk.id)}','${esc(tk.label)}',this)">
               <i class="ti ti-trash"></i>
             </button>
           </div>`).join('')
@@ -120,7 +119,7 @@ function renderBody() {
           <textarea class="m-input" id="m-sshk-key" rows="4" style="resize:none;font-family:monospace;font-size:11px"
             placeholder="ssh-ed25519 AAAA…"></textarea>
         </div>
-        <button class="m-btn-primary" onclick="mAddSSHKey()">${t('mobile.settings.ssh.btn.add')}</button>
+        <button class="m-btn-primary" onclick="mAddSSHKey(this)">${t('mobile.settings.ssh.btn.add')}</button>
       </div>`)
   }
 
@@ -132,47 +131,53 @@ function renderBody() {
           <div class="m-label">${t('mobile.settings.tokens.label')}</div>
           <input class="m-input" id="m-tok-label" placeholder="${t('mobile.settings.tokens.label_placeholder')}" autocomplete="off">
         </div>
-        <button class="m-btn-primary" onclick="mAddToken()">${t('mobile.settings.tokens.btn.create')}</button>
+        <button class="m-btn-primary" onclick="mAddToken(this)">${t('mobile.settings.tokens.btn.create')}</button>
       </div>`)
   }
 }
 
-async function mAddSSHKey() {
+async function mAddSSHKey(btn) {
   const label = document.getElementById('m-sshk-label')?.value?.trim()
   const key   = document.getElementById('m-sshk-key')?.value?.trim()
   if (!label || !key) return
-  try {
-    await window.api.addSSHKey({ label, public_key: key })
-    window.mCloseSheet()
-    window.showToast(t('mobile.settings.ssh.toast.added'), 'success')
-    await loadSettings()
-  } catch (err) { window.showToast(err.message || t('mobile.settings.toast.error'), 'error') }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.addSSHKey({ label, public_key: key })
+      window.mCloseSheet()
+      window.showToast(t('mobile.settings.ssh.toast.added'), 'success')
+      await loadSettings()
+    } catch (err) { window.showToast(err.message || t('mobile.settings.toast.error'), 'error') }
+  })
 }
 
-async function mDeleteSSHKey(id, label) {
+async function mDeleteSSHKey(id, label, btn) {
   if (!confirm(t('mobile.settings.ssh.confirm_delete', { label }))) return
-  try {
-    await window.api.deleteSSHKey(id)
-    window.showToast(t('mobile.settings.ssh.toast.deleted'), 'success')
-    await loadSettings()
-  } catch { window.showToast(t('mobile.settings.toast.error'), 'error') }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.deleteSSHKey(id)
+      window.showToast(t('mobile.settings.ssh.toast.deleted'), 'success')
+      await loadSettings()
+    } catch { window.showToast(t('mobile.settings.toast.error'), 'error') }
+  })
 }
 
-async function mAddToken() {
+async function mAddToken(btn) {
   const label = document.getElementById('m-tok-label')?.value?.trim()
   if (!label) return
-  try {
-    const result = await window.api.createToken({ label })
-    window.mCloseSheet()
-    // Show the token value in a sheet (it's only shown once)
-    window.mShowSheet(`
+  await withBusy(btn, async () => {
+    try {
+      const result = await window.api.createToken({ label })
+      window.mCloseSheet()
+      // Show the token value in a sheet (it's only shown once)
+      window.mShowSheet(`
       <div class="m-sheet-title">${t('mobile.settings.tokens.created_title')}</div>
       <p style="font-size:12px;color:var(--text-secondary);margin:0 0 12px">${t('mobile.settings.tokens.created_warning')}</p>
       <div style="font-family:monospace;font-size:11px;background:var(--bg-tertiary);padding:12px;border-radius:8px;word-break:break-all;user-select:all">${esc(result.token)}</div>
       <button class="m-btn-primary" style="margin-top:12px" onclick="window.mCloseSheet();loadSettings()">${t('mobile.settings.tokens.btn.close')}</button>`)
-    window.loadSettings = loadSettings
-    await loadSettings()
-  } catch (err) { window.showToast(err.message || t('mobile.settings.toast.error'), 'error') }
+      window.loadSettings = loadSettings
+      await loadSettings()
+    } catch (err) { window.showToast(err.message || t('mobile.settings.toast.error'), 'error') }
+  })
 }
 
 async function mToggleBio() {
@@ -195,11 +200,13 @@ async function mToggleBio() {
   }
 }
 
-async function mRevokeToken(id, label) {
+async function mRevokeToken(id, label, btn) {
   if (!confirm(t('mobile.settings.tokens.confirm_revoke', { label }))) return
-  try {
-    await window.api.revokeToken(id)
-    window.showToast(t('mobile.settings.tokens.toast.revoked'), 'success')
-    await loadSettings()
-  } catch { window.showToast(t('mobile.settings.toast.error'), 'error') }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.revokeToken(id)
+      window.showToast(t('mobile.settings.tokens.toast.revoked'), 'success')
+      await loadSettings()
+    } catch { window.showToast(t('mobile.settings.toast.error'), 'error') }
+  })
 }

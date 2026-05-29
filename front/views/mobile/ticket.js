@@ -29,7 +29,7 @@ function formatBytes(n) {
 export async function renderTicket(el, id) {
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
+      <button class="m-icon-btn" onclick="window.location.hash='#/tickets'">
         <i class="ti ti-arrow-left"></i>
       </button>
       <h1 id="m-tk-title" style="flex:1;margin:0;font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">…</h1>
@@ -48,7 +48,7 @@ export async function renderTicket(el, id) {
         onclick="mAiSuggest()" title="${esc(t('mobile.ticket.ai.suggest'))}">
         <i class="ti ti-sparkles"></i>
       </button>
-      <button class="m-send-btn" onclick="mSendReply()">
+      <button class="m-send-btn" onclick="mSendReply(this)">
         <i class="ti ti-send"></i>
       </button>
     </div>`
@@ -57,8 +57,7 @@ export async function renderTicket(el, id) {
     _tk = await window.api.getTicket(id)
     renderTicketBody()
   } catch (err) {
-    document.getElementById('m-tk-thread').innerHTML =
-      `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    document.getElementById('m-tk-thread').innerHTML = mErrorBox(err.message, () => renderTicket(el, id))
   }
 
   window.mSendReply       = mSendReply
@@ -123,11 +122,11 @@ function renderTicketBody() {
         <span style="font-size:11px;color:var(--text-tertiary)">${formatRelative(tk.created_at)}${tk.created_by_name ? ' · ' + esc(tk.created_by_name) : ''}</span>
         ${!resolved
           ? `<div style="display:flex;gap:6px">
-              ${tk.status === 'open'        ? `<button class="m-pill m-pill-warn" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('in_progress')">En cours</button>` : ''}
-              ${tk.status === 'in_progress' ? `<button class="m-pill m-pill-off"  style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('open')">Ouvrir</button>` : ''}
-              <button class="m-pill m-pill-on" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('resolved')">Résoudre</button>
+              ${tk.status === 'open'        ? `<button class="m-pill m-pill-warn" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('in_progress',this)">En cours</button>` : ''}
+              ${tk.status === 'in_progress' ? `<button class="m-pill m-pill-off"  style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('open',this)">Ouvrir</button>` : ''}
+              <button class="m-pill m-pill-on" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('resolved',this)">Résoudre</button>
              </div>`
-          : `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('open')">Rouvrir</button>`
+          : `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('open',this)">Rouvrir</button>`
         }
       </div>
     </div>
@@ -179,7 +178,7 @@ function renderMsg(m) {
           <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" data-content="${esc(m.content)}" onclick="mUseSuggestion(this)">
             <i class="ti ti-corner-up-left" style="font-size:11px"></i> ${t('mobile.ticket.ai.use')}
           </button>
-          <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mDeleteSuggestion('${esc(m.id)}')">
+          <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mDeleteSuggestion('${esc(m.id)}',this)">
             <i class="ti ti-x" style="font-size:11px"></i> ${t('mobile.ticket.ai.discard')}
           </button>
         </div>
@@ -198,11 +197,11 @@ function renderMsg(m) {
   if (m.type === 'internal_note') {
     badge = `<span class="m-msg-badge" style="background:var(--bg-tertiary);color:var(--text-secondary)"><i class="ti ti-note" style="font-size:10px"></i> ${t('mobile.ticket.msg.internal')}</span>`
     if (_tk?.has_inbound_mail) {
-      action = `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSendMsgByMail('${esc(m.id)}')"><i class="ti ti-mail-forward" style="font-size:11px"></i> ${t('mobile.ticket.msg.send_by_mail')}</button>`
+      action = `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSendMsgByMail('${esc(m.id)}',this)"><i class="ti ti-mail-forward" style="font-size:11px"></i> ${t('mobile.ticket.msg.send_by_mail')}</button>`
     }
   } else if (m.type === 'comment' && m.outbound_failed_at) {
     badge = `<span class="m-msg-badge" style="background:rgba(239,68,68,.15);color:var(--red)" title="${esc(m.outbound_error || '')}"><i class="ti ti-mail-x" style="font-size:10px"></i> ${t('mobile.ticket.msg.send_failed')}</span>`
-    action = `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mRetrySend('${esc(m.id)}')"><i class="ti ti-refresh" style="font-size:11px"></i> ${t('mobile.ticket.msg.retry_send')}</button>`
+    action = `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mRetrySend('${esc(m.id)}',this)"><i class="ti ti-refresh" style="font-size:11px"></i> ${t('mobile.ticket.msg.retry_send')}</button>`
   } else if (m.type === 'comment' && !m.email_sent_at) {
     badge = `<span class="m-msg-badge" style="background:rgba(245,158,11,.15);color:var(--amber)"><i class="ti ti-mail-fast" style="font-size:10px"></i> ${t('mobile.ticket.msg.sending')}</span>`
   } else if (m.type === 'comment' && m.email_sent_at) {
@@ -228,25 +227,29 @@ async function reload() {
   renderTicketBody()
 }
 
-async function mSendReply() {
+async function mSendReply(btn) {
   const input   = document.getElementById('m-reply-txt')
   const content = input?.value?.trim()
   if (!content) return
   input.value = ''
   input.style.height = 'auto'
-  try {
-    await window.api.addMessage(_tk.id, { content })
-    await reload()
-  } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.addMessage(_tk.id, { content })
+      await reload()
+    } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+  })
 }
 
-async function mSetStatus(status) {
-  try {
-    await window.api.updateTicket(_tk.id, { status })
-    await reload()
-    const labels = { resolved: 'Ticket résolu ✓', open: 'Ticket rouvert', in_progress: 'En cours' }
-    window.showToast(labels[status] || 'Mis à jour', status === 'resolved' ? 'success' : 'info')
-  } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+async function mSetStatus(status, btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.updateTicket(_tk.id, { status })
+      await reload()
+      const labels = { resolved: 'Ticket résolu ✓', open: 'Ticket rouvert', in_progress: 'En cours' }
+      window.showToast(labels[status] || 'Mis à jour', status === 'resolved' ? 'success' : 'info')
+    } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+  })
 }
 
 // ── Assistant IA ──────────────────────────────────────────────────────────────
@@ -277,33 +280,39 @@ function mUseSuggestion(btn) {
   input.focus()
 }
 
-async function mDeleteSuggestion(msgId) {
-  try {
-    await window.api.deleteTicketMessage(_tk.id, msgId)
-    await reload()
-  } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+async function mDeleteSuggestion(msgId, btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.deleteTicketMessage(_tk.id, msgId)
+      await reload()
+    } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+  })
 }
 
 // ── Envoi par mail / retry ──────────────────────────────────────────────────
 
-async function mSendMsgByMail(msgId) {
+async function mSendMsgByMail(msgId, btn) {
   if (!confirm(t('mobile.ticket.msg.send_by_mail_confirm'))) return
-  try {
-    await window.api.sendMessageByMail(_tk.id, msgId)
-    await reload()
-    window.showToast(t('mobile.ticket.msg.send_queued'), 'success')
-  } catch (err) {
-    if (err?.status === 409) window.showToast(t('mobile.ticket.msg.no_inbound'), 'error')
-    else window.showToast(t('mobile.ticket.toast.error'), 'error')
-  }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.sendMessageByMail(_tk.id, msgId)
+      await reload()
+      window.showToast(t('mobile.ticket.msg.send_queued'), 'success')
+    } catch (err) {
+      if (err?.status === 409) window.showToast(t('mobile.ticket.msg.no_inbound'), 'error')
+      else window.showToast(t('mobile.ticket.toast.error'), 'error')
+    }
+  })
 }
 
-async function mRetrySend(msgId) {
-  try {
-    await window.api.retrySendMessage(_tk.id, msgId)
-    await reload()
-    window.showToast(t('mobile.ticket.msg.send_queued'), 'success')
-  } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+async function mRetrySend(msgId, btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.retrySendMessage(_tk.id, msgId)
+      await reload()
+      window.showToast(t('mobile.ticket.msg.send_queued'), 'success')
+    } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+  })
 }
 
 // ── Menu ────────────────────────────────────────────────────────────────────
@@ -386,8 +395,8 @@ function mOpenAssignee() {
     <div style="padding:0 16px 16px;display:flex;flex-direction:column;gap:10px">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span style="font-size:13px">${tk.assigned_to_name ? `<i class="ti ti-user-check" style="font-size:11px;opacity:0.7"></i> ${esc(tk.assigned_to_name)}` : `<span style="color:var(--text-tertiary)">${t('mobile.ticket.assignee.none')}</span>`}</span>
-        ${tk.assigned_to_entra_id ? `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mUnassign()">${t('mobile.ticket.assignee.unassign')}</button>` : ''}
-        ${me?.entraId && !isMe ? `<button class="m-pill m-pill-on" style="border:none;cursor:pointer;font-size:11px" onclick="mAssignSelf()">${t('mobile.ticket.assignee.self')}</button>` : ''}
+        ${tk.assigned_to_entra_id ? `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mUnassign(this)">${t('mobile.ticket.assignee.unassign')}</button>` : ''}
+        ${me?.entraId && !isMe ? `<button class="m-pill m-pill-on" style="border:none;cursor:pointer;font-size:11px" onclick="mAssignSelf(this)">${t('mobile.ticket.assignee.self')}</button>` : ''}
       </div>
       <div style="height:1px;background:var(--border)"></div>
       <div class="m-label">${t('mobile.ticket.assignee.search_label')}</div>
@@ -397,24 +406,28 @@ function mOpenAssignee() {
   wireUserSearch('m-tk-assignee-q', 'm-tk-assignee-results', (u) => mAssignTo(u.entra_id, u.display_name))
 }
 
-async function mAssignSelf() {
+async function mAssignSelf(btn) {
   const me = window.appState?.user
   if (!me?.entraId) return
-  try {
-    await window.api.updateTicket(_tk.id, { assigned_to_entra_id: me.entraId, assigned_to_name: me.displayName })
-    await reload()
-    window.mCloseSheet()
-    window.showToast(t('mobile.ticket.assign.toast.self'), 'success')
-  } catch { window.showToast(t('mobile.ticket.assign.toast.error'), 'error') }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.updateTicket(_tk.id, { assigned_to_entra_id: me.entraId, assigned_to_name: me.displayName })
+      await reload()
+      window.mCloseSheet()
+      window.showToast(t('mobile.ticket.assign.toast.self'), 'success')
+    } catch { window.showToast(t('mobile.ticket.assign.toast.error'), 'error') }
+  })
 }
 
-async function mUnassign() {
-  try {
-    await window.api.updateTicket(_tk.id, { assigned_to_entra_id: null, assigned_to_name: null })
-    await reload()
-    window.mCloseSheet()
-    window.showToast(t('mobile.ticket.assign.toast.unassigned'), 'info')
-  } catch { window.showToast(t('mobile.ticket.assign.toast.error'), 'error') }
+async function mUnassign(btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.updateTicket(_tk.id, { assigned_to_entra_id: null, assigned_to_name: null })
+      await reload()
+      window.mCloseSheet()
+      window.showToast(t('mobile.ticket.assign.toast.unassigned'), 'info')
+    } catch { window.showToast(t('mobile.ticket.assign.toast.error'), 'error') }
+  })
 }
 
 async function mAssignTo(entraId, name) {
@@ -441,7 +454,7 @@ function mOpenPeople() {
               ${esc(u.display_name || u.entra_id)}
               ${isReq ? `<span style="font-size:10px;background:rgba(13,148,136,0.15);color:#0d9488;padding:1px 6px;border-radius:8px;margin-left:4px">${t('mobile.ticket.people.requester')}</span>` : ''}
             </div>
-            <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mRemoveUser('${esc(u.entra_id)}')"><i class="ti ti-x" style="font-size:12px"></i></button>
+            <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mRemoveUser('${esc(u.entra_id)}',this)"><i class="ti ti-x" style="font-size:12px"></i></button>
           </div>`
         }).join('') : `<div style="font-size:13px;color:var(--text-tertiary)">${t('mobile.ticket.people.empty')}</div>`}
       </div>
@@ -482,14 +495,16 @@ async function mAddPerson(entraId, mode) {
   }
 }
 
-async function mRemoveUser(entraId) {
-  try {
-    await window.api.removeTicketUser(_tk.id, entraId)
-    await reload()
-    mOpenPeople()
-  } catch (err) {
-    window.showToast(err?.body?.error || t('mobile.ticket.toast.error'), 'error')
-  }
+async function mRemoveUser(entraId, btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.removeTicketUser(_tk.id, entraId)
+      await reload()
+      mOpenPeople()
+    } catch (err) {
+      window.showToast(err?.body?.error || t('mobile.ticket.toast.error'), 'error')
+    }
+  })
 }
 
 // ── Postes liés ────────────────────────────────────────────────────────────────
@@ -503,7 +518,7 @@ function mOpenDevices() {
         ${devs.length ? devs.map(d => `
           <div style="display:flex;align-items:center;gap:6px">
             <div style="flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><i class="ti ti-device-laptop" style="font-size:12px;opacity:0.7"></i> ${esc(d.hostname || d.id)}</div>
-            <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mRemoveDevice('${esc(d.id)}')"><i class="ti ti-x" style="font-size:12px"></i></button>
+            <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mRemoveDevice('${esc(d.id)}',this)"><i class="ti ti-x" style="font-size:12px"></i></button>
           </div>`).join('') : `<div style="font-size:13px;color:var(--text-tertiary)">${t('mobile.ticket.devices.empty')}</div>`}
       </div>
       <div style="height:1px;background:var(--border)"></div>
@@ -526,14 +541,16 @@ async function mAddDevice(deviceId) {
   }
 }
 
-async function mRemoveDevice(deviceId) {
-  try {
-    await window.api.removeTicketDevice(_tk.id, deviceId)
-    await reload()
-    mOpenDevices()
-  } catch (err) {
-    window.showToast(err?.body?.error || t('mobile.ticket.toast.error'), 'error')
-  }
+async function mRemoveDevice(deviceId, btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.removeTicketDevice(_tk.id, deviceId)
+      await reload()
+      mOpenDevices()
+    } catch (err) {
+      window.showToast(err?.body?.error || t('mobile.ticket.toast.error'), 'error')
+    }
+  })
 }
 
 // ── Pièces jointes ──────────────────────────────────────────────────────────────
@@ -550,7 +567,7 @@ function mOpenAttachments() {
               <i class="ti ti-paperclip" style="font-size:12px;opacity:0.7"></i> ${esc(a.filename)}
               <span style="color:var(--text-tertiary);font-size:11px">· ${formatBytes(a.size_bytes)}</span>
             </div>
-            <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mRemoveAttachment('${esc(a.id)}')"><i class="ti ti-x" style="font-size:12px"></i></button>
+            <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mRemoveAttachment('${esc(a.id)}',this)"><i class="ti ti-x" style="font-size:12px"></i></button>
           </div>`).join('') : `<div style="font-size:13px;color:var(--text-tertiary)">${t('mobile.ticket.attachments.empty')}</div>`}
       </div>
       <div style="height:1px;background:var(--border)"></div>
@@ -585,13 +602,15 @@ async function mDownloadAttachment(attId, filename) {
   } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
 }
 
-async function mRemoveAttachment(attId) {
+async function mRemoveAttachment(attId, btn) {
   if (!confirm(t('mobile.ticket.attachments.confirm_remove'))) return
-  try {
-    await window.api.deleteAttachment(_tk.id, attId)
-    await reload()
-    mOpenAttachments()
-  } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.deleteAttachment(_tk.id, attId)
+      await reload()
+      mOpenAttachments()
+    } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+  })
 }
 
 // ── Recherche utilisateur / device (réutilisable dans les sheets) ──────────────
@@ -682,7 +701,7 @@ function renderTagsSheet() {
           const assigned = currentIds.has(g.id)
           const color = M_TK_TAG_PALETTE[g.color] || M_TK_TAG_PALETTE.slate
           return `
-          <button class="m-menu-row" onclick="mToggleTag('${esc(g.id)}', ${assigned ? 'true' : 'false'})">
+          <button class="m-menu-row" onclick="mToggleTag('${esc(g.id)}', ${assigned ? 'true' : 'false'}, this)">
             <span style="display:inline-block;width:14px;height:14px;border-radius:4px;background:${color};margin-right:4px"></span>
             <span style="flex:1;text-align:left">${esc(g.name)}</span>
             ${assigned ? `<i class="ti ti-check" style="color:var(--blue);font-size:18px"></i>` : ''}
@@ -705,7 +724,7 @@ function renderTagsSheet() {
           `).join('')}
         </div>
       </div>
-      <button class="m-btn-primary" onclick="mCreateTag()">
+      <button class="m-btn-primary" onclick="mCreateTag(this)">
         <i class="ti ti-plus"></i> ${t('mobile.ticket.tags.create_btn')}
       </button>
     </div>`)
@@ -721,21 +740,23 @@ function mPickTagColor(color, btn) {
   btn.dataset.selected = 'true'
 }
 
-async function mToggleTag(tagId, isAssigned) {
-  try {
-    if (isAssigned) {
-      await window.api.removeTicketTag(_tk.id, tagId)
-    } else {
-      await window.api.addTicketTag(_tk.id, tagId)
+async function mToggleTag(tagId, isAssigned, btn) {
+  await withBusy(btn, async () => {
+    try {
+      if (isAssigned) {
+        await window.api.removeTicketTag(_tk.id, tagId)
+      } else {
+        await window.api.addTicketTag(_tk.id, tagId)
+      }
+      await reload()
+      renderTagsSheet()  // re-render la sheet pour refléter le nouveau state
+    } catch {
+      window.showToast(t('mobile.ticket.tags.toast.error'), 'error')
     }
-    await reload()
-    renderTagsSheet()  // re-render la sheet pour refléter le nouveau state
-  } catch {
-    window.showToast(t('mobile.ticket.tags.toast.error'), 'error')
-  }
+  })
 }
 
-async function mCreateTag() {
+async function mCreateTag(btn) {
   const name = document.getElementById('m-tk-newtag-name')?.value?.trim()
   if (!name) {
     window.showToast(t('mobile.ticket.tags.name_required'), 'error')
@@ -743,16 +764,18 @@ async function mCreateTag() {
   }
   const activeSwatch = document.querySelector('#m-tk-newtag-colors .m-tk-color-swatch.active')
   const color = activeSwatch?.dataset?.color || 'slate'
-  try {
-    const newTag = await window.api.createTag({ name, color })
-    _allTags.push(newTag)
-    await window.api.addTicketTag(_tk.id, newTag.id)
-    await reload()
-    renderTagsSheet()  // re-render avec le nouveau tag
-    window.showToast(t('mobile.ticket.tags.toast.created'), 'success')
-  } catch (err) {
-    window.showToast(err.message || t('mobile.ticket.tags.toast.error'), 'error')
-  }
+  await withBusy(btn, async () => {
+    try {
+      const newTag = await window.api.createTag({ name, color })
+      _allTags.push(newTag)
+      await window.api.addTicketTag(_tk.id, newTag.id)
+      await reload()
+      renderTagsSheet()  // re-render avec le nouveau tag
+      window.showToast(t('mobile.ticket.tags.toast.created'), 'success')
+    } catch (err) {
+      window.showToast(err.message || t('mobile.ticket.tags.toast.error'), 'error')
+    }
+  })
 }
 
 function mCloseSheetThen(fn) {
@@ -787,18 +810,20 @@ function mEditTitle() {
     <div class="m-sheet-title">Modifier le titre</div>
     <div style="padding:0 4px;display:flex;flex-direction:column;gap:12px">
       <input class="m-input" id="m-edit-title" value="${esc(_tk.title)}" autocomplete="off">
-      <button class="m-btn-primary" onclick="mSaveTitle()">Enregistrer</button>
+      <button class="m-btn-primary" onclick="mSaveTitle(this)">Enregistrer</button>
     </div>`)
   setTimeout(() => document.getElementById('m-edit-title')?.focus(), 100)
-  window.mSaveTitle = async () => {
+  window.mSaveTitle = async (btn) => {
     const title = document.getElementById('m-edit-title')?.value?.trim()
     if (!title || title === _tk.title) { window.mCloseSheet(); return }
-    try {
-      await window.api.updateTicket(_tk.id, { title })
-      window.mCloseSheet()
-      await reload()
-      window.showToast('Titre modifié', 'success')
-    } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+    await withBusy(btn, async () => {
+      try {
+        await window.api.updateTicket(_tk.id, { title })
+        window.mCloseSheet()
+        await reload()
+        window.showToast('Titre modifié', 'success')
+      } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+    })
   }
 }
 

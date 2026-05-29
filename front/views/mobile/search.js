@@ -1,7 +1,7 @@
 export function renderSearch(el) {
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
+      <button class="m-icon-btn" onclick="window.location.hash='#/dashboard'">
         <i class="ti ti-arrow-left"></i>
       </button>
       <div class="m-search" style="margin:0;flex:1">
@@ -95,6 +95,6 @@ async function runSearch() {
 
     results.innerHTML = html
   } catch (err) {
-    results.innerHTML = `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    results.innerHTML = mErrorBox(err.message, () => runSearch())
   }
 }

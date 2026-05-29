@@ -4,7 +4,7 @@
 export async function renderRapports(el) {
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
+      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
         <i class="ti ti-arrow-left"></i>
       </button>
       <h1>${t('rapports.title')}</h1>
@@ -20,7 +20,7 @@ export async function renderRapports(el) {
     body.innerHTML = render(d)
   } catch (err) {
     const body = document.getElementById('m-rapports-body')
-    if (body) body.innerHTML = `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message || t('error.generic'))}</div>`
+    if (body) body.innerHTML = mErrorBox(err.message || t('error.generic'), () => renderRapports(el))
   }
 }
 

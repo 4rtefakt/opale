@@ -31,7 +31,7 @@ export async function renderMenu(el) {
           <i class="ti ti-terminal-2"></i>
           <span>Scripts</span>
         </button>
-        <button class="m-menu-tile green" onclick="mSyncIntune()">
+        <button class="m-menu-tile green" onclick="mSyncIntune(this)">
           <i class="ti ti-refresh"></i>
           <span>Sync Intune</span>
         </button>
@@ -70,12 +70,12 @@ export async function renderMenu(el) {
       </div>
     </div>`
 
-  window.mSyncIntune = async () => {
+  window.mSyncIntune = (btn) => withBusy(btn, async () => {
     try {
       await window.api.syncIntune()
       window.showToast('Sync Intune lancée', 'success')
     } catch { window.showToast('Erreur', 'error') }
-  }
+  })
 }
 
 function initials(str) {

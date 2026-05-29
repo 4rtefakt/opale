@@ -673,6 +673,15 @@ export default {
   'audit.summary.intune':          '{ok} OK · {errors} error(s)',
   'audit.summary.agent_checkin':   '{disks} disks',
   'audit.summary.new':             'new',
+  // — mobile/common —
+  'mobile.common.retry':                    'Retry',
+  'mobile.common.error':                    'Something went wrong',
+  // Device status (shared dashboard + devices + device detail)
+  'mobile.device.status.online':            'Online',
+  'mobile.device.status.offline':           'Offline',
+  'mobile.device.status.critical':          'Critical',
+  'mobile.device.status.warn':              'Needs attention',
+
   // — mobile/alertes —
   'mobile.alertes.title':                   'Alerts',
   'mobile.alertes.filter.all':              'All',
@@ -729,10 +738,6 @@ export default {
   'mobile.dashboard.kpi.critical':           'Critical',
   'mobile.dashboard.section.active_alerts':  'Active alerts',
   'mobile.dashboard.section.recent':         'Recent activity',
-  'mobile.dashboard.status.online':          'Online',
-  'mobile.dashboard.status.offline':         'Offline',
-  'mobile.dashboard.status.critical':        'Critical',
-  'mobile.dashboard.status.warn':            'Warning',
 
   // — mobile/postes —
   'mobile.postes.title':                  'Devices',
@@ -746,10 +751,6 @@ export default {
   'mobile.postes.filter.online_count':    'Online ({n})',
   'mobile.postes.filter.offline_count':   'Offline ({n})',
   'mobile.postes.filter.critical_count':  '⚠ Critical ({n})',
-  'mobile.postes.status.online':          'Online',
-  'mobile.postes.status.offline':         'Offline',
-  'mobile.postes.status.critical':        'Critical',
-  'mobile.postes.status.warn':            'Warning',
   'mobile.postes.bulk.selected':          'selected',
   'mobile.postes.bulk.selected_plural':   'selected',
   'mobile.postes.bulk.exit':              'Exit selection',
