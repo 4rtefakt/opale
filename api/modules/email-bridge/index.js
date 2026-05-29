@@ -11,6 +11,7 @@
 
 import emailRoute from './routes/email.js'
 import { startMailPollWorker }       from './lib/poll-worker.js'
+import { startMailSentPollWorker }   from './lib/sent-poll-worker.js'
 import { startMailOutboundWorker }   from './lib/outbound-worker.js'
 import { startMailMarkReadWorker }   from './lib/mark-read-worker.js'
 
@@ -28,6 +29,7 @@ export default {
 
   startWorkers(fastify) {
     startMailPollWorker(fastify.db, fastify.log)
+    startMailSentPollWorker(fastify.db, fastify.log)
     startMailOutboundWorker(fastify.db, fastify.log)
     startMailMarkReadWorker(fastify.db, fastify.log)
   }

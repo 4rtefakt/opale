@@ -134,6 +134,45 @@ export async function listMessagesSince(mailbox, sinceIso, opts = {}) {
   return page
 }
 
+// ── Lecture du dossier "Éléments envoyés" (ingestion des réponses Outlook) ─────
+//
+// Contrairement à listMessagesSince (qui scanne TOUTE la boîte et EXCLUT les
+// dossiers système dont sentitems), on cible ICI exclusivement /mailFolders/
+// sentitems : on veut justement les mails que l'agent a envoyés depuis Outlook.
+// On filtre/ordonne sur `sentDateTime` (et pas receivedDateTime, souvent absent
+// sur un mail sortant). Même précaution anti double-encoding que ci-dessus :
+// ne PAS pré-encoder sinceIso, URLSearchParams s'en charge.
+export function buildListSentMessagesPath(mailbox, sinceIso, { top = 50 } = {}) {
+  const select = [
+    'id',
+    'internetMessageId',
+    'conversationId',
+    'subject',
+    'bodyPreview',
+    'from',
+    'toRecipients',
+    'sentDateTime',
+    'receivedDateTime',
+    'hasAttachments',
+    'internetMessageHeaders',
+  ].join(',')
+
+  const params = new URLSearchParams()
+  params.set('$top', String(Math.min(Math.max(top, 1), 100)))
+  params.set('$orderby', 'sentDateTime asc')
+  params.set('$select', select)
+  if (sinceIso) params.set('$filter', `sentDateTime gt ${sinceIso}`)
+
+  return `/users/${encodeMailbox(mailbox)}/mailFolders/sentitems/messages?${params.toString()}`
+}
+
+// Liste les mails envoyés depuis `sinceIso` (exclusif) dans le dossier
+// Éléments envoyés de la boîte cible. Retourne la page brute Graph
+// (`@odata.nextLink` inclus pour la pagination côté caller).
+export async function listSentMessagesSince(mailbox, sinceIso, opts = {}) {
+  return graphGet(buildListSentMessagesPath(mailbox, sinceIso, opts))
+}
+
 // Re-fetch un message complet (corps + headers complets) — utilisé Phase 2/3
 // quand on a besoin du body pour la classification ou des PJ. Pas utilisé
 // par le worker Phase 1, exporté pour stabiliser l'API du module dès maintenant.
