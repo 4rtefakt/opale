@@ -1,4 +1,9 @@
+import { MOBILE_NAV_ITEMS, sanitizeMobileNav } from '/views/mobile/nav-config.js'
+
 let _data = null
+// Sélection locale des raccourcis de la barre du bas (éditée en place, poussée
+// au serveur uniquement au clic « Enregistrer »).
+let _navSel = []
 
 export async function renderSettings(el) {
   el.innerHTML = `
@@ -17,13 +22,23 @@ export async function renderSettings(el) {
   window.mAddToken     = mAddToken
   window.mRevokeToken  = mRevokeToken
   window.mToggleBio    = mToggleBio
+  window.mNavAdd       = mNavAdd
+  window.mNavRemove    = mNavRemove
+  window.mNavMove      = mNavMove
+  window.mNavSave      = mNavSave
 
   await loadSettings()
 }
 
 async function loadSettings() {
   try {
-    _data = await window.api.getSettings()
+    // Prefs en parallèle ; un échec prefs ne doit pas casser la page réglages.
+    const [settings, prefs] = await Promise.all([
+      window.api.getSettings(),
+      window.api.getMyPrefs().catch(() => ({})),
+    ])
+    _data   = settings
+    _navSel = sanitizeMobileNav(prefs?.mobile_nav)
     renderBody()
   } catch (err) {
     const body = document.getElementById('m-settings-body')
@@ -43,6 +58,13 @@ function renderBody() {
 
   body.innerHTML = `
     <div style="padding:16px;display:flex;flex-direction:column;gap:16px">
+
+      <!-- Barre du bas -->
+      <div class="m-panel">
+        <div class="m-panel-header"><i class="ti ti-layout-navbar"></i> ${t('mobile.settings.nav.title')}</div>
+        <div style="padding:10px 16px;font-size:12px;color:var(--text-tertiary)">${t('mobile.settings.nav.sub')}</div>
+        <div id="m-navpref"></div>
+      </div>
 
       <!-- Sécurité -->
       <div class="m-panel">
@@ -105,6 +127,8 @@ function renderBody() {
       </div>
 
     </div>`
+
+  renderNavPref()
 
   window.mShowAddSSHKey = () => {
     window.mShowSheet(`
@@ -208,5 +232,78 @@ async function mRevokeToken(id, label, btn) {
       window.showToast(t('mobile.settings.tokens.toast.revoked'), 'success')
       await loadSettings()
     } catch { window.showToast(t('mobile.settings.toast.error'), 'error') }
+  })
+}
+
+// ── Barre du bas (raccourcis personnalisables) ──────────────────────────────
+// Édition locale de _navSel (1 à 4 raccourcis ordonnés). Re-render in place à
+// chaque changement ; la sauvegarde serveur est explicite (bouton Enregistrer).
+function renderNavPref() {
+  const host = document.getElementById('m-navpref')
+  if (!host) return
+  const available = Object.keys(MOBILE_NAV_ITEMS).filter(r => !_navSel.includes(r))
+  const full      = _navSel.length >= 4
+
+  const selRows = _navSel.map((r, i) => {
+    const meta = MOBILE_NAV_ITEMS[r]
+    return `<div class="m-navpref-row">
+      <span class="m-navpref-num">${i + 1}</span>
+      <i class="ti ${meta.icon}"></i>
+      <span class="m-navpref-label">${esc(t(meta.labelKey))}</span>
+      <button class="m-icon-btn" ${i === 0 ? 'disabled' : ''} onclick="mNavMove('${r}',-1)"><i class="ti ti-chevron-up"></i></button>
+      <button class="m-icon-btn" ${i === _navSel.length - 1 ? 'disabled' : ''} onclick="mNavMove('${r}',1)"><i class="ti ti-chevron-down"></i></button>
+      <button class="m-icon-btn" style="color:var(--red)" ${_navSel.length <= 1 ? 'disabled' : ''} onclick="mNavRemove('${r}')"><i class="ti ti-x"></i></button>
+    </div>`
+  }).join('')
+
+  const availRows = available.map(r => {
+    const meta = MOBILE_NAV_ITEMS[r]
+    return `<div class="m-navpref-row">
+      <i class="ti ${meta.icon}" style="margin-left:4px"></i>
+      <span class="m-navpref-label">${esc(t(meta.labelKey))}</span>
+      <button class="m-icon-btn" style="color:var(--blue)" ${full ? 'disabled' : ''} onclick="mNavAdd('${r}')"><i class="ti ti-plus"></i></button>
+    </div>`
+  }).join('')
+
+  host.innerHTML = `
+    <div class="m-navpref-section">${t('mobile.settings.nav.selected')}</div>
+    ${selRows}
+    ${available.length ? `<div class="m-navpref-section">${t('mobile.settings.nav.available')}</div>${availRows}` : ''}
+    <div style="padding:12px 16px">
+      <button class="m-btn-primary" onclick="mNavSave(this)">${t('mobile.settings.nav.btn.save')}</button>
+    </div>`
+}
+
+function mNavAdd(route) {
+  if (_navSel.length < 4 && MOBILE_NAV_ITEMS[route] && !_navSel.includes(route)) {
+    _navSel.push(route)
+    renderNavPref()
+  }
+}
+
+function mNavRemove(route) {
+  if (_navSel.length > 1) {
+    _navSel = _navSel.filter(r => r !== route)
+    renderNavPref()
+  }
+}
+
+function mNavMove(route, dir) {
+  const i = _navSel.indexOf(route)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= _navSel.length) return
+  ;[_navSel[i], _navSel[j]] = [_navSel[j], _navSel[i]]
+  renderNavPref()
+}
+
+async function mNavSave(btn) {
+  await withBusy(btn, async () => {
+    try {
+      const saved = await window.api.updateMyPrefs({ mobile_nav: _navSel })
+      _navSel = sanitizeMobileNav(saved?.mobile_nav)
+      window.mRenderBottomNav?.([..._navSel])   // rafraîchit la barre en direct
+      renderNavPref()
+      window.showToast(t('mobile.settings.nav.toast.saved'), 'success')
+    } catch (err) { window.showToast(err.message || t('mobile.settings.toast.error'), 'error') }
   })
 }

@@ -939,6 +939,28 @@ export default {
   'mobile.settings.bio.toast.enabled':           'Biometric lock enabled ✓',
   'mobile.settings.bio.toast.cancelled':         'Activation cancelled or unsupported',
   'mobile.settings.toast.error':                 'Error',
+  // Customizable bottom bar
+  'mobile.settings.nav.title':                   'Bottom bar',
+  'mobile.settings.nav.sub':                     'Pick and order up to 4 shortcuts. The "More" tab is always present.',
+  'mobile.settings.nav.selected':                'Shortcuts',
+  'mobile.settings.nav.available':               'Available',
+  'mobile.settings.nav.btn.save':                'Save',
+  'mobile.settings.nav.toast.saved':             'Bottom bar updated',
+
+  // — mobile/nav (bottom bar tab labels) —
+  'mobile.nav.more':                'More',
+  'mobile.nav.route.dashboard':     'Dashboard',
+  'mobile.nav.route.postes':        'Devices',
+  'mobile.nav.route.alertes':       'Alerts',
+  'mobile.nav.route.tickets':       'Tickets',
+  'mobile.nav.route.scripts':       'Scripts',
+  'mobile.nav.route.stock':         'Stock',
+  'mobile.nav.route.onboarding':    'Onboarding',
+  'mobile.nav.route.rapports':      'Reports',
+  'mobile.nav.route.audit':         'Logs',
+  'mobile.nav.route.packages':      'Deployment',
+  'mobile.nav.route.conformite':    'Compliance',
+  'mobile.nav.route.ask':           'Ask',
 
   // — mobile/ticket (single) —
   'mobile.ticket.menu.set_in_progress':  'Set in progress',
