@@ -102,6 +102,16 @@
 
   <!-- MAIN -->
   <div class="main" id="main-area">
+    <!-- Barre Ask Opale globale (déclencheur visible de la palette ⌘K).
+         Gating via data-module="ask" : applyModuleVisibility la retire si off. -->
+    <div class="ask-bar" id="ask-bar" data-module="ask">
+      <div class="ask-bar-field" id="ask-bar-trigger" role="button" tabindex="0"
+           aria-label="Demander à Opale" title="Demander à Opale (⌘K)">
+        <i class="ti ti-sparkles ask-bar-ico"></i>
+        <span class="ask-bar-text" id="ask-bar-text">Demander à Opale…</span>
+        <kbd>⌘K</kbd>
+      </div>
+    </div>
     <div id="view-dashboard" class="view"></div>
     <div id="view-postes"    class="view"></div>
     <div id="view-conformite" class="view"></div>

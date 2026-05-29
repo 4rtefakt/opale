@@ -83,24 +83,22 @@ window.closeModal = () => {
 }
 
 // ─── Search ───
-// Cmd/Ctrl+K : ouvre la palette Ask Opale (recherche en langage naturel) si le
-// module `ask` est activé. Sinon, fallback historique = focus de l'omni-search
-// du dashboard (zéro régression si Ask est désactivé).
+// Ouvre la palette Ask Opale (recherche en langage naturel), importée à la volée
+// au 1er appel. Déclenchée par la barre globale (clic/focus) et par Cmd/Ctrl+K.
+// No-op si le module `ask` est désactivé.
+function openAsk() {
+  if (!window.OPALE?.moduleEnabled('ask')) return
+  import('/views/ask.js').then(m => m.openAskPalette())
+}
+
 document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
     e.preventDefault()
-    if (window.OPALE?.moduleEnabled('ask')) {
-      import('/views/ask.js').then(m => m.openAskPalette())
-      return
-    }
-    const input = document.getElementById('omni-input')
-    if (input) { input.focus(); input.select() }
-    else { navigateTo('/dashboard'); setTimeout(() => document.getElementById('omni-input')?.focus(), 200) }
+    openAsk()
   }
   if (e.key === 'Escape') {
     closeModal()
     window.closeAskPalette?.()
-    document.getElementById('omni-input')?.blur()
   }
 })
 
@@ -181,7 +179,12 @@ async function router() {
   const container = document.getElementById(`view-${route}`)
   container.style.display    = 'flex'
   container.style.flexDirection = 'column'
-  container.style.height     = '100%'
+  // flex:1 plutôt que height:100% : la vue remplit l'espace restant SOUS la
+  // barre Ask Opale (sibling flex-shrink:0) sans déborder. height:auto neutralise
+  // le `.view { height:100% }` de la CSS qui réintroduirait l'overflow.
+  container.style.flex       = '1'
+  container.style.minHeight  = '0'
+  container.style.height     = 'auto'
   container.style.overflow   = 'hidden'
 
   if (route === 'alertes') {
@@ -362,6 +365,21 @@ async function init() {
 
   // Retire du DOM les entrées de menu des modules désactivés avant tout render
   applyModuleVisibility()
+
+  // Barre Ask Opale globale : déclencheur visible de la palette (le ⌘K seul
+  // n'était pas découvrable). Le bandeau est déjà retiré par applyModuleVisibility
+  // si le module `ask` est off — on ne câble donc que s'il est présent.
+  const askTrigger = document.getElementById('ask-bar-trigger')
+  if (askTrigger) {
+    askTrigger.addEventListener('click', openAsk)
+    askTrigger.addEventListener('focus', openAsk)
+  }
+  const setAskLabel = () => {
+    const el = document.getElementById('ask-bar-text')
+    if (el) el.textContent = t('ask.cta')
+  }
+  setAskLabel()
+  window.addEventListener('localechange', setAskLabel)
 
   // Badges sidebar — au démarrage puis toutes les 5 min
   const refreshBadges = () => {

@@ -54,12 +54,9 @@ export default {
   'dashboard.empty.tickets':  'No open ticket',
   'dashboard.empty.scripts':  'No saved script',
   'dashboard.notifications.title': 'Notifications',
-  'dashboard.omni.placeholder':    'Search device, ticket, user… (⌘K)',
-  'dashboard.omni.searching':      'Searching…',
-  'dashboard.omni.no_results':     'No results for "{q}"',
-  'dashboard.omni.error':          'Search error',
   'dashboard.ticket.auto_alert':   'Automatic alert',
 
+  'ask.cta':               'Ask Opale…',
   'ask.placeholder':       'Ask in plain language… (e.g. devices offline for 3 days)',
   'ask.hint':              'Ask a question about your fleet, tickets or compliance.',
   'ask.searching':         'Searching…',
