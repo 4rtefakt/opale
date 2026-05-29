@@ -1,7 +1,9 @@
 let _tickets = []
 let _filter  = 'open'
 let _allTags = []
-let _adv     = { priority: [], tag: [], assigned_to: '' }
+let _adv     = { priority: [], tag: [], assigned_to: '', created_from: '', created_to: '' }
+let _q       = ''            // recherche fulltext (déléguée au backend via ?q=)
+let _searchTimer = null
 
 const M_TAG_PALETTE = {
   slate:  '#475569', blue:   '#2563eb', green:  '#059669', amber:  '#d97706',
@@ -67,7 +69,8 @@ async function mTkRejectProposal(id) {
 
 export async function renderTickets(el) {
   _filter = 'open'
-  _adv    = { priority: [], tag: [], assigned_to: '' }
+  _adv    = { priority: [], tag: [], assigned_to: '', created_from: '', created_to: '' }
+  _q      = ''
   el.innerHTML = `
     <div class="m-header">
       <h1>Tickets <span id="m-tk-count" style="font-size:12px;font-weight:400;color:var(--text-tertiary)"></span></h1>
@@ -80,13 +83,15 @@ export async function renderTickets(el) {
     </div>
     <div class="m-search">
       <i class="ti ti-search"></i>
-      <input type="text" placeholder="Titre, poste…" id="m-tk-q" oninput="mTkFilter()">
+      <input type="text" placeholder="${t('mobile.tickets.search_ph')}" id="m-tk-q" oninput="mTkFilter()">
     </div>
     <div class="m-filters">
       <button class="m-filter-pill" data-f="all"         onclick="mTkSetFilter('all',this)">Tous</button>
       <button class="m-filter-pill active" data-f="open" onclick="mTkSetFilter('open',this)">Ouverts</button>
       <button class="m-filter-pill" data-f="in_progress" onclick="mTkSetFilter('in_progress',this)">En cours</button>
+      <button class="m-filter-pill" data-f="auto"        onclick="mTkSetFilter('auto',this)">Auto</button>
       <button class="m-filter-pill" data-f="resolved"    onclick="mTkSetFilter('resolved',this)">Résolus</button>
+      <button class="m-filter-pill" data-f="closed"      onclick="mTkSetFilter('closed',this)">Archivés</button>
       <button class="m-filter-pill" data-f="proposed"    onclick="mTkSetFilter('proposed',this)" id="m-tk-proposed-pill" style="display:none">💡 Proposés</button>
     </div>
     <div id="m-tk-active-chips" style="padding:6px 12px;display:none;flex-wrap:wrap;gap:4px"></div>
@@ -94,7 +99,15 @@ export async function renderTickets(el) {
       <div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>
     </div>`
 
-  window.mTkFilter    = () => renderList()
+  // Recherche : filtre local immédiat (titre/hostname pour la réactivité)
+  // puis appel backend débounce avec ?q= (matche aussi description, messages
+  // et personnes concernées — comme le desktop).
+  window.mTkFilter    = () => {
+    _q = document.getElementById('m-tk-q')?.value || ''
+    renderList()
+    if (_searchTimer) clearTimeout(_searchTimer)
+    _searchTimer = setTimeout(() => { _searchTimer = null; loadTickets() }, 300)
+  }
   window.mTkSetFilter = (f, btn) => {
     _filter = f
     el.querySelectorAll('.m-filter-pill').forEach(b => b.classList.remove('active'))
@@ -112,7 +125,9 @@ export async function renderTickets(el) {
     const me = window.appState?.user
     let pickedAssignee  = null  // { entra_id, display_name }
     let pickedRequester = null  // { entra_id, display_name, email }
+    let pickedDevice    = null  // { id, hostname }
     let selectedTags    = []    // [{ id, name, color }, ...]
+    let _devCache       = null  // liste devices chargée à la demande
 
     window.mShowSheet(`
       <div class="m-sheet-title">${t('mobile.tickets.new.title')}</div>
@@ -144,6 +159,16 @@ export async function renderTickets(el) {
           <div id="m-nti-requester-search" style="display:none;margin-top:6px">
             <input class="m-input" id="m-nti-rq" placeholder="${t('mobile.tickets.new.requester_search')}" autocomplete="off">
             <div id="m-nti-rr" style="max-height:160px;overflow-y:auto;border:0.5px solid var(--border);border-radius:6px;margin-top:4px"></div>
+          </div>
+        </div>
+
+        <!-- Poste concerné : search + picker -->
+        <div>
+          <div class="m-label">${t('mobile.tickets.new.field.device')}</div>
+          <div id="m-nti-device" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"></div>
+          <div id="m-nti-device-search" style="display:none;margin-top:6px">
+            <input class="m-input" id="m-nti-dq" placeholder="${t('mobile.tickets.new.device_search')}" autocomplete="off">
+            <div id="m-nti-dr" style="max-height:160px;overflow-y:auto;border:0.5px solid var(--border);border-radius:6px;margin-top:4px"></div>
           </div>
         </div>
 
@@ -240,6 +265,67 @@ export async function renderTickets(el) {
       })
     }, 0)
 
+    // ─── Poste concerné : search local sur getDevices ───────────────────────
+    function renderDevice() {
+      const row = document.getElementById('m-nti-device')
+      if (!row) return
+      if (pickedDevice) {
+        row.innerHTML = `
+          <span style="font-size:13px"><i class="ti ti-device-laptop" style="font-size:11px;opacity:0.7"></i> ${esc(pickedDevice.hostname || pickedDevice.id)}</span>
+          <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mNtiClearDevice()">${t('mobile.tickets.new.clear')}</button>`
+      } else {
+        row.innerHTML = `
+          <span style="font-size:13px;color:var(--text-tertiary)">${t('mobile.tickets.new.no_device')}</span>
+          <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mNtiToggleDeviceSearch()">
+            <i class="ti ti-search" style="font-size:11px"></i> ${t('mobile.tickets.new.device_pick')}
+          </button>`
+      }
+    }
+    window.mNtiClearDevice = () => { pickedDevice = null; renderDevice() }
+    window.mNtiToggleDeviceSearch = () => {
+      const box = document.getElementById('m-nti-device-search')
+      if (!box) return
+      const isOpen = box.style.display === 'block'
+      box.style.display = isOpen ? 'none' : 'block'
+      if (!isOpen) {
+        renderDeviceResults()
+        setTimeout(() => document.getElementById('m-nti-dq')?.focus(), 50)
+      }
+    }
+    window.mNtiApplyDevice = (id, hostname) => {
+      pickedDevice = { id, hostname }
+      const sb = document.getElementById('m-nti-device-search'); if (sb) sb.style.display = 'none'
+      const inp = document.getElementById('m-nti-dq'); if (inp) inp.value = ''
+      const lst = document.getElementById('m-nti-dr'); if (lst) lst.innerHTML = ''
+      renderDevice()
+    }
+    async function renderDeviceResults() {
+      const lst = document.getElementById('m-nti-dr')
+      if (!lst) return
+      if (!_devCache) {
+        lst.innerHTML = `<div style="padding:10px;color:var(--text-tertiary);font-size:12px">…</div>`
+        try { _devCache = (await window.api.getDevices({ limit: 200 }))?.devices || [] }
+        catch { _devCache = [] }
+      }
+      const q = (document.getElementById('m-nti-dq')?.value || '').trim().toLowerCase()
+      const filtered = (q
+        ? _devCache.filter(d => (d.hostname || '').toLowerCase().includes(q) ||
+                                (d.user_name || '').toLowerCase().includes(q) ||
+                                (d.model || '').toLowerCase().includes(q))
+        : _devCache).slice(0, 50)
+      lst.innerHTML = filtered.length
+        ? filtered.map(d => `
+            <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
+              onclick="mNtiApplyDevice('${esc(d.id)}', ${mJsArg(d.hostname || '')})">
+              <div style="font-size:13px">${esc(d.hostname || '?')}</div>
+              <div style="font-size:11px;color:var(--text-tertiary)">${esc(d.user_name || '')}${d.model ? ' · ' + esc(d.model) : ''}</div>
+            </div>`).join('')
+        : `<div style="padding:10px;color:var(--text-tertiary);font-size:12px">${t('mobile.tickets.new.no_match')}</div>`
+    }
+    setTimeout(() => {
+      document.getElementById('m-nti-dq')?.addEventListener('input', renderDeviceResults)
+    }, 0)
+
     // ─── Tags : picker compact ──────────────────────────────────────────────
     function renderTags() {
       const area = document.getElementById('m-nti-tags')
@@ -330,6 +416,7 @@ export async function renderTickets(el) {
           assigned_to_entra_id: pickedAssignee?.entra_id   || null,
           assigned_to_name:     pickedAssignee?.display_name || null,
           user_id:              pickedRequester?.entra_id || null,
+          device_id:            pickedDevice?.id || null,
           tag_ids:              selectedTags.map(g => g.id),
         })
         window.mCloseSheet()
@@ -344,6 +431,7 @@ export async function renderTickets(el) {
     // Render initial des sections dynamiques
     renderAssignee()
     renderRequester()
+    renderDevice()
     renderTags()
   }
 
@@ -364,10 +452,16 @@ async function loadTickets() {
       _tickets = _tickets.map(p => ({ ...p, _isProposal: true }))
     } else {
       const params = {}
-      if (_filter !== 'all') params.status = _filter
+      // 'auto' = is_auto sans contrainte de statut ; 'closed' = archives
+      // (opt-in côté backend) ; sinon le statut tel quel (sauf 'all').
+      if (_filter === 'auto')      params.is_auto = 'true'
+      else if (_filter !== 'all')  params.status  = _filter
       if (_adv.priority.length)    params.priority    = _adv.priority.join(',')
       if (_adv.tag.length)         params.tag         = _adv.tag.join(',')
       if (_adv.assigned_to)        params.assigned_to = _adv.assigned_to
+      if (_adv.created_from)       params.created_from = _adv.created_from
+      if (_adv.created_to)         params.created_to   = _adv.created_to
+      if (_q.trim())               params.q            = _q.trim()
       _tickets = await window.api.getTickets(params)
     }
     renderActiveChips()
@@ -391,9 +485,14 @@ async function loadTickets() {
 
 function renderList() {
   const q       = (document.getElementById('m-tk-q')?.value || '').toLowerCase()
-  const filtered = _tickets.filter(tk =>
-    !q || tk.title.toLowerCase().includes(q) || (tk.hostname || '').toLowerCase().includes(q)
+  const matched = _tickets.filter(tk =>
+    !q || (tk.title || '').toLowerCase().includes(q) || (tk.hostname || '').toLowerCase().includes(q)
   )
+  // Le backend (via ?q=) matche aussi description / messages / personnes —
+  // critères absents du payload liste. Si le filtre local ne trouve rien
+  // alors que le backend a renvoyé des tickets, on garde la liste backend
+  // pour ne pas masquer un résultat valide (cf. desktop applyLocalSearch).
+  const filtered = (q && matched.length === 0 && _tickets.length > 0) ? _tickets : matched
 
   const countEl = document.getElementById('m-tk-count')
   if (countEl) countEl.textContent = `${filtered.length}`
@@ -455,6 +554,8 @@ function renderActiveChips() {
     const lbl = _adv.assigned_to === 'me' ? 'Moi' : _adv.assigned_to === 'unassigned' ? 'Non assigné' : _adv.assigned_to
     chips.push(advChip(`Assigné: ${lbl}`, 'assigned_to'))
   }
+  if (_adv.created_from) chips.push(advChip(`Depuis: ${_adv.created_from}`, 'created_from'))
+  if (_adv.created_to)   chips.push(advChip(`Jusqu'à: ${_adv.created_to}`, 'created_to'))
   if (chips.length) {
     el.style.display = 'flex'
     el.innerHTML = chips.join('')
@@ -479,6 +580,10 @@ function mTkRemoveChip(key) {
     _adv.tag = _adv.tag.filter(x => x !== id)
   } else if (key === 'assigned_to') {
     _adv.assigned_to = ''
+  } else if (key === 'created_from') {
+    _adv.created_from = ''
+  } else if (key === 'created_to') {
+    _adv.created_to = ''
   }
   loadTickets()
 }
@@ -512,6 +617,13 @@ function mTkOpenFilters() {
           <button class="m-filter-pill ${_adv.assigned_to==='me'?'active':''}"          data-as="me">Moi</button>
           <button class="m-filter-pill ${_adv.assigned_to==='unassigned'?'active':''}" data-as="unassigned">Non assigné</button>
           <button class="m-filter-pill ${_adv.assigned_to===''?'active':''}"            data-as="">Tous</button>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:6px">${t('mobile.tickets.filters.dates')}</div>
+        <div style="display:flex;gap:8px">
+          <input type="date" class="m-input" id="m-tk-from" value="${esc(_adv.created_from)}" style="flex:1">
+          <input type="date" class="m-input" id="m-tk-to"   value="${esc(_adv.created_to)}"   style="flex:1">
         </div>
       </div>
       <div style="display:flex;gap:8px">
@@ -560,12 +672,15 @@ function mTkOpenFilters() {
 }
 
 function mTkApplyAdv() {
+  // Lire les dates AVANT de fermer la sheet (mCloseSheet vide le DOM interne).
+  _adv.created_from = document.getElementById('m-tk-from')?.value || ''
+  _adv.created_to   = document.getElementById('m-tk-to')?.value   || ''
   window.mCloseSheet()
   loadTickets()
 }
 
 function mTkClearAdv() {
-  _adv = { priority: [], tag: [], assigned_to: '' }
+  _adv = { priority: [], tag: [], assigned_to: '', created_from: '', created_to: '' }
   window.mCloseSheet()
   loadTickets()
 }

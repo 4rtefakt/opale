@@ -975,6 +975,7 @@ export default {
   'mobile.tickets.new.field.priority':     'Priority',
   'mobile.tickets.new.field.assignee':     'Assigned to',
   'mobile.tickets.new.field.requester':    'Requester',
+  'mobile.tickets.new.field.device':       'Linked device',
   'mobile.tickets.new.field.tags':         'Tags',
   'mobile.tickets.new.field.description':  'Description',
   'mobile.tickets.new.placeholder.title':       'Short description…',
@@ -985,6 +986,9 @@ export default {
   'mobile.tickets.new.no_requester':       'No requester',
   'mobile.tickets.new.requester_pick':     'Pick',
   'mobile.tickets.new.requester_search':   'Name, email…',
+  'mobile.tickets.new.no_device':          'No device',
+  'mobile.tickets.new.device_pick':        'Pick',
+  'mobile.tickets.new.device_search':      'Hostname, model, user…',
   'mobile.tickets.new.no_match':           'No match',
   'mobile.tickets.new.clear':              'Clear',
   'mobile.tickets.new.tags_add':           'Add',
@@ -997,6 +1001,8 @@ export default {
   'mobile.tickets.new.title_required':     'Title required',
   'mobile.tickets.new.toast_created':      'Ticket created',
   'mobile.tickets.new.toast_error':        'Error',
+  'mobile.tickets.search_ph':              'Title, device, message, person…',
+  'mobile.tickets.filters.dates':          'Creation dates',
 
   // — mobile/stock —
   'mobile.stock.title':                'Stock',
