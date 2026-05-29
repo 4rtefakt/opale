@@ -501,29 +501,35 @@ tbody tr:hover .action-btn { opacity: 1; }
 .page-btn.active { background: var(--text-primary); color: var(--bg-primary); border-color: var(--text-primary); }
 .page-btn i { font-size: 14px; }
 
-/* ─── OMNI-SEARCH INLINE ─── */
-.omni-wrap {
-  position: relative; flex: 1; min-width: 200px; max-width: 420px;
+/* ─── ASK OPALE — BARRE GLOBALE ─── */
+/* Bandeau fixe en haut de .main (flex-shrink:0, ne défile pas avec la vue) :
+   point d'entrée visible de la palette Ask Opale sur toutes les vues desktop. */
+.ask-bar {
+  flex-shrink: 0;
+  display: flex; justify-content: center;
+  padding: 10px 16px;
+  border-bottom: 0.5px solid var(--border);
+  background: var(--bg-primary);
 }
-.omni-input {
-  width: 100%; height: 34px; padding: 0 12px 0 32px;
+.ask-bar-field {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; max-width: 520px; height: 36px;
+  padding: 0 12px;
   background: var(--bg-secondary); border: 0.5px solid var(--border);
-  border-radius: var(--radius-md); font-size: 13px; color: var(--text-primary);
-  outline: none; transition: border-color 0.15s;
+  border-radius: var(--radius-md);
+  cursor: pointer; user-select: none;
+  transition: border-color 0.15s, background 0.15s;
 }
-.omni-input::placeholder { color: var(--text-tertiary); }
-.omni-input:focus { border-color: var(--blue); background: var(--bg-primary); }
-.omni-results {
-  position: absolute; top: calc(100% + 6px); left: 0; right: 0;
-  background: var(--bg-primary); border: 0.5px solid var(--border);
-  border-radius: var(--radius-lg); box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-  z-index: 100; overflow: hidden; max-height: 420px; overflow-y: auto;
+.ask-bar-field:hover, .ask-bar-field:focus {
+  border-color: var(--blue); background: var(--bg-primary); outline: none;
 }
-.omni-section {
-  font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--text-tertiary); padding: 8px 12px 4px;
+.ask-bar-ico { font-size: 16px; color: var(--blue); flex-shrink: 0; }
+.ask-bar-text {
+  flex: 1; font-size: 13px; color: var(--text-tertiary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.omni-section:not(:first-child) { border-top: 0.5px solid var(--border); padding-top: 10px; }
+
+/* ─── LIGNES DE RÉSULTAT (partagées par la palette Ask Opale) ─── */
 .omni-row {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 12px; cursor: pointer; transition: background 0.1s;

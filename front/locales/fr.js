@@ -54,12 +54,9 @@ export default {
   'dashboard.empty.tickets':  'Aucun ticket ouvert',
   'dashboard.empty.scripts':  'Aucun script enregistré',
   'dashboard.notifications.title': 'Notifications',
-  'dashboard.omni.placeholder':    'Rechercher poste, ticket, user… (⌘K)',
-  'dashboard.omni.searching':      'Recherche…',
-  'dashboard.omni.no_results':     'Aucun résultat pour « {q} »',
-  'dashboard.omni.error':          'Erreur lors de la recherche',
   'dashboard.ticket.auto_alert':   'Alerte automatique',
 
+  'ask.cta':               'Demander à Opale…',
   'ask.placeholder':       'Demandez en français… (ex : postes hors ligne depuis 3 jours)',
   'ask.hint':              'Posez une question sur votre parc, vos tickets ou la conformité.',
   'ask.searching':         'Recherche…',
