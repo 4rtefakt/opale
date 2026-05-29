@@ -6,6 +6,7 @@ import usersRoute     from './routes/users.js'
 import settingsRoute  from './routes/settings.js'
 import dashboardRoute from './routes/dashboard.js'
 import pushRoute      from './routes/push.js'
+import meRoute        from './routes/me.js'
 
 export default {
   name: 'core',
@@ -22,5 +23,6 @@ export default {
     await fastify.register(settingsRoute,  { prefix: '/api/settings' })
     await fastify.register(dashboardRoute, { prefix: '/api/dashboard' })
     await fastify.register(pushRoute,      { prefix: '/api/push' })
+    await fastify.register(meRoute,        { prefix: '/api/me' })
   }
 }

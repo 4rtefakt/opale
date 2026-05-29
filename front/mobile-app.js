@@ -2,6 +2,7 @@ import { initI18n, t } from '/i18n.js'
 import '/auth.js'
 import '/api.js'
 import * as bio from '/biometric.js'
+import { MOBILE_NAV_ITEMS, MOBILE_NAV_DEFAULT, sanitizeMobileNav } from '/views/mobile/nav-config.js'
 
 window.bio = bio
 
@@ -162,27 +163,47 @@ function getRoute() {
   return { route: parts[0] || 'dashboard', parts }
 }
 
+// Les 4 raccourcis courants de la barre du bas (le 5e onglet « Plus » est fixe).
+// Personnalisable par user (pref serveur mobile_nav) ; défaut sinon.
+let _navRoutes = [...MOBILE_NAV_DEFAULT]
+
+// (Re)génère les 4 onglets raccourcis + l'onglet « Plus » fixe depuis `routes`.
+// Recrée le badge d'alertes critiques si « alertes » est un raccourci
+// (updateBadge cible #m-badge-crit ; absent sinon → no-op silencieux).
+function renderBottomNav(routes) {
+  _navRoutes = routes
+  const nav = document.getElementById('m-bottom-nav')
+  if (!nav) return
+  const shortcuts = routes.map(r => {
+    const meta = MOBILE_NAV_ITEMS[r]
+    if (!meta) return ''
+    const badge = r === 'alertes'
+      ? '<span class="m-nav-badge" id="m-badge-crit" style="display:none"></span>'
+      : ''
+    return `<button class="m-nav-item" data-route="${r}" onclick="mNavigateTo('${r}')">
+      <i class="ti ${meta.icon}"></i>${esc(t(meta.labelKey))}${badge}
+    </button>`
+  }).join('')
+  nav.innerHTML = shortcuts + `
+    <button class="m-nav-item" data-route="menu" onclick="mNavigateTo('menu')">
+      <i class="ti ti-dots"></i>${esc(t('mobile.nav.more'))}
+    </button>`
+  setActiveNav(getRoute().route)
+}
+// Exposé pour que l'écran de réglage rafraîchisse la barre après sauvegarde.
+window.mRenderBottomNav = renderBottomNav
+
+// Vues de détail → onglet liste parent. Toute route absente des raccourcis
+// (et ≠ menu) vit sous l'onglet « Plus ».
+const NAV_PARENT = { poste: 'postes', ssh: 'postes', ticket: 'tickets' }
 function setActiveNav(route) {
+  let target = NAV_PARENT[route] || route
+  if (target !== 'menu' && !_navRoutes.includes(target)) target = 'menu'
   document.querySelectorAll('.m-nav-item').forEach(btn => {
-    btn.classList.toggle('active',
-      btn.dataset.route === route ||
-      (route === 'poste'    && btn.dataset.route === 'postes')  ||
-      (route === 'ssh'      && btn.dataset.route === 'postes')  ||
-      (route === 'ticket'   && btn.dataset.route === 'tickets') ||
-      (route === 'settings' && btn.dataset.route === 'menu')    ||
-      (route === 'scripts'  && btn.dataset.route === 'menu')    ||
-      (route === 'stock'    && btn.dataset.route === 'menu')    ||
-      (route === 'onboarding' && btn.dataset.route === 'menu')  ||
-      (route === 'rapports' && btn.dataset.route === 'menu')    ||
-      (route === 'audit'    && btn.dataset.route === 'menu')    ||
-      (route === 'search'   && btn.dataset.route === 'menu')    ||
-      (route === 'packages' && btn.dataset.route === 'menu')    ||
-      (route === 'ask'      && btn.dataset.route === 'menu')    ||
-      (route === 'conformite' && btn.dataset.route === 'menu')
-    )
+    btn.classList.toggle('active', btn.dataset.route === target)
   })
   const nav = document.getElementById('m-bottom-nav')
-  nav.style.display = route === 'ssh' ? 'none' : 'flex'
+  if (nav) nav.style.display = route === 'ssh' ? 'none' : 'flex'
 }
 
 async function router() {
@@ -382,6 +403,16 @@ async function launchApp() {
   appEl.style.display = 'flex'
 
   bio.touch()
+
+  // Barre du bas personnalisée (pref serveur par user). Non bloquant : en cas
+  // d'échec on garde les 4 raccourcis par défaut. Rendu avant updateBadge pour
+  // que le badge #m-badge-crit existe si « alertes » est un raccourci.
+  try {
+    const prefs = await window.api.getMyPrefs()
+    renderBottomNav(sanitizeMobileNav(prefs?.mobile_nav))
+  } catch {
+    renderBottomNav([...MOBILE_NAV_DEFAULT])
+  }
 
   updateBadge()
   setInterval(updateBadge, 5 * 60 * 1000)

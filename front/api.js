@@ -168,6 +168,11 @@ class API {
     return this._fetch(`/settings/audit${qs ? '?' + qs : ''}`)
   }
 
+  // Préférences utilisateur (par user, stockées côté serveur — synchro entre
+  // appareils). getMyPrefs → {} si rien ; updateMyPrefs merge superficiel.
+  getMyPrefs()         { return this._fetch('/me/prefs') }
+  updateMyPrefs(patch) { return this._fetch('/me/prefs', { method: 'PATCH', body: patch }) }
+
   // Onboarding
   getOnboardings(params) {
     const qs = params ? '?' + new URLSearchParams(params).toString() : ''

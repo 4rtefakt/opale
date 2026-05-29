@@ -942,6 +942,28 @@ export default {
   'mobile.settings.bio.toast.enabled':           'Verrou biométrique activé ✓',
   'mobile.settings.bio.toast.cancelled':         'Activation annulée ou non supportée',
   'mobile.settings.toast.error':                 'Erreur',
+  // Barre du bas personnalisable
+  'mobile.settings.nav.title':                   'Barre du bas',
+  'mobile.settings.nav.sub':                     'Choisissez et ordonnez jusqu\'à 4 raccourcis. L\'onglet « Plus » reste toujours présent.',
+  'mobile.settings.nav.selected':                'Raccourcis',
+  'mobile.settings.nav.available':               'Disponibles',
+  'mobile.settings.nav.btn.save':                'Enregistrer',
+  'mobile.settings.nav.toast.saved':             'Barre du bas mise à jour',
+
+  // — mobile/nav (libellés des onglets de la barre du bas) —
+  'mobile.nav.more':                'Plus',
+  'mobile.nav.route.dashboard':     'Tableau',
+  'mobile.nav.route.postes':        'Postes',
+  'mobile.nav.route.alertes':       'Alertes',
+  'mobile.nav.route.tickets':       'Tickets',
+  'mobile.nav.route.scripts':       'Scripts',
+  'mobile.nav.route.stock':         'Stock',
+  'mobile.nav.route.onboarding':    'Onboarding',
+  'mobile.nav.route.rapports':      'Rapports',
+  'mobile.nav.route.audit':         'Logs',
+  'mobile.nav.route.packages':      'Déploiement',
+  'mobile.nav.route.conformite':    'Conformité',
+  'mobile.nav.route.ask':           'Ask',
 
   // — mobile/ticket (fiche) —
   'mobile.ticket.menu.set_in_progress':  'Mettre en cours',
