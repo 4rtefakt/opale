@@ -1061,4 +1061,37 @@ export default {
   'mobile.stock.new.name_required':    'Name required',
   'mobile.stock.new.toast_created':    'Item created',
   'mobile.stock.new.toast_error':      'Creation error',
+
+  // — mobile/menu (tiles) —
+  'mobile.menu.ask':                   'Ask Opale',
+  'mobile.menu.compliance':            'Compliance',
+
+  // — mobile/ask —
+  'mobile.ask.placeholder':            'Ask in plain language…',
+  'mobile.ask.sug.offline':            'devices offline for 3 days',
+  'mobile.ask.sug.tickets':            'open critical tickets',
+  'mobile.ask.sug.bitlocker':          'devices without BitLocker active',
+  'mobile.ask.sug.department':         'devices in the Finance department',
+  'mobile.ask.ticket.resolved':        'Resolved',
+  'mobile.ask.ticket.in_progress':     'In progress',
+  'mobile.ask.ticket.open':            'Open',
+
+  // — mobile/conformite —
+  'mobile.conformite.title':           'Compliance',
+  'mobile.conformite.kpi.score':       'Fleet score',
+  'mobile.conformite.kpi.compliant':   'compliant',
+  'mobile.conformite.kpi.failing':     'failing',
+  'mobile.conformite.kpi.in_critical': 'critical',
+  'mobile.conformite.kpi.unevaluated': 'unevaluated',
+  'mobile.conformite.rules':           'Rules',
+  'mobile.conformite.fail_short':      'fail',
+  'mobile.conformite.error':           'Loading error',
+  'mobile.conformite.unknown_rule':    'Unknown rule',
+  'mobile.conformite.status.fail':           'Non compliant',
+  'mobile.conformite.status.pass':           'Compliant',
+  'mobile.conformite.status.not_applicable': 'Not applicable',
+  'mobile.conformite.sev.critical':    'Critical',
+  'mobile.conformite.sev.high':        'High',
+  'mobile.conformite.sev.medium':      'Medium',
+  'mobile.conformite.sev.low':         'Low',
 }
