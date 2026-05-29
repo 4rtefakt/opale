@@ -19,7 +19,6 @@
 import pg from 'pg'
 import { listSentMessagesSince } from '../modules/email-bridge/lib/graph-mail.js'
 import { processSentOne } from '../modules/email-bridge/lib/process-sent-mail.js'
-import { matchThread } from '../modules/email-bridge/lib/match-thread.js'
 
 function parseArg(name, fallback) {
   const hit = process.argv.find(a => a.startsWith(`--${name}=`))
@@ -53,28 +52,6 @@ function parseMailboxes(csv) {
   return out
 }
 
-// Dry-run : reproduit la décision de processSentOne SANS écrire ni fetch le
-// corps. On veut juste savoir si le mail serait rattaché à un ticket.
-async function wouldAttach(db, graphMessage) {
-  const internetMessageId = graphMessage?.internetMessageId
-  if (!internetMessageId) return 'skipped_error'
-  const { rows } = await db.query(
-    `SELECT id FROM email_thread_mapping WHERE internet_message_id = $1`, [internetMessageId]
-  )
-  if (rows.length) return 'already_ingested'
-  const headers = {}
-  for (const h of graphMessage?.internetMessageHeaders || []) {
-    if (h?.name) headers[h.name.toLowerCase()] = h.value || ''
-  }
-  const match = await matchThread(db, {
-    inReplyToHeader:  headers['in-reply-to'] || null,
-    referencesHeader: headers['references']  || null,
-    conversationId:   graphMessage.conversationId || null,
-    subject:          graphMessage.subject   || null,
-  })
-  return match?.ticket_id ? 'message_appended' : 'skipped_no_match'
-}
-
 async function backfillMailbox(db, mailbox, sinceIso, stats) {
   let cursor = sinceIso
   for (;;) {
@@ -93,9 +70,7 @@ async function backfillMailbox(db, mailbox, sinceIso, stats) {
     for (const m of messages) {
       if (m.sentDateTime && (!maxSent || m.sentDateTime > maxSent)) maxSent = m.sentDateTime
       try {
-        const action = dryRun
-          ? await wouldAttach(db, m)
-          : (await processSentOne(db, null, { graphMessage: m, mailbox })).action
+        const { action } = await processSentOne(db, null, { graphMessage: m, mailbox, dryRun })
         if (stats.actions[action] !== undefined) stats.actions[action]++
         if (action === 'message_appended') {
           console.log(`  [${mailbox}] ${dryRun ? 'À RATTACHER' : 'rattaché'} : "${m.subject}" (${m.sentDateTime})`)
@@ -131,7 +106,7 @@ async function run(db) {
 
   const sinceIso = new Date(Date.now() - days * 86400_000).toISOString()
   const stats = {
-    actions: { message_appended: 0, skipped_no_match: 0, already_ingested: 0, skipped_error: 0 },
+    actions: { message_appended: 0, skipped_no_match: 0, skipped_duplicate: 0, already_ingested: 0, skipped_error: 0 },
     errors: 0,
   }
 
@@ -145,6 +120,7 @@ async function run(db) {
   console.log('\n── Résumé ──')
   console.log(`  rattachés       : ${stats.actions.message_appended}${dryRun ? ' (à rattacher)' : ''}`)
   console.log(`  sans ticket     : ${stats.actions.skipped_no_match}`)
+  console.log(`  doublons Opale  : ${stats.actions.skipped_duplicate}`)
   console.log(`  déjà ingérés    : ${stats.actions.already_ingested}`)
   console.log(`  erreurs traitées: ${stats.actions.skipped_error}`)
   console.log(`  erreurs Graph   : ${stats.errors}`)
