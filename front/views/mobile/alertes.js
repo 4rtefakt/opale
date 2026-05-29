@@ -1,6 +1,15 @@
 let _data   = null
 let _filter = 'all'
 
+// Mapping section mobile ↔ alert_type DB (cohérent avec api/.../alert-snoozes.js,
+// enum : ['disk_critical','disk_high','noncompliant','offline']).
+const ALERT_TYPE_BY_SECTION = {
+  disk_critical: 'disk_critical',
+  disk_warn:     'disk_high',
+  offline:       'offline',
+  non_compliant: 'noncompliant',
+}
+
 // Traduit l'enum Intune (compliance_state) en libellé lisible. Fallback : la
 // valeur brute, jamais un code i18n non résolu.
 function complianceStateLabel(state) {
@@ -59,19 +68,19 @@ function allAlerts() {
   ;(_data.disk_critical || []).forEach(d => alerts.push({
     type: 'disk_critical', id: d.id, hostname: d.hostname, user_name: d.user_name,
     message: t('mobile.alertes.msg.disk', { pct: d.disk_used_pct }),
-    sub: d.user_name || '',
+    sub: d.user_name || '', snoozed_until: d.snoozed_until,
   }))
   ;(_data.disk_warn || []).forEach(d => alerts.push({
     type: 'disk_warn', id: d.id, hostname: d.hostname, user_name: d.user_name,
     message: t('mobile.alertes.msg.disk', { pct: d.disk_used_pct }),
-    sub: d.user_name || '',
+    sub: d.user_name || '', snoozed_until: d.snoozed_until,
   }))
   ;(_data.offline || []).forEach(d => alerts.push({
     type: 'offline', id: d.id, hostname: d.hostname, user_name: d.user_name,
     message: d.last_seen
       ? t('mobile.alertes.msg.offline_since', { time: formatRelative(d.last_seen).replace('il y a ', '') })
       : t('mobile.alertes.msg.offline'),
-    sub: d.user_name || '',
+    sub: d.user_name || '', snoozed_until: d.snoozed_until,
   }))
   ;(_data.non_compliant || []).forEach(d => {
     // L'état brut (noncompliant) ne fait que répéter le préfixe « Non conforme »
@@ -84,7 +93,7 @@ function allAlerts() {
     alerts.push({
       type: 'non_compliant', id: d.id, hostname: d.hostname, user_name: d.user_name,
       message,
-      sub: d.user_name || '',
+      sub: d.user_name || '', snoozed_until: d.snoozed_until,
     })
   })
 
@@ -121,14 +130,28 @@ function renderList() {
     const border  = isCrit ? 'rgba(239,68,68,.3)' : isWarn ? 'rgba(245,158,11,.25)' : 'var(--border)'
     const leftBar = isCrit ? 'var(--red)' : isWarn ? 'var(--amber)' : isOff ? 'var(--text-tertiary)' : 'var(--orange)'
 
+    const alertType = ALERT_TYPE_BY_SECTION[a.type]
+    const isSnoozed = !!a.snoozed_until
+
+    const snoozeBtn = isSnoozed
+      ? `<button onclick="mAlUnsnooze('${esc(a.id)}','${esc(alertType)}',this)" title="${t('alertes.snooze.unsnooze')}"
+           style="flex-shrink:0;width:40px;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;justify-content:center">
+           <i class="ti ti-bell-ringing" style="font-size:15px"></i>
+         </button>`
+      : `<button onclick="mAlOpenSnooze('${esc(a.id)}','${esc(alertType)}',${jsArg(a.hostname)})" title="${t('alertes.snooze.btn')}"
+           style="flex-shrink:0;width:40px;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;justify-content:center">
+           <i class="ti ti-zzz" style="font-size:15px"></i>
+         </button>`
+
     return `
-    <div style="background:var(--bg-secondary);border:1px solid ${border};border-left:3px solid ${leftBar};border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:8px">
+    <div style="background:var(--bg-secondary);border:1px solid ${border};border-left:3px solid ${leftBar};border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:8px;opacity:${isSnoozed ? '.55' : '1'}">
       <div style="display:flex;align-items:flex-start;gap:10px">
         <i class="ti ${icon}" style="font-size:18px;color:${color};margin-top:1px;flex-shrink:0"></i>
         <div style="flex:1;min-width:0">
           <div style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.hostname)}</div>
           <div style="font-size:12px;color:${color};font-weight:500;margin-top:2px">${esc(a.message)}</div>
           ${a.sub ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:1px">${esc(a.sub)}</div>` : ''}
+          ${isSnoozed ? `<div style="font-size:11px;color:var(--text-tertiary);font-style:italic;margin-top:3px"><i class="ti ti-zzz" style="font-size:11px"></i> ${t('alertes.snooze.until')} ${formatRelative(a.snoozed_until)}</div>` : ''}
         </div>
       </div>
       <div style="display:flex;gap:8px">
@@ -142,6 +165,7 @@ function renderList() {
                  color:var(--text-primary);font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px">
           <i class="ti ti-ticket" style="font-size:14px"></i> ${t('mobile.alertes.new_ticket')}
         </button>
+        ${snoozeBtn}
       </div>
     </div>`
   }).join('')
@@ -187,4 +211,59 @@ function renderList() {
       })
     }
   }
+
+  // ── Snooze / unsnooze (même sémantique que le desktop : presets de durée +
+  // raison, un seul snooze actif par couple device+type côté serveur) ──────────
+  window.mAlOpenSnooze = (deviceId, alertType, hostname) => {
+    window._mSnoozeUntil = null
+    window.mShowSheet(`
+      <div class="m-sheet-title"><i class="ti ti-zzz" style="margin-right:6px"></i>${t('alertes.snooze.title')} — ${esc(hostname)}</div>
+      <div style="display:flex;flex-direction:column;gap:12px;padding:0 4px">
+        <div style="display:flex;flex-wrap:wrap;gap:6px" id="m-snz-presets">
+          ${[1, 3, 7, 14, 30].map(dys => `<button class="m-filter-pill" data-d="${dys}" onclick="mAlPickPreset(${dys},this)">${t('alertes.snooze.preset.' + dys + 'd')}</button>`).join('')}
+        </div>
+        <input class="m-input" id="m-snz-reason" placeholder="${t('alertes.snooze.reason')}" autocomplete="off">
+        <div style="font-size:11px;color:var(--text-tertiary)" id="m-snz-preview"></div>
+        <button class="m-btn-primary" id="m-snz-confirm" disabled onclick="mAlConfirmSnooze('${esc(deviceId)}','${esc(alertType)}',this)">${t('alertes.snooze.confirm')}</button>
+      </div>`)
+  }
+
+  window.mAlPickPreset = (days, btn) => {
+    const until = new Date(Date.now() + days * 86400000)
+    window._mSnoozeUntil = until.toISOString()
+    document.querySelectorAll('#m-snz-presets .m-filter-pill').forEach(b => b.classList.remove('active'))
+    btn.classList.add('active')
+    document.getElementById('m-snz-preview').textContent = `${t('alertes.snooze.until')} ${until.toLocaleString()}`
+    document.getElementById('m-snz-confirm').disabled = false
+  }
+
+  window.mAlConfirmSnooze = (deviceId, alertType, btn) => {
+    if (!window._mSnoozeUntil) return
+    return withBusy(btn, async () => {
+      try {
+        await window.api.createSnooze({
+          device_id:  deviceId,
+          alert_type: alertType,
+          until_at:   window._mSnoozeUntil,
+          reason:     document.getElementById('m-snz-reason')?.value?.trim() || null,
+        })
+        window.mCloseSheet()
+        window.showToast(t('alertes.snooze.toast.created'), 'success')
+        await load()
+      } catch (e) { window.showToast(e.message || t('mobile.common.error'), 'error') }
+    })
+  }
+
+  // Le snooze actif n'expose pas son id côté liste d'alertes → on le retrouve
+  // via getSnoozes() avant le DELETE (même approche que le desktop).
+  window.mAlUnsnooze = (deviceId, alertType, btn) => withBusy(btn, async () => {
+    try {
+      const list = await window.api.getSnoozes()
+      const snz  = list.find(s => s.device_id === deviceId && s.alert_type === alertType)
+      if (!snz) { await load(); return }
+      await window.api.deleteSnooze(snz.id)
+      window.showToast(t('alertes.snooze.toast.removed'), 'success')
+      await load()
+    } catch (e) { window.showToast(e.message || t('mobile.common.error'), 'error') }
+  })
 }
