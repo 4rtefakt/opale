@@ -14,7 +14,7 @@ export async function renderOnboarding(el) {
   _filter = 'active'
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
+      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
         <i class="ti ti-arrow-left"></i>
       </button>
       <h1 style="flex:1">${t('mobile.onboarding.title')}</h1>
@@ -64,7 +64,7 @@ async function loadOnboardings() {
     _items = data.onboardings || data || []
     renderList()
   } catch (err) {
-    list.innerHTML = `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    list.innerHTML = mErrorBox(err.message, () => loadOnboardings())
   }
 }
 
@@ -182,7 +182,7 @@ function renderDetailSheet() {
 
       <!-- Bouton mark done -->
       ${!done ? `
-      <button class="m-btn-primary" style="background:var(--green)" onclick="mObMarkDone('${esc(ob.id)}')">
+      <button class="m-btn-primary" style="background:var(--green)" onclick="mObMarkDone('${esc(ob.id)}',this)">
         <i class="ti ti-check"></i> ${t('mobile.onboarding.btn.mark_done')}
       </button>` : ''}
     </div>`)
@@ -199,13 +199,13 @@ function mObCheckRow(c, obId, parentDone) {
     ? `<i class="ti ti-bolt" title="${t('mobile.onboarding.auto_label')}" style="color:var(--blue);font-size:13px"></i>` : ''
   const autoBtn = (c.is_auto && !c.done && !disabled)
     ? `<button class="m-pill m-pill-off" data-runauto="${checkId}" style="border:none;cursor:pointer;font-size:10px;padding:2px 6px"
-        onclick="event.stopPropagation();mObRunAuto('${esc(obId)}','${checkId}')" title="${t('mobile.onboarding.btn.run_auto')}">
+        onclick="event.stopPropagation();mObRunAuto('${esc(obId)}','${checkId}',this)" title="${t('mobile.onboarding.btn.run_auto')}">
         <i class="ti ti-bolt" style="font-size:10px"></i>
       </button>` : ''
 
   return `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 4px;border-bottom:0.5px solid var(--border)"
-      ${disabled ? '' : `onclick="mObToggleCheck('${esc(obId)}','${checkId}',${!c.done})"`}
+      ${disabled ? '' : `onclick="mObToggleCheck('${esc(obId)}','${checkId}',${!c.done},this)"`}
       ${disabled ? '' : 'role="button" style="cursor:pointer"'}>
       <div style="width:22px;height:22px;border-radius:50%;border:2px solid ${c.done ? 'var(--green)' : 'var(--border)'};background:${c.done ? 'var(--green)' : 'transparent'};display:flex;align-items:center;justify-content:center;flex-shrink:0">
         ${c.done ? '<i class="ti ti-check" style="font-size:12px;color:#fff"></i>' : ''}
@@ -217,52 +217,52 @@ function mObCheckRow(c, obId, parentDone) {
     </div>`
 }
 
-async function mObToggleCheck(obId, checkId, done) {
-  try {
-    await window.api.toggleCheck(obId, checkId, done)
-    // Re-fetch pour avoir la version serveur (peut promote en 'done' si tous les checks)
-    _activeOb = await window.api.getOnboarding(obId)
-    renderDetailSheet()
-    // Synchro liste
-    syncListItem(_activeOb)
-  } catch {
-    window.showToast(t('mobile.onboarding.toast.error'), 'error')
-  }
-}
-
-async function mObRunAuto(obId, checkId) {
-  // Disable visuel du bouton pendant l'exécution
-  const btn = document.querySelector(`[data-runauto="${checkId}"]`)
-  if (btn) {
-    btn.disabled = true
-    btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite;font-size:10px"></i>'
-  }
-  try {
-    await window.api.runAutoCheck(obId, checkId)
-    window.showToast(t('mobile.onboarding.toast.auto_ok'), 'success')
-    _activeOb = await window.api.getOnboarding(obId)
-    renderDetailSheet()
-    syncListItem(_activeOb)
-  } catch (err) {
-    window.showToast(err.message || t('mobile.onboarding.toast.error'), 'error')
-    // Re-fetch quand même pour montrer l'auto_error mis à jour
+async function mObToggleCheck(obId, checkId, done, row) {
+  await withBusy(row, async () => {
     try {
+      await window.api.toggleCheck(obId, checkId, done)
+      // Re-fetch pour avoir la version serveur (peut promote en 'done' si tous les checks)
       _activeOb = await window.api.getOnboarding(obId)
       renderDetailSheet()
-    } catch {}
-  }
+      // Synchro liste
+      syncListItem(_activeOb)
+    } catch {
+      window.showToast(t('mobile.onboarding.toast.error'), 'error')
+    }
+  })
 }
 
-async function mObMarkDone(id) {
-  try {
-    await window.api.updateOnboarding(id, { status: 'done' })
-    _activeOb = await window.api.getOnboarding(id)
-    renderDetailSheet()
-    syncListItem(_activeOb)
-    window.showToast(t('mobile.onboarding.toast.done'), 'success')
-  } catch {
-    window.showToast(t('mobile.onboarding.toast.error'), 'error')
-  }
+async function mObRunAuto(obId, checkId, btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.runAutoCheck(obId, checkId)
+      window.showToast(t('mobile.onboarding.toast.auto_ok'), 'success')
+      _activeOb = await window.api.getOnboarding(obId)
+      renderDetailSheet()
+      syncListItem(_activeOb)
+    } catch (err) {
+      window.showToast(err.message || t('mobile.onboarding.toast.error'), 'error')
+      // Re-fetch quand même pour montrer l'auto_error mis à jour
+      try {
+        _activeOb = await window.api.getOnboarding(obId)
+        renderDetailSheet()
+      } catch {}
+    }
+  })
+}
+
+async function mObMarkDone(id, btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.updateOnboarding(id, { status: 'done' })
+      _activeOb = await window.api.getOnboarding(id)
+      renderDetailSheet()
+      syncListItem(_activeOb)
+      window.showToast(t('mobile.onboarding.toast.done'), 'success')
+    } catch {
+      window.showToast(t('mobile.onboarding.toast.error'), 'error')
+    }
+  })
 }
 
 // Met à jour l'item correspondant dans _items + re-render la liste.
@@ -343,7 +343,7 @@ function mObNew(kind) {
         <textarea class="m-input" id="m-ob-notes" rows="3" style="resize:none"></textarea>
       </div>
 
-      <button class="m-btn-primary" onclick="mObSubmitNew('${kind}')">
+      <button class="m-btn-primary" onclick="mObSubmitNew('${kind}',this)">
         ${t('mobile.onboarding.new.create')}
       </button>
     </div>`)
@@ -384,7 +384,7 @@ function mObPickManager(entraId, name) {
   if (drop)   { drop.style.display = 'none'; drop.innerHTML = '' }
 }
 
-async function mObSubmitNew(kind) {
+async function mObSubmitNew(kind, btn) {
   const name = document.getElementById('m-ob-name')?.value?.trim()
   if (!name) {
     window.showToast(t('mobile.onboarding.new.name_required'), 'error')
@@ -405,15 +405,17 @@ async function mObSubmitNew(kind) {
     notes:            document.getElementById('m-ob-notes')?.value?.trim() || null,
     entra_id_created: isOff ? (document.getElementById('m-ob-entraid')?.value?.trim() || null) : null,
   }
-  try {
-    const ob = await window.api.createOnboarding(payload)
-    window.mCloseSheet()
-    _items.unshift({ ...ob, total_checks: ob.checks?.length || 0, done_checks: 0 })
-    renderList()
-    window.showToast(t('mobile.onboarding.new.toast_created'), 'success')
-    // Ouvre directement le détail du nouvel onboarding
-    setTimeout(() => mObDetail(ob.id), 200)
-  } catch {
-    window.showToast(t('mobile.onboarding.new.toast_error'), 'error')
-  }
+  await withBusy(btn, async () => {
+    try {
+      const ob = await window.api.createOnboarding(payload)
+      window.mCloseSheet()
+      _items.unshift({ ...ob, total_checks: ob.checks?.length || 0, done_checks: 0 })
+      renderList()
+      window.showToast(t('mobile.onboarding.new.toast_created'), 'success')
+      // Ouvre directement le détail du nouvel onboarding
+      setTimeout(() => mObDetail(ob.id), 200)
+    } catch {
+      window.showToast(t('mobile.onboarding.new.toast_error'), 'error')
+    }
+  })
 }

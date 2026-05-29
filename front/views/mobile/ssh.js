@@ -64,7 +64,11 @@ export function renderSSH(el, id) {
     if (btn) mSSHExec(QUICK_CMDS[+btn.dataset.idx].cmd)
   })
 
-  window.mSSHDisconnect  = () => { _ws?.close(); _ws = null; history.back() }
+  window.mSSHDisconnect  = () => {
+    _ws?.close(); _ws = null
+    // Retour explicite au détail du poste (robuste sur deep-link / refresh PWA)
+    window.location.hash = _deviceId ? '#/poste/' + _deviceId : '#/postes'
+  }
   window.mSSHSend        = mSSHSend
   window.mSSHSendRaw     = mSSHSendRaw
   window.mSSHInsert      = mSSHInsert

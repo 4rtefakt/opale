@@ -707,6 +707,15 @@ export default {
   'audit.summary.intune':          '{ok} OK · {errors} erreur(s)',
   'audit.summary.agent_checkin':   '{disks} disques',
   'audit.summary.new':             'nouveau',
+  // — mobile/commun —
+  'mobile.common.retry':                    'Réessayer',
+  'mobile.common.error':                    'Une erreur est survenue',
+  // Statuts device (partagés dashboard + postes + détail poste)
+  'mobile.device.status.online':            'En ligne',
+  'mobile.device.status.offline':           'Hors ligne',
+  'mobile.device.status.critical':          'Critique',
+  'mobile.device.status.warn':              'À surveiller',
+
   // — mobile/alertes —
   'mobile.alertes.title':                   'Alertes',
   'mobile.alertes.filter.all':              'Tous',
@@ -763,10 +772,6 @@ export default {
   'mobile.dashboard.kpi.critical':           'Critique',
   'mobile.dashboard.section.active_alerts':  'Alertes actives',
   'mobile.dashboard.section.recent':         'Activité récente',
-  'mobile.dashboard.status.online':          'En ligne',
-  'mobile.dashboard.status.offline':         'Hors ligne',
-  'mobile.dashboard.status.critical':        'Critique',
-  'mobile.dashboard.status.warn':            'Alerte',
 
   // — mobile/postes —
   'mobile.postes.title':                  'Postes',
@@ -780,10 +785,6 @@ export default {
   'mobile.postes.filter.online_count':    'En ligne ({n})',
   'mobile.postes.filter.offline_count':   'Hors ligne ({n})',
   'mobile.postes.filter.critical_count':  '⚠ Critique ({n})',
-  'mobile.postes.status.online':          'En ligne',
-  'mobile.postes.status.offline':         'Hors ligne',
-  'mobile.postes.status.critical':        'Critique',
-  'mobile.postes.status.warn':            'Alerte',
   'mobile.postes.bulk.selected':          'sélectionné',
   'mobile.postes.bulk.selected_plural':   'sélectionnés',
   'mobile.postes.bulk.exit':              'Quitter la sélection',

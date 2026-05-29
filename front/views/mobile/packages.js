@@ -7,7 +7,7 @@ export async function renderPackages(el) {
 
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
+      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
         <i class="ti ti-arrow-left"></i>
       </button>
       <h1>Packages</h1>
@@ -47,7 +47,7 @@ async function loadPackages() {
     _packages = await window.api.getPackages()
     renderList()
   } catch (err) {
-    if (list) list.innerHTML = `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    if (list) list.innerHTML = mErrorBox(err.message, () => loadPackages())
   }
 }
 
@@ -132,7 +132,7 @@ function renderDetailSheet(p) {
     <!-- Actions -->
     <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
       ${!approved
-        ? `<button class="m-btn-primary" onclick="mPkgApprove('${p.id}', ${jsArg(p.name)})">
+        ? `<button class="m-btn-primary" onclick="mPkgApprove('${p.id}', ${jsArg(p.name)}, this)">
              <i class="ti ti-shield-check"></i> Approuver
            </button>`
         : `<button class="m-btn-primary" onclick="mPkgOpenDeploy('${p.id}', ${jsArg(p.name)})">
@@ -143,7 +143,7 @@ function renderDetailSheet(p) {
         <button class="m-btn-primary" style="flex:1;background:var(--bg-secondary);color:var(--text-primary)" onclick="mPkgOpenEdit('${p.id}')">
           <i class="ti ti-pencil"></i> Modifier
         </button>
-        <button class="m-btn-primary" style="background:var(--red)" onclick="mPkgDelete('${p.id}', ${jsArg(p.name)})">
+        <button class="m-btn-primary" style="background:var(--red)" onclick="mPkgDelete('${p.id}', ${jsArg(p.name)}, this)">
           <i class="ti ti-trash"></i>
         </button>
       </div>
@@ -160,8 +160,8 @@ function renderDetailSheet(p) {
           <div style="font-size:10px;color:var(--text-tertiary)">${formatRelative(d.completed_at || d.queued_at)}</div>
         </div>
         <span style="font-size:10px;font-weight:600;color:${depColor(d.status)}">${d.status.toUpperCase()}</span>
-        ${d.status === 'failed' || d.status === 'cancelled' ? `<button class="m-icon-btn" style="width:24px;height:24px" onclick="mPkgRetryDep('${d.id}')"><i class="ti ti-refresh" style="font-size:12px"></i></button>` : ''}
-        ${d.status === 'pending' ? `<button class="m-icon-btn" style="width:24px;height:24px;color:var(--red)" onclick="mPkgCancelDep('${d.id}')"><i class="ti ti-x" style="font-size:12px"></i></button>` : ''}
+        ${d.status === 'failed' || d.status === 'cancelled' ? `<button class="m-icon-btn" style="width:24px;height:24px" onclick="mPkgRetryDep('${d.id}',this)"><i class="ti ti-refresh" style="font-size:12px"></i></button>` : ''}
+        ${d.status === 'pending' ? `<button class="m-icon-btn" style="width:24px;height:24px;color:var(--red)" onclick="mPkgCancelDep('${d.id}',this)"><i class="ti ti-x" style="font-size:12px"></i></button>` : ''}
       </div>
       ${d.output ? (() => { _mOutputs.set(d.id, d.output); return `<button onclick="mPkgShowOutput('${d.id}')" style="width:100%;text-align:left;padding:6px 10px;background:var(--bg-primary);border-radius:6px;font-size:10px;font-family:monospace;color:var(--text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:none;cursor:pointer">${esc(d.output.split(/\r\n|\r|\n/).find(l => /[a-zA-Z0-9]/.test(l)) || '')}…</button>` })() : ''}`).join('')}
     </div>` : ''}
@@ -222,7 +222,7 @@ function showPkgForm(p) {
         <div class="m-label">Script de détection <span style="color:var(--text-tertiary)">(optionnel)</span></div>
         <textarea class="m-input" id="mf-detect" rows="3" style="font-family:monospace;font-size:10px" placeholder="exit 0 si installé">${esc(p?.detection_script || '')}</textarea>
       </div>
-      <button class="m-btn-primary" onclick="mPkgSave()">
+      <button class="m-btn-primary" onclick="mPkgSave(this)">
         ${p ? 'Enregistrer' : 'Créer'}
       </button>
     </div>`)
@@ -234,7 +234,7 @@ function mPkgToggleType() {
   document.getElementById('mf-script-row').style.display = t === 'script' ? '' : 'none'
 }
 
-async function mPkgSave() {
+async function mPkgSave(btn) {
   const body = {
     name:                document.getElementById('mf-name')?.value?.trim(),
     type:                document.getElementById('mf-type')?.value,
@@ -245,37 +245,43 @@ async function mPkgSave() {
     detection_script:    document.getElementById('mf-detect')?.value?.trim() || null,
   }
   if (!body.name) { window.showToast('Nom requis', 'error'); return }
-  try {
-    if (_editId) {
-      await window.api.updatePackage(_editId, body)
-      window.showToast('Package modifié', 'success')
-    } else {
-      await window.api.createPackage(body)
-      window.showToast('Package créé', 'success')
-    }
-    window.mCloseSheet()
-    await loadPackages()
-  } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  await withBusy(btn, async () => {
+    try {
+      if (_editId) {
+        await window.api.updatePackage(_editId, body)
+        window.showToast('Package modifié', 'success')
+      } else {
+        await window.api.createPackage(body)
+        window.showToast('Package créé', 'success')
+      }
+      window.mCloseSheet()
+      await loadPackages()
+    } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  })
 }
 
-async function mPkgApprove(id, name) {
+async function mPkgApprove(id, name, btn) {
   if (!confirm(`Approuver "${name}" ?`)) return
-  try {
-    await window.api.approvePackage(id)
-    window.showToast('Package approuvé', 'success')
-    window.mCloseSheet()
-    await loadPackages()
-  } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.approvePackage(id)
+      window.showToast('Package approuvé', 'success')
+      window.mCloseSheet()
+      await loadPackages()
+    } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  })
 }
 
-async function mPkgDelete(id, name) {
+async function mPkgDelete(id, name, btn) {
   if (!confirm(`Supprimer "${name}" ?`)) return
-  try {
-    await window.api.deletePackage(id)
-    window.showToast('Package supprimé', 'success')
-    window.mCloseSheet()
-    await loadPackages()
-  } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.deletePackage(id)
+      window.showToast('Package supprimé', 'success')
+      window.mCloseSheet()
+      await loadPackages()
+    } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  })
 }
 
 // ── Déploiement ───────────────────────────────────────────────────────────────
@@ -308,7 +314,7 @@ async function mPkgOpenDeploy(id, name) {
           </div>
         </label>`).join('')}
       </div>
-      <button class="m-btn-primary" onclick="mPkgDeploy()">
+      <button class="m-btn-primary" onclick="mPkgDeploy(this)">
         <i class="ti ti-rocket"></i> Déployer
       </button>`)
   } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
@@ -318,37 +324,43 @@ window.mPkgSelAll = (checked) => {
   document.querySelectorAll('.mpkg-cb').forEach(cb => cb.checked = checked)
 }
 
-async function mPkgDeploy(confirmed = false) {
+async function mPkgDeploy(btn, confirmed = false) {
   const ids = [...document.querySelectorAll('.mpkg-cb:checked')].map(cb => cb.value)
   if (!ids.length) { window.showToast('Sélectionnez au moins un poste', 'error'); return }
-  try {
-    const result = await window.api.deployPackage(_deployPkgId, { device_ids: ids, confirmed })
-    if (result?.requires_confirmation) {
-      if (!confirm(`Déployer sur ${result.count} postes ?`)) return
-      await mPkgDeploy(true)
-      return
-    }
-    window.mCloseSheet()
-    window.showToast(`${result.queued} déploiement${result.queued > 1 ? 's' : ''} mis en file`, 'success')
-    await loadPackages()
-  } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  await withBusy(btn, async () => {
+    try {
+      const result = await window.api.deployPackage(_deployPkgId, { device_ids: ids, confirmed })
+      if (result?.requires_confirmation) {
+        if (!confirm(`Déployer sur ${result.count} postes ?`)) return
+        await mPkgDeploy(btn, true)
+        return
+      }
+      window.mCloseSheet()
+      window.showToast(`${result.queued} déploiement${result.queued > 1 ? 's' : ''} mis en file`, 'success')
+      await loadPackages()
+    } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  })
 }
 
-async function mPkgCancelDep(depId) {
+async function mPkgCancelDep(depId, btn) {
   if (!confirm('Annuler ce déploiement ?')) return
-  try {
-    await window.api.cancelDeployment(depId)
-    window.showToast('Annulé', 'success')
-    window.mCloseSheet()
-    await loadPackages()
-  } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  await withBusy(btn, async () => {
+    try {
+      await window.api.cancelDeployment(depId)
+      window.showToast('Annulé', 'success')
+      window.mCloseSheet()
+      await loadPackages()
+    } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  })
 }
 
-async function mPkgRetryDep(depId) {
-  try {
-    await window.api.retryDeployment(depId)
-    window.showToast('Remis en file', 'success')
-    window.mCloseSheet()
-    await loadPackages()
-  } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+async function mPkgRetryDep(depId, btn) {
+  await withBusy(btn, async () => {
+    try {
+      await window.api.retryDeployment(depId)
+      window.showToast('Remis en file', 'success')
+      window.mCloseSheet()
+      await loadPackages()
+    } catch (err) { window.showToast(err.message || 'Erreur', 'error') }
+  })
 }

@@ -105,7 +105,7 @@ export async function renderAudit(el) {
 
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
+      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
         <i class="ti ti-arrow-left"></i>
       </button>
       <h1>${t('mobile.audit.title')} <span id="m-audit-count" style="font-size:12px;font-weight:400;color:var(--text-tertiary)"></span></h1>
@@ -146,7 +146,7 @@ async function loadAudit(action, append) {
     _rows = append ? [..._rows, ...newRows] : newRows
     renderRows(action, append, newRows)
   } catch (err) {
-    if (!append) list.innerHTML = `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    if (!append) list.innerHTML = mErrorBox(err.message, () => loadAudit(action, false))
   }
 }
 

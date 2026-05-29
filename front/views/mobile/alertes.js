@@ -48,7 +48,7 @@ async function load() {
     _data = await window.api.getAlerts()
     renderList()
   } catch (err) {
-    list.innerHTML = `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    list.innerHTML = mErrorBox(err.message, () => load())
   }
 }
 
@@ -167,22 +167,24 @@ function renderList() {
           <div class="m-label">${t('mobile.alertes.sheet.label_desc')}</div>
           <textarea class="m-input" id="m-alt-desc" rows="3" style="resize:none" placeholder="${t('mobile.alertes.sheet.placeholder_desc')}"></textarea>
         </div>
-        <button class="m-btn-primary" onclick="mAlSubmitTicket('${esc(deviceId)}')">${t('mobile.alertes.sheet.submit')}</button>
+        <button class="m-btn-primary" onclick="mAlSubmitTicket('${esc(deviceId)}',this)">${t('mobile.alertes.sheet.submit')}</button>
       </div>`)
 
-    window.mAlSubmitTicket = async (did) => {
+    window.mAlSubmitTicket = async (did, btn) => {
       const title = document.getElementById('m-alt-title')?.value?.trim()
       if (!title) return
-      try {
-        await window.api.createTicket({
-          title,
-          priority:    document.getElementById('m-alt-prio')?.value,
-          description: document.getElementById('m-alt-desc')?.value?.trim(),
-          device_id:   did,
-        })
-        window.mCloseSheet()
-        window.showToast(t('mobile.alertes.toast.created'), 'success')
-      } catch { window.showToast(t('mobile.alertes.toast.error'), 'error') }
+      await withBusy(btn, async () => {
+        try {
+          await window.api.createTicket({
+            title,
+            priority:    document.getElementById('m-alt-prio')?.value,
+            description: document.getElementById('m-alt-desc')?.value?.trim(),
+            device_id:   did,
+          })
+          window.mCloseSheet()
+          window.showToast(t('mobile.alertes.toast.created'), 'success')
+        } catch { window.showToast(t('mobile.alertes.toast.error'), 'error') }
+      })
     }
   }
 }

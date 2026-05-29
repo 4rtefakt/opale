@@ -40,15 +40,15 @@ export async function renderPostes(el) {
         </button>
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
-        <button class="m-action-btn blue" onclick="mPostesBulkCheckin()">
+        <button class="m-action-btn blue" onclick="mPostesBulkCheckin(this)">
           <i class="ti ti-refresh"></i>
           <span style="font-size:11px;margin-top:2px">${t('mobile.postes.bulk.checkin')}</span>
         </button>
-        <button class="m-action-btn blue" onclick="mPostesBulkSyncIntune()">
+        <button class="m-action-btn blue" onclick="mPostesBulkSyncIntune(this)">
           <i class="ti ti-brand-azure"></i>
           <span style="font-size:11px;margin-top:2px">${t('mobile.postes.bulk.sync_intune')}</span>
         </button>
-        <button class="m-action-btn green" onclick="mPostesBulkRunScript()">
+        <button class="m-action-btn green" onclick="mPostesBulkRunScript(this)">
           <i class="ti ti-player-play"></i>
           <span style="font-size:11px;margin-top:2px">${t('mobile.postes.bulk.run_script')}</span>
         </button>
@@ -73,8 +73,7 @@ export async function renderPostes(el) {
     updatePillCounts()
     renderList()
   } catch (err) {
-    document.getElementById('m-postes-list').innerHTML =
-      `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    document.getElementById('m-postes-list').innerHTML = mErrorBox(err.message, () => renderPostes(el))
   }
 }
 
@@ -128,10 +127,10 @@ function renderList() {
     const barColor = pct >= 90 ? 'var(--red)' : pct >= 80 ? 'var(--amber)' : 'var(--green)'
     const dotColor = d.status === 'online' ? 'var(--green)' : d.status === 'critical' ? 'var(--red)' : d.status === 'warn' ? 'var(--amber)' : 'var(--text-tertiary)'
     const pillCls  = d.status === 'online' ? 'on' : d.status === 'critical' ? 'crit' : d.status === 'warn' ? 'warn' : 'off'
-    const pillKey  = d.status === 'online' ? 'mobile.postes.status.online'
-                   : d.status === 'critical' ? 'mobile.postes.status.critical'
-                   : d.status === 'warn' ? 'mobile.postes.status.warn'
-                   : 'mobile.postes.status.offline'
+    const pillKey  = d.status === 'online' ? 'mobile.device.status.online'
+                   : d.status === 'critical' ? 'mobile.device.status.critical'
+                   : d.status === 'warn' ? 'mobile.device.status.warn'
+                   : 'mobile.device.status.offline'
     const isSelected = _selected.has(d.id)
     const selectedStyle = isSelected
       ? 'border:1.5px solid var(--blue);background:rgba(59,130,246,.08)'
@@ -244,27 +243,31 @@ function updateActionBar() {
 
 // ─── Bulk actions ───
 
-async function bulkCheckin() {
+async function bulkCheckin(btn) {
   const ids = [..._selected]
   if (!ids.length) return
-  try {
-    const res = await window.api.forceCheckinDevices(ids)
-    showToast(formatBulkResult(res, 'checkin'), res.errors?.length ? 'error' : 'success')
-  } catch (err) {
-    showToast(err.message || t('mobile.postes.bulk.toast.error'), 'error')
-  }
+  await withBusy(btn, async () => {
+    try {
+      const res = await window.api.forceCheckinDevices(ids)
+      showToast(formatBulkResult(res, 'checkin'), res.errors?.length ? 'error' : 'success')
+    } catch (err) {
+      showToast(err.message || t('mobile.postes.bulk.toast.error'), 'error')
+    }
+  })
   exitSelectMode()
 }
 
-async function bulkSyncIntune() {
+async function bulkSyncIntune(btn) {
   const ids = [..._selected]
   if (!ids.length) return
-  try {
-    const res = await window.api.forceSyncDevices(ids)
-    showToast(formatBulkResult(res, 'sync'), res.errors?.length ? 'error' : 'success')
-  } catch (err) {
-    showToast(err.message || t('mobile.postes.bulk.toast.error'), 'error')
-  }
+  await withBusy(btn, async () => {
+    try {
+      const res = await window.api.forceSyncDevices(ids)
+      showToast(formatBulkResult(res, 'sync'), res.errors?.length ? 'error' : 'success')
+    } catch (err) {
+      showToast(err.message || t('mobile.postes.bulk.toast.error'), 'error')
+    }
+  })
   exitSelectMode()
 }
 
@@ -276,13 +279,13 @@ function formatBulkResult(res, kind) {
   return parts.join(' · ') || t('mobile.postes.bulk.toast.error')
 }
 
-async function bulkRunScript() {
+async function bulkRunScript(btn) {
   const count = _selected.size
   if (!count) return
 
   let scripts = []
   try {
-    scripts = await window.api.getScripts()
+    scripts = await withBusy(btn, () => window.api.getScripts())
   } catch {
     showToast(t('mobile.postes.bulk.scripts.load_error'), 'error')
     return

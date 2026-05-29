@@ -3,7 +3,7 @@ let _items = []
 export async function renderStock(el) {
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
+      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
         <i class="ti ti-arrow-left"></i>
       </button>
       <h1 style="flex:1">${t('mobile.stock.title')}</h1>
@@ -29,7 +29,7 @@ export async function renderStock(el) {
     renderList()
   } catch (err) {
     const list = document.getElementById('m-stock-list')
-    if (list) list.innerHTML = `<div style="text-align:center;color:var(--red);padding:20px">${esc(err.message)}</div>`
+    if (list) list.innerHTML = mErrorBox(err.message, () => renderStock(el))
   }
 }
 
@@ -72,13 +72,13 @@ function mStockNew() {
         <div class="m-label">${t('mobile.stock.new.field.description')}</div>
         <textarea class="m-input" id="m-ni-desc" rows="2" style="resize:none"></textarea>
       </div>
-      <button class="m-btn-primary" onclick="mSubmitNewItem()">
+      <button class="m-btn-primary" onclick="mSubmitNewItem(this)">
         ${t('mobile.stock.new.create')}
       </button>
     </div>`)
 }
 
-async function mSubmitNewItem() {
+async function mSubmitNewItem(btn) {
   const name        = document.getElementById('m-ni-name')?.value?.trim()
   const category    = document.getElementById('m-ni-cat')?.value?.trim()
   const unit        = document.getElementById('m-ni-unit')?.value?.trim() || 'pcs'
@@ -89,15 +89,17 @@ async function mSubmitNewItem() {
     window.showToast(t('mobile.stock.new.name_required'), 'error')
     return
   }
-  try {
-    const item = await window.api.createStockItem({ name, category, unit, quantity, threshold, description })
-    _items.push(item)
-    window.mCloseSheet()
-    renderList()
-    window.showToast(t('mobile.stock.new.toast_created'), 'success')
-  } catch {
-    window.showToast(t('mobile.stock.new.toast_error'), 'error')
-  }
+  await withBusy(btn, async () => {
+    try {
+      const item = await window.api.createStockItem({ name, category, unit, quantity, threshold, description })
+      _items.push(item)
+      window.mCloseSheet()
+      renderList()
+      window.showToast(t('mobile.stock.new.toast_created'), 'success')
+    } catch {
+      window.showToast(t('mobile.stock.new.toast_error'), 'error')
+    }
+  })
 }
 
 function renderList() {
@@ -199,20 +201,22 @@ function renderList() {
               <div class="m-label">${t('mobile.stock.move.note')}</div>
               <input class="m-input" id="m-mv-note" placeholder="${t('mobile.stock.move.note_placeholder')}" autocomplete="off">
             </div>
-            <button class="m-btn-primary" onclick="mSubmitMove('${esc(itemId)}','${type}')">${t('mobile.stock.move.confirm')}</button>
+            <button class="m-btn-primary" onclick="mSubmitMove('${esc(itemId)}','${type}',this)">${t('mobile.stock.move.confirm')}</button>
           </div>`)
-        window.mSubmitMove = async (id, mvType) => {
+        window.mSubmitMove = async (id, mvType, btn) => {
           const qty  = parseInt(document.getElementById('m-mv-qty')?.value) || 0
           const note = document.getElementById('m-mv-note')?.value?.trim()
           if (!qty) return
-          try {
-            await window.api.addMovement(id, { type: mvType, quantity: qty, note })
-            window.mCloseSheet()
-            window.showToast(mvType === 'in' ? t('mobile.stock.toast.in') : t('mobile.stock.toast.out'), 'success')
-            // Mettre à jour la quantité locale
-            const idx = _items.findIndex(x => x.id === id)
-            if (idx !== -1) { _items[idx].quantity += mvType === 'in' ? qty : -qty; renderList() }
-          } catch { window.showToast(t('mobile.stock.toast.error'), 'error') }
+          await withBusy(btn, async () => {
+            try {
+              await window.api.addMovement(id, { type: mvType, quantity: qty, note })
+              window.mCloseSheet()
+              window.showToast(mvType === 'in' ? t('mobile.stock.toast.in') : t('mobile.stock.toast.out'), 'success')
+              // Mettre à jour la quantité locale
+              const idx = _items.findIndex(x => x.id === id)
+              if (idx !== -1) { _items[idx].quantity += mvType === 'in' ? qty : -qty; renderList() }
+            } catch { window.showToast(t('mobile.stock.toast.error'), 'error') }
+          })
         }
       }, 250)
     }
