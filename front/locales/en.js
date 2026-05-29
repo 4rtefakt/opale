@@ -739,6 +739,24 @@ export default {
   'mobile.dashboard.section.active_alerts':  'Active alerts',
   'mobile.dashboard.section.recent':         'Recent activity',
 
+  // — mobile/poste (detail) — LAPS / recovery account —
+  'mobile.poste.laps.action':            'Recovery',
+  'mobile.poste.laps.title':             'Recovery account',
+  'mobile.poste.laps.admin':             'Admin',
+  'mobile.poste.laps.warning':           'Sensitive data — access is logged. For authorized maintenance only. Remember to rotate the password after use.',
+  'mobile.poste.laps.username':          'Username',
+  'mobile.poste.laps.last_rotation':     'Last rotation',
+  'mobile.poste.laps.last_access':       'Last access',
+  'mobile.poste.laps.rotation_requested': 'Rotation requested',
+  'mobile.poste.laps.reveal':            'Reveal password',
+  'mobile.poste.laps.password':          'Password',
+  'mobile.poste.laps.autoclear':         'Auto-clears in {s}s',
+  'mobile.poste.laps.copied':            'Password copied',
+  'mobile.poste.laps.rotate':            'Rotate',
+  'mobile.poste.laps.rotate_confirm':    'Request a rotation of the recovery password?\nIt will take effect at the agent\'s next check-in (max 15 min).',
+  'mobile.poste.laps.rotate_toast':      'Rotation requested — effective at next check-in',
+  'mobile.poste.laps.close':             'Close',
+
   // — mobile/postes —
   'mobile.postes.title':                  'Devices',
   'mobile.postes.search_placeholder':     'Name, IP, serial…',

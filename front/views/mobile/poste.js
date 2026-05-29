@@ -63,6 +63,11 @@ function renderBody(el) {
         <i class="ti ti-player-play"></i>
         <span>Script</span>
       </button>
+      ${(window.appState?.user?.isAdmin && d.laps) ? `
+      <button class="m-action-btn" onclick="mOpenLaps()">
+        <i class="ti ti-key"></i>
+        <span>${t('mobile.poste.laps.action')}</span>
+      </button>` : ''}
     </div>
 
     <!-- Utilisateur -->
@@ -303,6 +308,113 @@ function renderBody(el) {
         } catch { window.showToast('Erreur', 'error') }
       })
     }
+  }
+
+  // ── LAPS / compte de récupération (admin-only, données sensibles) ────────────
+  // Le mot de passe n'est jamais affiché d'emblée : il faut « Révéler » (appel
+  // getAdminCredential qui journalise l'accès côté serveur), puis il s'efface
+  // automatiquement après 30s. Même sémantique que le desktop (front/views/poste.js).
+  window.mOpenLaps = () => {
+    const l = d.laps
+    if (!l) return
+    const metaRow = (icon, label, value) => value ? `
+      <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:0.5px solid var(--border)">
+        <i class="ti ${icon}" style="font-size:14px;color:var(--text-tertiary);width:16px;text-align:center;flex-shrink:0"></i>
+        <span style="font-size:11px;color:var(--text-secondary);flex:1">${label}</span>
+        <span style="font-size:12px;font-weight:500">${value}</span>
+      </div>` : ''
+    window.mShowSheet(`
+      <div class="m-sheet-title"><i class="ti ti-key" style="margin-right:6px"></i>${t('mobile.poste.laps.title')}
+        <span class="m-pill" style="margin-left:8px;font-size:10px">${t('mobile.poste.laps.admin')}</span>
+      </div>
+      <div style="padding:0 4px;display:flex;flex-direction:column;gap:12px">
+        <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:12px;font-size:12px;color:var(--amber);line-height:1.5">
+          ${t('mobile.poste.laps.warning')}
+        </div>
+        <div>
+          ${metaRow('ti-user-shield', t('mobile.poste.laps.username'), esc(l.username))}
+          ${l.password_changed_at ? metaRow('ti-calendar-time', t('mobile.poste.laps.last_rotation'), esc(formatRelative(l.password_changed_at))) : ''}
+          ${l.last_viewed_at ? metaRow('ti-eye', t('mobile.poste.laps.last_access'), esc(formatRelative(l.last_viewed_at)) + (l.last_viewed_by_name ? ` <span style="color:var(--text-tertiary)">${esc(l.last_viewed_by_name)}</span>` : '')) : ''}
+          ${l.rotation_requested_at ? metaRow('ti-refresh', t('mobile.poste.laps.rotation_requested'), `<span style="color:var(--amber)">${esc(formatRelative(l.rotation_requested_at))}</span>`) : ''}
+        </div>
+        <div id="m-laps-pwd-zone">
+          <button class="m-btn-primary" onclick="mLapsReveal(this)">
+            <i class="ti ti-eye"></i> ${t('mobile.poste.laps.reveal')}
+          </button>
+        </div>
+        <button style="width:100%;padding:13px;border-radius:10px;font-size:14px;font-weight:600;background:var(--bg-tertiary);color:var(--amber);border:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px" onclick="mLapsRotate(this)">
+          <i class="ti ti-refresh"></i> ${t('mobile.poste.laps.rotate')}
+        </button>
+        <button style="width:100%;padding:10px;border-radius:10px;font-size:13px;font-weight:500;background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer" onclick="window.mCloseSheet()">
+          ${t('mobile.poste.laps.close')}
+        </button>
+      </div>`)
+  }
+
+  window.mLapsReveal = (btn) => withBusy(btn, async () => {
+    try {
+      const cred = await window.api.getAdminCredential(d.id)
+      const zone = document.getElementById('m-laps-pwd-zone')
+      if (!zone) return
+      let remaining = 30
+      zone.innerHTML = `
+        <div class="m-label">${t('mobile.poste.laps.password')}</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input class="m-input" id="m-laps-pwd" readonly type="password" style="font-family:monospace;letter-spacing:.1em;flex:1">
+          <button class="m-icon-btn" onclick="mLapsToggle()"><i class="ti ti-eye" id="m-laps-eye"></i></button>
+          <button class="m-icon-btn" onclick="mLapsCopy()"><i class="ti ti-copy"></i></button>
+        </div>
+        <div style="font-size:11px;color:var(--text-tertiary);text-align:center;background:var(--bg-secondary);border-radius:8px;padding:6px;margin-top:8px">
+          ${t('mobile.poste.laps.autoclear', { s: '<span id="m-laps-countdown">30</span>' })}
+        </div>`
+      // Valeur injectée via DOM (jamais dans l'HTML) — évite toute fuite via innerHTML.
+      const field = document.getElementById('m-laps-pwd')
+      if (field) field.value = cred.password
+      window.mLapsToggle = () => {
+        const f = document.getElementById('m-laps-pwd')
+        const eye = document.getElementById('m-laps-eye')
+        if (!f) return
+        f.type = f.type === 'password' ? 'text' : 'password'
+        if (eye) eye.className = `ti ti-eye${f.type === 'text' ? '-off' : ''}`
+      }
+      window.mLapsCopy = () => {
+        navigator.clipboard.writeText(cred.password)
+          .then(() => window.showToast(t('mobile.poste.laps.copied'), 'success'))
+      }
+      const iv = setInterval(() => {
+        remaining--
+        const cd = document.getElementById('m-laps-countdown')
+        if (cd) cd.textContent = remaining
+        // Stop si le sheet est fermé/remplacé ou le délai écoulé → on efface.
+        if (remaining <= 0 || !document.getElementById('m-laps-pwd')) {
+          clearInterval(iv)
+          const f = document.getElementById('m-laps-pwd')
+          if (f) f.value = ''
+          const z = document.getElementById('m-laps-pwd-zone')
+          if (z) z.innerHTML = `
+            <button class="m-btn-primary" onclick="mLapsReveal(this)">
+              <i class="ti ti-eye"></i> ${t('mobile.poste.laps.reveal')}
+            </button>`
+        }
+      }, 1000)
+    } catch (err) {
+      window.showToast(err.message || t('mobile.common.error'), 'error')
+    }
+  })
+
+  window.mLapsRotate = (btn) => {
+    if (!confirm(t('mobile.poste.laps.rotate_confirm'))) return
+    return withBusy(btn, async () => {
+      try {
+        await window.api.rotateAdminCredential(d.id)
+        window.mCloseSheet()
+        window.showToast(t('mobile.poste.laps.rotate_toast'), 'success')
+        _device = await window.api.getDevice(d.id)
+        renderBody(el)
+      } catch (err) {
+        window.showToast(err.message || t('mobile.common.error'), 'error')
+      }
+    })
   }
 }
 

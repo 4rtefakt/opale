@@ -773,6 +773,24 @@ export default {
   'mobile.dashboard.section.active_alerts':  'Alertes actives',
   'mobile.dashboard.section.recent':         'Activité récente',
 
+  // — mobile/poste (fiche) — LAPS / compte de récupération —
+  'mobile.poste.laps.action':            'Récupération',
+  'mobile.poste.laps.title':             'Compte de récupération',
+  'mobile.poste.laps.admin':             'Admin',
+  'mobile.poste.laps.warning':           'Donnée sensible — accès journalisé. Réservé à la maintenance autorisée. Pensez à faire tourner le mot de passe après usage.',
+  'mobile.poste.laps.username':          'Utilisateur',
+  'mobile.poste.laps.last_rotation':     'Dernière rotation',
+  'mobile.poste.laps.last_access':       'Dernier accès',
+  'mobile.poste.laps.rotation_requested': 'Rotation demandée',
+  'mobile.poste.laps.reveal':            'Révéler le mot de passe',
+  'mobile.poste.laps.password':          'Mot de passe',
+  'mobile.poste.laps.autoclear':         'Effacement automatique dans {s}s',
+  'mobile.poste.laps.copied':            'Mot de passe copié',
+  'mobile.poste.laps.rotate':            'Faire tourner',
+  'mobile.poste.laps.rotate_confirm':    'Demander une rotation du mot de passe de récupération ?\nElle sera effective au prochain checkin de l\'agent (max 15 min).',
+  'mobile.poste.laps.rotate_toast':      'Rotation demandée — effective au prochain checkin',
+  'mobile.poste.laps.close':             'Fermer',
+
   // — mobile/postes —
   'mobile.postes.title':                  'Postes',
   'mobile.postes.search_placeholder':     'Nom, IP, série…',
