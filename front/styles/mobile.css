@@ -1,3 +1,49 @@
+/* =============================================================================
+   OPALE — DESIGN SYSTEM MOBILE
+   Front vanilla, dark-only. Toute l'UI mobile est bâtie sur ces tokens + ces
+   composants `.m-*`. Avant d'ajouter une valeur en dur (couleur, padding,
+   radius), vérifier qu'un token existant ne couvre pas déjà le besoin.
+
+   ── TOKENS (:root) ──────────────────────────────────────────────────────────
+   Couleurs de surface (du plus sombre au plus clair) :
+     --bg-primary     fond d'écran / barres (header, body)
+     --bg-secondary   surface des cartes (.m-*-card, sheet, panels)
+     --bg-tertiary    surface surélevée (boutons secondaires, inputs, chips)
+     --border         trait de séparation / bordure de carte
+   Texte (du plus lisible au plus discret) :
+     --text-primary   titres, valeurs, corps de texte
+     --text-secondary labels, sous-texte important
+     --text-tertiary  méta, légendes, placeholders, états désactivés
+   Couleurs sémantiques :
+     --green   ok / online / résolu       --red    critique / erreur / non-lu
+     --amber   warning / en cours          --orange non-conforme
+     --blue    action primaire / sélection (--blue-text = variante lisible sur fond sombre)
+   Forme :
+     --radius  rayon standard des cartes & conteneurs (12px). Les petits
+               éléments (pills, boutons, inputs) utilisent 8–10px en dur ;
+               les pastilles rondes utilisent 99px (≈ cercle).
+
+   ── ÉCHELLE TYPO (en dur, conventionnelle) ──────────────────────────────────
+     17px header h1 · 14px titre de carte · 13px corps · 12px label/méta forte
+     11px méta · 10px pill / légende.
+
+   ── COMPOSANTS `.m-*` (familles) ─────────────────────────────────────────────
+   Shell        .m-screen .m-header .m-icon-btn #m-bottom-nav .m-nav-item
+   Scroll       .m-scroll (gap 10) · .m-scroll-list (gap 8) · .m-section (titre de section)
+   Cartes       .m-stat-card (KPI) · .m-device-card (poste) · .m-alert-card (alerte, cf. modifiers de type)
+                .m-ticket-card (ticket de liste) · .m-panel (+.m-panel-header, détail/réglages)
+   Statut       .m-pill (+ -on/-off/-crit/-warn) · .m-status-dot · .m-disk-mini / .m-disk-bar
+   Filtres      .m-filters > .m-filter-pill(.active) · .m-search
+   Actions      .m-action-grid > .m-action-btn(.blue/.green/.amber/.red) · .m-menu-grid/.m-menu-tile · .m-menu-row
+   Formulaires  .m-label .m-input .m-btn-primary · sheet : #m-sheet(.m-sheet-title/.m-sheet-btn)
+   Feedback     .m-spinner(/-inline) · .m-error-state · #m-toast(.success/.error/.info)
+   Chat ticket  .m-msg(.m-msg-me) .m-msg-bubble .m-reply-bar
+   Divers       .m-av (avatar) · .m-audit-* (journal)
+
+   RÈGLE : zone tactile ≥ 44px pour tout élément cliquable principal
+   (.m-icon-btn, .m-filter-pill, .m-ssh-quick-btn…).
+   ============================================================================= */
+
 /* ── Reset & base ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
@@ -126,6 +172,30 @@ html, body {
 .m-device-ip   { font-size: 10px; color: var(--border); font-family: monospace; margin-top: 1px; }
 .m-device-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
 
+/* ── Ticket card (liste tickets) ──
+   Titre sur une ligne (ellipsis) + pill de statut ; une seule ligne méta qui
+   tronque proprement ; un seul fragment coloré (la pastille de priorité). */
+.m-ticket-card {
+  background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px; display: flex; flex-direction: column; gap: 6px; cursor: pointer;
+}
+.m-ticket-card:active { background: var(--bg-tertiary); }
+.m-ticket-top { display: flex; align-items: center; gap: 8px; }
+.m-ticket-unread { width: 7px; height: 7px; background: var(--red); border-radius: 50%; flex-shrink: 0; }
+.m-ticket-title {
+  flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.m-ticket-meta {
+  font-size: 11px; color: var(--text-tertiary); line-height: 1.4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.m-ticket-meta .ti { font-size: 12px; opacity: .7; margin-right: 3px; vertical-align: middle; }
+.m-ticket-prio-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+.m-ticket-sep { margin: 0 5px; opacity: .5; }
+.m-ticket-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.m-ticket-tag { font-size: 10px; padding: 1px 6px; border-radius: 8px; color: #fff; }
+
 /* ── Pills ── */
 .m-pill { padding: 2px 8px; border-radius: 99px; font-size: 10px; font-weight: 600; }
 .m-pill-on   { background: rgba(34,197,94,.15);  color: var(--green); }
@@ -137,14 +207,42 @@ html, body {
 .m-disk-mini { width: 56px; height: 4px; background: var(--bg-tertiary); border-radius: 99px; overflow: hidden; }
 .m-disk-mini-fill { height: 100%; border-radius: 99px; }
 
-/* ── Alert card ── */
+/* ── Alert card (composant unifié : dashboard résumé + liste alertes) ──
+   Couleur d'accent pilotée par --m-alert-accent ; un modifier de type
+   (crit/warn/offline/noncompliant) règle l'accent et la bordure. Sans
+   modifier → rouge (alerte critique par défaut). */
 .m-alert-card {
   background: var(--bg-secondary);
-  border: 1px solid rgba(239,68,68,.3); border-left: 3px solid var(--red);
-  border-radius: var(--radius); padding: 10px 12px;
+  border: 1px solid var(--m-alert-border, var(--border));
+  border-left: 3px solid var(--m-alert-accent, var(--red));
+  border-radius: var(--radius); padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
 }
-.m-alert-title { font-size: 12px; font-weight: 600; }
-.m-alert-sub   { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+.m-alert-card.crit         { --m-alert-accent: var(--red);    --m-alert-border: rgba(239,68,68,.3); }
+.m-alert-card.warn         { --m-alert-accent: var(--amber);  --m-alert-border: rgba(245,158,11,.25); }
+.m-alert-card.offline      { --m-alert-accent: var(--text-tertiary); }
+.m-alert-card.noncompliant { --m-alert-accent: var(--orange); }
+.m-alert-card.snoozed      { opacity: .55; }
+
+.m-alert-head { display: flex; align-items: flex-start; gap: 10px; }
+.m-alert-icon { font-size: 18px; color: var(--m-alert-accent, var(--red)); margin-top: 1px; flex-shrink: 0; }
+.m-alert-body { flex: 1; min-width: 0; }
+.m-alert-title { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-alert-msg   { font-size: 12px; font-weight: 500; color: var(--m-alert-accent, var(--red)); margin-top: 2px; }
+.m-alert-sub   { font-size: 11px; color: var(--text-tertiary); margin-top: 1px; }
+.m-alert-snooze-note { font-size: 11px; color: var(--text-tertiary); font-style: italic; margin-top: 3px; }
+.m-alert-snooze-note .ti { font-size: 11px; }
+
+.m-alert-actions { display: flex; gap: 8px; }
+.m-alert-btn {
+  flex: 1; padding: 8px; background: var(--bg-tertiary); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text-primary); font-size: 12px; font-weight: 500;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px;
+}
+.m-alert-btn:active { background: var(--bg-secondary); }
+.m-alert-btn .ti { font-size: 14px; }
+.m-alert-btn-icon { flex: 0 0 40px; padding: 8px; }
+.m-alert-btn-icon .ti { font-size: 15px; }
 
 /* ── Search bar ── */
 .m-search {

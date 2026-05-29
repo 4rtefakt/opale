@@ -525,26 +525,28 @@ function renderList() {
     const pillCls = tk.status === 'resolved' ? 'm-pill-on' : tk.status === 'in_progress' ? 'm-pill-warn' : 'm-pill-off'
     const pillTxt = tk.status === 'resolved' ? 'Résolu' : tk.status === 'in_progress' ? 'En cours' : 'Ouvert'
     const prioColor = tk.priority === 'critical' ? 'var(--red)' : tk.priority === 'high' ? 'var(--amber)' : 'var(--text-tertiary)'
-    const tags = (tk.tags || []).slice(0, 3).map(g => `
-      <span style="display:inline-block;background:${M_TAG_PALETTE[g.color] || M_TAG_PALETTE.slate};color:#fff;font-size:10px;padding:1px 6px;border-radius:8px">${esc(g.name)}</span>
-    `).join('')
-    const dot = tk.awaiting_reply
-      ? '<span title="Réponse en attente" style="display:inline-block;width:7px;height:7px;background:var(--red);border-radius:50%;margin-right:6px;vertical-align:middle"></span>'
-      : ''
+    const tags = (tk.tags || []).slice(0, 3).map(g =>
+      `<span class="m-ticket-tag" style="background:${M_TAG_PALETTE[g.color] || M_TAG_PALETTE.slate}">${esc(g.name)}</span>`
+    ).join('')
+    // Une seule ligne méta : pastille de priorité (seul fragment coloré),
+    // poste, demandeur (ti-user) et assigné (ti-user-check, icône distincte),
+    // puis l'horodatage. La ligne tronque proprement (ellipsis) si trop longue.
+    const meta = [
+      `<span class="m-ticket-prio-dot" style="background:${prioColor}"></span>${prioLabel(tk.priority)}`,
+      tk.hostname        ? `<i class="ti ti-device-laptop"></i>${esc(tk.hostname)}` : '',
+      tk.requester_name  ? `<i class="ti ti-user"></i>${esc(shortName(tk.requester_name))}` : '',
+      tk.assigned_to_name? `<i class="ti ti-user-check"></i>${esc(shortName(tk.assigned_to_name))}` : '',
+      displayWhen(tk),
+    ].filter(Boolean).join('<span class="m-ticket-sep">·</span>')
     return `
-      <div class="m-device-card" onclick="window.location.hash='#/ticket/${esc(tk.id)}'">
-        <div class="m-device-info">
-          <div class="m-device-name">${dot}${esc(tk.title)}</div>
-          <div class="m-device-sub">
-            ${tk.hostname ? esc(tk.hostname) + ' · ' : ''}
-            <span style="color:${prioColor}">${prioLabel(tk.priority)}</span>
-            ${tk.requester_name ? ' · <i class="ti ti-user" style="font-size:10px;opacity:0.7"></i> ' + esc(shortName(tk.requester_name)) : ''}
-            ${tk.assigned_to_name ? ' · <i class="ti ti-user-check" style="font-size:10px;opacity:0.7"></i> ' + esc(shortName(tk.assigned_to_name)) : ''}
-            · ${displayWhen(tk)}
-          </div>
-          ${tags ? `<div style="display:flex;gap:3px;margin-top:4px;flex-wrap:wrap">${tags}</div>` : ''}
+      <div class="m-ticket-card" onclick="window.location.hash='#/ticket/${esc(tk.id)}'">
+        <div class="m-ticket-top">
+          ${tk.awaiting_reply ? '<span class="m-ticket-unread" title="Réponse en attente"></span>' : ''}
+          <div class="m-ticket-title">${esc(tk.title)}</div>
+          <span class="m-pill ${pillCls}">${pillTxt}</span>
         </div>
-        <span class="m-pill ${pillCls}">${pillTxt}</span>
+        <div class="m-ticket-meta">${meta}</div>
+        ${tags ? `<div class="m-ticket-tags">${tags}</div>` : ''}
       </div>`
   }).join('')
 }

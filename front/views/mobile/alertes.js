@@ -10,6 +10,14 @@ const ALERT_TYPE_BY_SECTION = {
   non_compliant: 'noncompliant',
 }
 
+// Section mobile → modifier .m-alert-card + icône (accent géré en CSS).
+const ALERT_VISUAL = {
+  disk_critical: { cls: 'crit',         icon: 'ti-alert-triangle' },
+  disk_warn:     { cls: 'warn',         icon: 'ti-alert-circle' },
+  offline:       { cls: 'offline',      icon: 'ti-wifi-off' },
+  non_compliant: { cls: 'noncompliant', icon: 'ti-shield-off' },
+}
+
 // Traduit l'enum Intune (compliance_state) en libellé lisible. Fallback : la
 // valeur brute, jamais un code i18n non résolu.
 function complianceStateLabel(state) {
@@ -121,49 +129,36 @@ function renderList() {
   }
 
   list.innerHTML = filtered.map(a => {
-    const isCrit = a.type === 'disk_critical'
-    const isWarn = a.type === 'disk_warn'
-    const isOff  = a.type === 'offline'
-
-    const color   = isCrit ? 'var(--red)' : isWarn ? 'var(--amber)' : isOff ? 'var(--text-tertiary)' : 'var(--orange)'
-    const icon    = isCrit ? 'ti-alert-triangle' : isWarn ? 'ti-alert-circle' : isOff ? 'ti-wifi-off' : 'ti-shield-off'
-    const border  = isCrit ? 'rgba(239,68,68,.3)' : isWarn ? 'rgba(245,158,11,.25)' : 'var(--border)'
-    const leftBar = isCrit ? 'var(--red)' : isWarn ? 'var(--amber)' : isOff ? 'var(--text-tertiary)' : 'var(--orange)'
+    const { cls, icon } = ALERT_VISUAL[a.type] || ALERT_VISUAL.disk_critical
 
     const alertType = ALERT_TYPE_BY_SECTION[a.type]
     const isSnoozed = !!a.snoozed_until
 
     const snoozeBtn = isSnoozed
-      ? `<button onclick="mAlUnsnooze('${esc(a.id)}','${esc(alertType)}',this)" title="${t('alertes.snooze.unsnooze')}"
-           style="flex-shrink:0;width:40px;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;justify-content:center">
-           <i class="ti ti-bell-ringing" style="font-size:15px"></i>
+      ? `<button class="m-alert-btn m-alert-btn-icon" onclick="mAlUnsnooze('${esc(a.id)}','${esc(alertType)}',this)" title="${t('alertes.snooze.unsnooze')}">
+           <i class="ti ti-bell-ringing"></i>
          </button>`
-      : `<button onclick="mAlOpenSnooze('${esc(a.id)}','${esc(alertType)}',${jsArg(a.hostname)})" title="${t('alertes.snooze.btn')}"
-           style="flex-shrink:0;width:40px;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);cursor:pointer;display:flex;align-items:center;justify-content:center">
-           <i class="ti ti-zzz" style="font-size:15px"></i>
+      : `<button class="m-alert-btn m-alert-btn-icon" onclick="mAlOpenSnooze('${esc(a.id)}','${esc(alertType)}',${jsArg(a.hostname)})" title="${t('alertes.snooze.btn')}">
+           <i class="ti ti-zzz"></i>
          </button>`
 
     return `
-    <div style="background:var(--bg-secondary);border:1px solid ${border};border-left:3px solid ${leftBar};border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:8px;opacity:${isSnoozed ? '.55' : '1'}">
-      <div style="display:flex;align-items:flex-start;gap:10px">
-        <i class="ti ${icon}" style="font-size:18px;color:${color};margin-top:1px;flex-shrink:0"></i>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:14px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.hostname)}</div>
-          <div style="font-size:12px;color:${color};font-weight:500;margin-top:2px">${esc(a.message)}</div>
-          ${a.sub ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:1px">${esc(a.sub)}</div>` : ''}
-          ${isSnoozed ? `<div style="font-size:11px;color:var(--text-tertiary);font-style:italic;margin-top:3px"><i class="ti ti-zzz" style="font-size:11px"></i> ${t('alertes.snooze.until')} ${formatRelative(a.snoozed_until)}</div>` : ''}
+    <div class="m-alert-card ${cls}${isSnoozed ? ' snoozed' : ''}">
+      <div class="m-alert-head">
+        <i class="ti ${icon} m-alert-icon"></i>
+        <div class="m-alert-body">
+          <div class="m-alert-title">${esc(a.hostname)}</div>
+          <div class="m-alert-msg">${esc(a.message)}</div>
+          ${a.sub ? `<div class="m-alert-sub">${esc(a.sub)}</div>` : ''}
+          ${isSnoozed ? `<div class="m-alert-snooze-note"><i class="ti ti-zzz"></i> ${t('alertes.snooze.until')} ${formatRelative(a.snoozed_until)}</div>` : ''}
         </div>
       </div>
-      <div style="display:flex;gap:8px">
-        <button onclick="window.location.hash='#/poste/${esc(a.id)}'"
-          style="flex:1;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;
-                 color:var(--text-primary);font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px">
-          <i class="ti ti-device-laptop" style="font-size:14px"></i> ${t('mobile.alertes.see_device')}
+      <div class="m-alert-actions">
+        <button class="m-alert-btn" onclick="window.location.hash='#/poste/${esc(a.id)}'">
+          <i class="ti ti-device-laptop"></i> ${t('mobile.alertes.see_device')}
         </button>
-        <button onclick="mAlNewTicket('${esc(a.id)}', ${jsArg(a.hostname)}, ${jsArg(a.message)})"
-          style="flex:1;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;
-                 color:var(--text-primary);font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px">
-          <i class="ti ti-ticket" style="font-size:14px"></i> ${t('mobile.alertes.new_ticket')}
+        <button class="m-alert-btn" onclick="mAlNewTicket('${esc(a.id)}', ${jsArg(a.hostname)}, ${jsArg(a.message)})">
+          <i class="ti ti-ticket"></i> ${t('mobile.alertes.new_ticket')}
         </button>
         ${snoozeBtn}
       </div>

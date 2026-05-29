@@ -45,9 +45,15 @@ export async function renderDashboard(el) {
       ${activeAlerts.length ? `
         <div class="m-section">${t('mobile.dashboard.section.active_alerts')}</div>
         ${activeAlerts.slice(0, 3).map(a => `
-          <div class="m-alert-card" onclick="window.location.hash='#/poste/${esc(a.device_id)}'">
-            <div class="m-alert-title">${esc(a.message || a.type)}</div>
-            <div class="m-alert-sub">${esc(a.hostname || '')} · ${formatRelative(a.created_at)}</div>
+          <div class="m-alert-card crit" onclick="window.location.hash='#/poste/${esc(a.device_id)}'">
+            <div class="m-alert-head">
+              <i class="ti ti-alert-triangle m-alert-icon"></i>
+              <div class="m-alert-body">
+                <div class="m-alert-title">${esc(a.hostname || '')}</div>
+                <div class="m-alert-msg">${esc(a.message || a.type)}</div>
+                <div class="m-alert-sub">${formatRelative(a.created_at)}</div>
+              </div>
+            </div>
           </div>`).join('')}
       ` : ''}
 
