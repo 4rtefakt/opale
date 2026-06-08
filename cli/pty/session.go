@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
@@ -44,10 +42,9 @@ func Connect(serverURL, wsPath string) error {
 	// Initial size
 	sendResize(conn)
 
-	// SIGWINCH
-	resizeCh := make(chan os.Signal, 1)
-	signal.Notify(resizeCh, syscall.SIGWINCH)
-	defer signal.Stop(resizeCh)
+	// Resize notifications (SIGWINCH on Unix; no-op on Windows — see session_*.go)
+	resizeCh := newResizeChan()
+	defer stopResizeChan(resizeCh)
 
 	done := make(chan error, 1)
 
