@@ -17,7 +17,7 @@
     "@fastify/static": "^9",
     "@fastify/websocket": "^11",
     "fastify": "^5",
-    "fastify-plugin": "^5",
+    "fastify-plugin": "^6",
     "jose": "^5",
     "pg": "^8",
     "sql.js": "^1.10",
