@@ -18,7 +18,7 @@
 // les mails non-traités dans la fenêtre du prochain poll.
 
 import { matchSender }   from './match-sender.js'
-import { matchThread }   from './match-thread.js'
+import { matchThread, senderParticipatesInTicket } from './match-thread.js'
 import { classifyWithOllama } from './classify.js'
 import { getMessage }    from './graph-mail.js'
 import { extractMailBodyText, htmlToText } from './body-text.js'
@@ -164,7 +164,7 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
   const headers = indexHeaders(graphMessage)
   const fromAddress = graphMessage.from?.emailAddress?.address || null
 
-  const [sender, threadMatch] = await Promise.all([
+  let [sender, threadMatch] = await Promise.all([
     matchSender(db, fromAddress),
     matchThread(db, {
       inReplyToHeader:  headers['in-reply-to']  || null,
@@ -173,6 +173,21 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
       subject:          graphMessage.subject    || null,
     }),
   ])
+
+  // Anti-injection de fil : on ne rattache un mail à un TICKET existant que si
+  // l'expéditeur en est déjà un participant connu (cf. senderParticipatesInTicket).
+  // Sinon on ignore le match → le mail repart sur le classifieur (proposition /
+  // revue), au lieu d'un append silencieux dans une conversation existante.
+  if (threadMatch?.ticket_id) {
+    const authorized = await senderParticipatesInTicket(db, threadMatch.ticket_id, fromAddress)
+    if (!authorized) {
+      log?.warn(
+        { internetMessageId, fromAddress, ticket_id: threadMatch.ticket_id },
+        'process: rattachement au ticket ignoré — expéditeur non-participant (anti-injection de fil)'
+      )
+      threadMatch = null
+    }
+  }
 
   let classifier = null
   let intent     = null

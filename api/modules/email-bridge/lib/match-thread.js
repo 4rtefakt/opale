@@ -86,3 +86,30 @@ export async function matchThread(db, { inReplyToHeader, referencesHeader, conve
   // capture le tag dans le parser mais on ne fait rien avec.
   return null
 }
+
+// Autorisation d'un expéditeur sur un fil de ticket.
+//
+// Le rattachement d'un mail entrant à un ticket existant (matchThread) repose
+// uniquement sur des identifiants de thread (In-Reply-To / References /
+// conversationId) — or ceux-ci circulent EN CLAIR dans les en-têtes vers tous
+// les destinataires, y compris les CC. Traiter la correspondance comme une
+// autorisation permettait à un tiers ayant un jour été en copie d'injecter du
+// contenu arbitraire dans la conversation d'un ticket.
+//
+// On exige donc que l'expéditeur ait déjà participé (en inbound) au ticket.
+// L'ensemble des participants légitimes d'un fil = les from_address inbound du
+// ticket (le requester d'origine en fait toujours partie, et le destinataire
+// des réponses sortantes en est dérivé — cf. outbound-worker pickRecipient).
+// Un expéditeur inconnu retombe sur le classifieur → proposition / revue admin,
+// plutôt qu'un append silencieux.
+export async function senderParticipatesInTicket(db, ticketId, fromAddress) {
+  if (!ticketId || !fromAddress) return false
+  const { rows } = await db.query(
+    `SELECT 1 FROM email_thread_mapping
+       WHERE ticket_id = $1 AND direction = 'inbound'
+         AND lower(from_address) = lower($2)
+       LIMIT 1`,
+    [ticketId, fromAddress]
+  )
+  return rows.length > 0
+}

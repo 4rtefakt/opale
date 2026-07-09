@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 )
@@ -58,6 +59,14 @@ func newConsoleManager(w *wsWriter) *consoleManager {
 func (m *consoleManager) dispatch(ctx context.Context, fr wsFrame) {
 	if fr.ID == nil || *fr.ID == "" {
 		logWarn("console-frame-no-id", "", LogFields{"type": fr.Type})
+		return
+	}
+	// Le session_id est un UUID généré côté serveur (row remote_sessions).
+	// On borne le minimum : plusieurs chemins tronquent l'id (ex: id[:8] pour
+	// le toast RGPD), et un id trop court provoquerait un panic. Un id
+	// aberrant ne peut de toute façon matcher aucune session ouverte.
+	if len(*fr.ID) < 8 {
+		logWarn("console-frame-bad-id", "", LogFields{"type": fr.Type, "len": len(*fr.ID)})
 		return
 	}
 	id := *fr.ID
@@ -125,8 +134,16 @@ func (m *consoleManager) openSession(ctx context.Context, id string, data json.R
 
 	// Toast utilisateur — RGPD : on alerte la session interactive qu'un
 	// admin a ouvert une console. Non bloquant (msg.exe peut être absent
-	// sur Home, ou aucune session user connectée).
-	go notifyConsoleOpened(id)
+	// sur Home, ou aucune session user connectée). Le recover évite qu'un
+	// éventuel panic dans cette goroutine ne fasse tomber le service SYSTEM.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logWarn("console-notify-panic", "", LogFields{"session_id": id, "recover": fmt.Sprint(r)})
+			}
+		}()
+		notifyConsoleOpened(id)
+	}()
 
 	// Read loop : stream stdout du PTY vers le serveur.
 	go m.pumpPTY(sessCtx, s)

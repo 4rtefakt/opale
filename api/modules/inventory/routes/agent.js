@@ -174,6 +174,12 @@ function hashToken(t) {
 // Filtre les tokens révoqués et les tokens dont l'expiration programmée
 // (rotation) est dépassée — sans toucher revoked_at, qui reste réservé
 // à la révocation explicite par admin.
+//
+// Exclut les bootstrap tokens : par conception (cf. migration 036) un
+// bootstrap sert UNIQUEMENT à s'échanger contre un token perso device-lié
+// via /exchange-token (qui utilise sa propre requête). L'accepter ici
+// permettait à ce secret largement partagé (embarqué dans le script Intune
+// poussé à N postes) de checkin/usurper n'importe quel poste existant.
 async function authToken(fastify, req) {
   const auth = req.headers.authorization || ''
   if (!auth.startsWith('Bearer ')) return null
@@ -182,6 +188,7 @@ async function authToken(fastify, req) {
   const { rows } = await fastify.db.query(
     `SELECT * FROM agent_tokens
        WHERE token_hash = $1
+         AND is_bootstrap IS NOT TRUE
          AND revoked_at IS NULL
          AND (expires_at IS NULL OR expires_at > now())`,
     [hash]
@@ -580,11 +587,11 @@ export default async function agentRoute(fastify) {
     // → fail unique constraint sur hostname. Avec le fallback, on tombe
     // sur la row Intune et on l'UPDATE normalement.
     let lookup = serial
-      ? await fastify.db.query(`SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE serial = $1`, [serial])
-      : await fastify.db.query(`SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`, [hostname])
+      ? await fastify.db.query(`SELECT id, source, disk_used_pct, compliance_state, last_tamper_hash FROM devices WHERE serial = $1`, [serial])
+      : await fastify.db.query(`SELECT id, source, disk_used_pct, compliance_state, last_tamper_hash FROM devices WHERE hostname = $1`, [hostname])
     if (serial && !lookup.rows.length) {
       lookup = await fastify.db.query(
-        `SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`,
+        `SELECT id, source, disk_used_pct, compliance_state, last_tamper_hash FROM devices WHERE hostname = $1`,
         [hostname]
       )
     }
@@ -595,6 +602,29 @@ export default async function agentRoute(fastify) {
     // l'état du device d'origine.
     if (token.device_id && lookup.rows[0] && lookup.rows[0].id !== token.device_id) {
       return reply.code(403).send({ error: 'Token lié à un autre device' })
+    }
+
+    // Un token pas encore lié (device_id NULL — token d'enrôlement manuel)
+    // ne peut pas s'attacher à un device DÉJÀ géré par un autre token actif :
+    // sinon un token d'enrôlement réutilisé permettrait d'usurper un poste
+    // existant (écraser sa télémétrie, drainer ses scripts/déploiements en
+    // attente). Le premier enrôlement légitime cible un device sans token lié
+    // (nouveau poste, ou row créée par la sync Intune) → autorisé. En
+    // ré-enrôlement, révoquer l'ancien token libère le device.
+    if (!token.device_id && lookup.rows[0]) {
+      const { rows: bound } = await fastify.db.query(
+        `SELECT 1 FROM agent_tokens
+           WHERE device_id = $1 AND id <> $2
+             AND revoked_at IS NULL
+             AND (expires_at IS NULL OR expires_at > now())
+           LIMIT 1`,
+        [lookup.rows[0].id, token.id]
+      )
+      if (bound.length) {
+        return reply.code(403).send({
+          error: 'Poste déjà rattaché à un autre token (révoquez l\'ancien avant de ré-enrôler)'
+        })
+      }
     }
 
     const mainDisk = disks.find(d => d.letter === 'C:') || disks[0]
@@ -806,9 +836,19 @@ export default async function agentRoute(fastify) {
     }
 
     // ── Tamper detection : binaire altéré côté agent ───────────────────────
-    // Audit + push immédiate. Ne bloque PAS le checkin (l'agent peut être
-    // legit avec un state.json corrompu — admin investigue manuellement).
-    if (tamper && tamper.expected && tamper.actual && tamper.expected !== tamper.actual) {
+    // Ne bloque PAS le checkin (l'agent peut être legit avec un state.json
+    // corrompu — admin investigue manuellement).
+    //
+    // Le rapport tamper est "collant" : renvoyé à CHAQUE checkin tant que
+    // l'agent n'a pas ré-établi son baseline. On ne log/push donc que sur
+    // CHANGEMENT d'état (nouveau hash, ou retour à la normale), en comparant
+    // au dernier hash alerté (devices.last_tamper_hash) — sinon un seul poste
+    // inonderait le journal d'une alerte toutes les ~15 min.
+    const prevTamperHash = lookup.rows[0]?.last_tamper_hash ?? null
+    const isTamper = !!(tamper && tamper.expected && tamper.actual && tamper.expected !== tamper.actual)
+
+    if (isTamper && tamper.actual !== prevTamperHash) {
+      // Nouveau tamper (ou hash différent du précédent) → on alerte une fois.
       try {
         await logAudit(fastify.db, fastify.log, {
           action:  'tamper_detected',
@@ -825,6 +865,19 @@ export default async function agentRoute(fastify) {
       } catch (err) {
         fastify.log.warn({ err: err.message }, 'tamper audit log failed')
       }
+      fastify.db.query(`UPDATE devices SET last_tamper_hash = $1 WHERE id = $2`, [tamper.actual, deviceId])
+        .catch(err => fastify.log.warn({ err: err.message }, 'last_tamper_hash update failed'))
+    } else if (!isTamper && prevTamperHash !== null) {
+      // Retour à la normale (agent re-baseliné) → on efface la mémoire pour
+      // qu'un futur tamper distinct ré-alerte, et on trace la résolution.
+      logAudit(fastify.db, fastify.log, {
+        action:  'tamper_cleared',
+        byUser:  hostname,
+        target:  deviceId,
+        details: { previous_actual: prevTamperHash },
+      }).catch(err => fastify.log.warn({ err: err.message }, 'tamper_cleared audit failed'))
+      fastify.db.query(`UPDATE devices SET last_tamper_hash = NULL WHERE id = $1`, [deviceId])
+        .catch(err => fastify.log.warn({ err: err.message }, 'last_tamper_hash clear failed'))
     }
 
     // ── Mettre à jour le token (last_used_at + device_id) ──────────────────

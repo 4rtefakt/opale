@@ -91,6 +91,29 @@ Set-Acl -Path $DataDir -AclObject $acl
 [System.IO.File]::WriteAllBytes($ExePath, [Convert]::FromBase64String($AgentBinB64))
 Write-Output "Binaire écrit : $ExePath ($((Get-Item $ExePath).Length) octets)"
 
+# --- 2b. Réinitialisation du baseline anti-tamper ---
+# On vient d'écrire (potentiellement) un NOUVEAU binaire. Un state.json issu
+# d'une installation précédente contient le hash de l'ANCIEN binaire ; le
+# laisser déclencherait un faux "tamper detected" à chaque checkin. On efface
+# donc le baseline — l'agent le ré-établit proprement au prochain démarrage.
+# Le token vit dans config.json, jamais dans state.json → zéro perte d'enrôlement.
+$StatePath = Join-Path $DataDir 'state.json'
+if (Test-Path $StatePath) {
+    try {
+        $state = Get-Content -Raw -Path $StatePath | ConvertFrom-Json
+        $state.PSObject.Properties.Remove('binary_sha256')
+        $state.PSObject.Properties.Remove('binary_updated_at')
+        $json = ($state | ConvertTo-Json -Depth 10 -Compress)
+        # UTF-8 sans BOM (cohérent avec config.json ; le lecteur JSON Go rejette le BOM).
+        [System.IO.File]::WriteAllText($StatePath, $json, [System.Text.UTF8Encoding]::new($false))
+        Write-Output "Baseline anti-tamper réinitialisé (state.json)"
+    } catch {
+        # state.json illisible : on le supprime, l'agent le recrée au boot.
+        Remove-Item -Path $StatePath -Force -ErrorAction SilentlyContinue
+        Write-Output "state.json illisible, supprimé pour re-baseline"
+    }
+}
+
 # --- 3. Configuration ---
 $config = @{ token = $Token; url = $Url } | ConvertTo-Json -Compress
 [System.IO.File]::WriteAllText($ConfigPath, $config, [System.Text.UTF8Encoding]::new($false))

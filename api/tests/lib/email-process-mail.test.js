@@ -127,10 +127,13 @@ test('processOne : mail "reply" matché par In-Reply-To → message ajouté au t
     const ticketId = tRows[0].id
 
     const parentMsgId = `<parent-${Math.random().toString(36).slice(2)}@x>`
+    // from_address = marie@example.com : le mail entrant (fakeGraphMessage,
+    // from marie@example.com) provient donc d'un participant déjà connu du
+    // fil → rattachement autorisé (anti-injection de fil, cf. matchThread).
     await db.query(`
       INSERT INTO email_thread_mapping
-        (internet_message_id, mailbox, direction, received_at, ticket_id)
-      VALUES ($1, 'helpdesk@test', 'inbound', now(), $2)
+        (internet_message_id, mailbox, direction, received_at, ticket_id, from_address)
+      VALUES ($1, 'helpdesk@test', 'inbound', now(), $2, 'marie@example.com')
     `, [parentMsgId, ticketId])
 
     const msg = fakeGraphMessage({
@@ -156,6 +159,50 @@ test('processOne : mail "reply" matché par In-Reply-To → message ajouté au t
     assert.equal(msgRows.length, 1)
     assert.equal(msgRows[0].type, 'comment')
     assert.match(msgRows[0].content, /bloque encore/i)
+  }
+)
+
+test('processOne : thread matché mais expéditeur NON-participant → pas d\'append (anti-injection)',
+  { skip: SKIP }, async () => {
+    // Sécu : les identifiants de fil (In-Reply-To/References/conversationId)
+    // circulent en clair vers tous les destinataires. Un tiers jadis en copie
+    // ne doit pas pouvoir injecter du contenu dans le ticket en rejouant ces
+    // en-têtes. Le fil n'appartient qu'à marie@example.com ; un mail de
+    // attacker@evil.com portant le bon In-Reply-To ne doit PAS être appendé.
+    const { rows: tRows } = await db.query(
+      `INSERT INTO tickets (title) VALUES ('Ticket de Marie') RETURNING id`
+    )
+    const ticketId = tRows[0].id
+
+    const parentMsgId = `<parent-${Math.random().toString(36).slice(2)}@x>`
+    await db.query(`
+      INSERT INTO email_thread_mapping
+        (internet_message_id, mailbox, direction, received_at, ticket_id, from_address)
+      VALUES ($1, 'helpdesk@test', 'inbound', now(), $2, 'marie@example.com')
+    `, [parentMsgId, ticketId])
+
+    const msg = fakeGraphMessage({
+      subject: 'Re: imprimante',
+      from: { emailAddress: { address: 'attacker@evil.com', name: 'Pirate' } },
+      internetMessageHeaders: [{ name: 'In-Reply-To', value: parentMsgId }],
+    })
+
+    // Le classifieur DOIT être appelé : le thread match est ignoré, le mail
+    // repart sur le flux normal (pending_review), pas d'append au ticket.
+    let classifierCalled = false
+    const out = await processOne(db, null, {
+      graphMessage: msg, mailbox: 'helpdesk@test',
+      classifierFn: async () => { classifierCalled = true; return { intent: 'question' } },
+    })
+
+    assert.notEqual(out.action, 'message_appended')
+    assert.equal(classifierCalled, true, 'classifieur appelé car le thread match est refusé')
+
+    const { rows: msgRows } = await db.query(
+      `SELECT count(*)::int AS n FROM ticket_messages WHERE ticket_id = $1`,
+      [ticketId]
+    )
+    assert.equal(msgRows[0].n, 0, 'aucun message injecté dans le ticket de Marie')
   }
 )
 

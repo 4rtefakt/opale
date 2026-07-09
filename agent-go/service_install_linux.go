@@ -47,6 +47,9 @@ func InstallService(token, url string) error {
 	if err := copyCurrentBinary(binDst); err != nil {
 		return err
 	}
+	// On vient de (ré)écrire le binaire : effacer le baseline tamper d'une
+	// install précédente pour éviter un faux positif au prochain checkin.
+	clearTamperBaselineAt(dst)
 
 	cfgPath := filepath.Join(dst, "config.json")
 	if token != "" || url != "" {

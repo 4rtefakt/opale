@@ -170,10 +170,16 @@ func CheckRollback(st *State, lastCheckinErr error) {
 		return
 	}
 	logInfo("rollback-applied", "binaire restauré", LogFields{"to": "previous"})
-	// Reset l'état pour que la prochaine instance ne re-rollback pas
+	// Reset l'état pour que la prochaine instance ne re-rollback pas.
 	st.LastUpdateAt = time.Time{}
 	st.LastUpdateVersion = ""
 	st.FailedSinceUpdate = 0
+	// Le baseline tamper avait été fixé au hash du NOUVEAU binaire lors de
+	// HandleAgentUpdate ; on vient de restaurer l'ANCIEN. Sans reset, la
+	// prochaine instance comparerait l'ancien binaire au hash du nouveau et
+	// crierait "tamper" à chaque checkin. On efface → re-baseline au boot.
+	st.BinarySHA256 = ""
+	st.BinaryUpdatedAt = time.Time{}
 	st.Save()
 	// Redémarrer pour charger le binaire restauré
 	_ = restartService()

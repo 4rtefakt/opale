@@ -3,12 +3,42 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+// clearTamperBaselineAt efface le baseline anti-tamper (hash du binaire) dans
+// le state.json du dataDir fourni. À appeler lors d'une (ré)installation qui
+// remplace le binaire : sinon le hash de l'ANCIEN binaire resterait comme
+// référence et déclencherait un faux "tamper detected" à chaque checkin. Le
+// baseline est ré-établi proprement au prochain démarrage (CheckBinaryIntegrity).
+// Best-effort : toute erreur est silencieuse (au pire on garde le faux positif,
+// jamais on ne casse l'install).
+func clearTamperBaselineAt(dataDir string) {
+	p := filepath.Join(dataDir, "state.json")
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return // pas de state (première install) → rien à faire
+	}
+	var st State
+	if err := json.Unmarshal(raw, &st); err != nil {
+		// state corrompu : on le supprime, l'agent le recrée + re-baseline.
+		_ = os.Remove(p)
+		return
+	}
+	st.BinarySHA256 = ""
+	st.BinaryUpdatedAt = time.Time{}
+	out, err := json.Marshal(&st)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(p, out, 0o600)
+}
 
 // computeOwnBinarySHA256 lit le fichier .exe duquel le process a été
 // chargé et retourne son SHA-256 hexadécimal (lowercase).

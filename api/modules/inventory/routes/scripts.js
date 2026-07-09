@@ -1,5 +1,6 @@
 import { Client } from 'ssh2'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
+import { makeHostVerifier } from '../../../lib/ssh-host-key.js'
 
 function sshKey() {
   const b64 = process.env.SSH_PRIVATE_KEY_B64
@@ -53,10 +54,11 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
     })
 
     conn.connect({
-      host:       device.ip_netbird,
-      port:       parseInt(process.env.SSH_PORT || '22', 10),
-      username:   process.env.SSH_USER || 'opale',
-      privateKey: sshKey(),
+      host:         device.ip_netbird,
+      port:         parseInt(process.env.SSH_PORT || '22', 10),
+      username:     process.env.SSH_USER || 'opale',
+      privateKey:   sshKey(),
+      hostVerifier: makeHostVerifier({ fastify, deviceId: device.id, hostname: device.hostname }),
       readyTimeout: 10_000
     })
   })

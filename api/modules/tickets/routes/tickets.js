@@ -16,6 +16,7 @@ const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 // Couleurs autorisées pour les tags : palette fermée alignée avec le front.
 const TAG_COLORS = ['slate', 'blue', 'green', 'amber', 'red', 'violet', 'pink', 'teal']
 const PRIORITIES = ['low', 'normal', 'high', 'critical']
+const STATUSES   = ['open', 'in_progress', 'resolved', 'closed']
 const USER_ROLES = ['requester', 'involved']
 
 function parseCsv(v) {
@@ -285,8 +286,27 @@ export default async function ticketsRoute(fastify) {
       tag_ids,
     } = req.body || {}
     if (!title) return reply.code(400).send({ error: 'Titre requis' })
+    if (priority !== undefined && priority !== null && !PRIORITIES.includes(priority)) {
+      return reply.code(400).send({ error: `priority invalide (attendu: ${PRIORITIES.join(', ')})` })
+    }
 
     const { entraId, displayName } = fastify.getUserIdentity(req)
+
+    // Champs d'attribution/liaison réservés aux admins (même vecteur que PATCH) :
+    // un non-admin ne peut ouvrir qu'un ticket le concernant lui-même — sans
+    // assigner un technicien ni lier un poste arbitraire, ce qui exposerait
+    // l'inventaire de ce poste via GET /:id + /ai-suggest.
+    if (!(await fastify.isAdmin(req))) {
+      if (device_id !== undefined && device_id !== null) {
+        return reply.code(403).send({ error: 'Liaison d\'un poste réservée aux administrateurs' })
+      }
+      if ((assigned_to_entra_id ?? null) !== null || (assigned_to_name ?? null) !== null) {
+        return reply.code(403).send({ error: 'Assignation réservée aux administrateurs' })
+      }
+      if ((user_id ?? null) !== null && user_id !== entraId) {
+        return reply.code(403).send({ error: 'Un non-administrateur ne peut ouvrir un ticket que pour lui-même' })
+      }
+    }
 
     const client = await fastify.db.connect()
     try {
@@ -403,7 +423,30 @@ export default async function ticketsRoute(fastify) {
     const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
     if (!acl) return
     const { status, priority, assigned_to_entra_id, assigned_to_name, user_id, device_id } = req.body || {}
-    const { displayName } = acl
+    const { displayName, isAdmin } = acl
+
+    // Champs d'attribution/liaison réservés aux admins : l'assignation, le
+    // requester et le device concerné définissent QUI voit le ticket et QUELLE
+    // donnée d'inventaire y est exposée (cf. GET /:id + /ai-suggest). Un
+    // requester non-admin qui pourrait les réécrire se réassignerait le ticket,
+    // usurperait le requester, ou lierait un poste arbitraire pour en lire les
+    // infos. Cohérent avec les routes dédiées /:id/users et /:id/devices, déjà
+    // admin-only.
+    const privileged = { assigned_to_entra_id, assigned_to_name, user_id, device_id }
+    const touchesPrivileged = Object.values(privileged).some(v => v !== undefined)
+    if (touchesPrivileged && !isAdmin) {
+      return reply.code(403).send({ error: 'Modification de l\'attribution réservée aux administrateurs' })
+    }
+
+    // Validation stricte des valeurs énumérées (le front n'est pas une
+    // frontière de confiance ; une contrainte DB éventuelle ne renverrait
+    // qu'une 500 opaque).
+    if (status !== undefined && !STATUSES.includes(status)) {
+      return reply.code(400).send({ error: `status invalide (attendu: ${STATUSES.join(', ')})` })
+    }
+    if (priority !== undefined && !PRIORITIES.includes(priority)) {
+      return reply.code(400).send({ error: `priority invalide (attendu: ${PRIORITIES.join(', ')})` })
+    }
 
     const fields = []
     const params = []
@@ -502,8 +545,11 @@ export default async function ticketsRoute(fastify) {
   // Garde-fous : ticket doit avoir un mapping inbound (sinon pas de
   // destinataire), et le message doit être encore une note interne (re-clic
   // = idempotent no-op, on retourne tel quel).
+  // Admin-only : déclenche un envoi sortant depuis la boîte support de l'org.
+  // Un requester non-admin ne doit pas pouvoir faire émettre un mail depuis
+  // une adresse de confiance corporate (contenu qu'il contrôle).
   fastify.post('/:id/messages/:msgId/send-by-mail',
-    { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
       const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
       if (!acl) return
 
@@ -541,8 +587,9 @@ export default async function ticketsRoute(fastify) {
   // Relance l'envoi d'un message passé en dead-letter (outbound_failed_at).
   // Reset le compteur + la marque d'échec → le worker outbound le reprend
   // au prochain tick. 404 si le message n'est pas en échec.
+  // Admin-only, même raison que send-by-mail : relance un envoi sortant.
   fastify.post('/:id/messages/:msgId/retry-send',
-    { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
       const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
       if (!acl) return
 

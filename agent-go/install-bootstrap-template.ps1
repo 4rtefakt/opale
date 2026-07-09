@@ -139,6 +139,23 @@ Log "sha256 verified."
 
 # --- 6. Install binary + config ---
 Move-Item -Path $tmpExe -Destination $ExePath -Force
+
+# Réinitialise le baseline anti-tamper : un state.json d'une install précédente
+# porte le hash de l'ANCIEN binaire → faux "tamper detected" à chaque checkin.
+# L'agent ré-établit la référence au prochain démarrage. Token = config.json.
+$StatePath = Join-Path $DataDir 'state.json'
+if (Test-Path $StatePath) {
+    try {
+        $state = Get-Content -Raw -Path $StatePath | ConvertFrom-Json
+        $state.PSObject.Properties.Remove('binary_sha256')
+        $state.PSObject.Properties.Remove('binary_updated_at')
+        $sjson = ($state | ConvertTo-Json -Depth 10 -Compress)
+        [System.IO.File]::WriteAllText($StatePath, $sjson, [System.Text.UTF8Encoding]::new($false))
+    } catch {
+        Remove-Item -Path $StatePath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $config = @{ token = $Token; url = $Url } | ConvertTo-Json -Compress
 [System.IO.File]::WriteAllText($ConfigPath, $config, [System.Text.UTF8Encoding]::new($false))
 Log "Binary and config written."
