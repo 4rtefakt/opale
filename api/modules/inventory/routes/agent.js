@@ -504,16 +504,26 @@ export default async function agentRoute(fastify) {
     const { hostname, script, level = 'info', log } = req.body || {}
     if (!hostname || !log) return reply.code(400).send({ error: 'hostname et log requis' })
 
+    // Cette route est volontairement non authentifiée (tourne en SYSTEM
+    // avant enrôlement). On borne donc strictement la taille des champs
+    // avant de les écrire dans audit_logs : sans ça, un appelant anonyme
+    // pouvait gonfler la table (DoS stockage) via un log géant.
+    const cap = (v, n) => (typeof v === 'string' ? v.slice(0, n) : v)
+    const safeHostname = cap(String(hostname), 255)
+    const safeScript   = cap(script ? String(script) : 'unknown', 255)
+    const safeLevel    = cap(String(level || 'info'), 32)
+    const safeLog      = cap(String(log), 10000)
+
     // Ignorer les logs de checkin de routine (agents anciens qui loggent chaque run)
-    if (script === 'checkin' && (!level || level === 'info')) {
+    if (safeScript === 'checkin' && (!level || level === 'info')) {
       return reply.code(204).send()
     }
 
     await logAudit(fastify.db, fastify.log, {
       action:  'setup_script',
-      byUser:  hostname,
-      target:  script || 'unknown',
-      details: { level, log },
+      byUser:  safeHostname,
+      target:  safeScript,
+      details: { level: safeLevel, log: safeLog },
     })
     fastify.log.info({ hostname, script, level }, 'setup-log reçu')
     reply.code(204).send()
@@ -595,6 +605,24 @@ export default async function agentRoute(fastify) {
     // l'état du device d'origine.
     if (token.device_id && lookup.rows[0] && lookup.rows[0].id !== token.device_id) {
       return reply.code(403).send({ error: 'Token lié à un autre device' })
+    }
+
+    // Cas token non lié (device_id NULL, ex: token créé manuellement en
+    // Paramètres) : il peut se lier au 1er checkin à un device sans
+    // propriétaire (créé par sync Intune), mais PAS s'approprier un device
+    // déjà tenu par un autre token agent vivant. Sans ce garde, un token
+    // vierge pouvait spoofer hostname/serial pour écraser l'état (os, ip,
+    // health…) d'un poste déjà enrôlé par un autre agent.
+    if (!token.device_id && lookup.rows[0]) {
+      const { rows: owners } = await fastify.db.query(
+        `SELECT 1 FROM agent_tokens
+           WHERE device_id = $1 AND id <> $2 AND revoked_at IS NULL
+           LIMIT 1`,
+        [lookup.rows[0].id, token.id]
+      )
+      if (owners.length) {
+        return reply.code(403).send({ error: 'Device déjà rattaché à un autre token' })
+      }
     }
 
     const mainDisk = disks.find(d => d.letter === 'C:') || disks[0]

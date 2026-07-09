@@ -2,6 +2,13 @@ import { getGroupDeviceHostnames } from '../../core/lib/graph.js'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
 
 // Gestion des packages déployables (winget ou script PowerShell)
+
+// Charset autorisé pour un identifiant winget (ex: "Microsoft.PowerShell").
+// Empêche l'injection d'arguments winget (une valeur commençant par `-`
+// serait interprétée comme une option par `winget install --id <val>`) et
+// borne la longueur. Aligné avec le format des IDs du dépôt winget-pkgs.
+const WINGET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$/
+
 export default async function packagesRoute(fastify) {
 
   // GET /api/packages/winget/search — autocomplétion sur l'index officiel
@@ -53,11 +60,18 @@ export default async function packagesRoute(fastify) {
   })
 
   // POST /api/packages — créer un package (draft)
-  fastify.post('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // requireAdmin : un package porte un corps PowerShell (install/detection)
+  // exécuté en SYSTEM par l'agent. La création/édition doit être réservée
+  // aux admins, comme l'approbation et le déploiement — sinon un simple
+  // utilisateur pouvait rédiger le script qu'un admin approuvera ensuite.
+  fastify.post('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
     if (!name) return reply.code(400).send({ error: 'name requis' })
     if (type === 'winget' && !winget_id) return reply.code(400).send({ error: 'winget_id requis pour type=winget' })
     if (type === 'script' && !install_script) return reply.code(400).send({ error: 'install_script requis pour type=script' })
+    if (winget_id && !WINGET_ID_RE.test(winget_id)) {
+      return reply.code(400).send({ error: 'winget_id invalide (format attendu : Editeur.Produit)' })
+    }
 
     const { entraId } = fastify.getUserIdentity(req)
     const { rows } = await fastify.db.query(`
@@ -203,11 +217,14 @@ export default async function packagesRoute(fastify) {
   })
 
   // PATCH /api/packages/:id — modifier (repasse en draft si approuvé)
-  fastify.patch('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.patch('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: [existing] } = await fastify.db.query(`SELECT * FROM packages WHERE id = $1`, [req.params.id])
     if (!existing) return reply.code(404).send({ error: 'Package introuvable' })
 
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
+    if (winget_id && !WINGET_ID_RE.test(winget_id)) {
+      return reply.code(400).send({ error: 'winget_id invalide (format attendu : Editeur.Produit)' })
+    }
 
     // Toute modification d'un package approuvé le repasse en draft
     const newStatus = existing.status === 'approved' ? 'draft' : existing.status
@@ -236,7 +253,7 @@ export default async function packagesRoute(fastify) {
   })
 
   // DELETE /api/packages/:id — supprimer (bloqué si déploiements actifs)
-  fastify.delete('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.delete('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: active } = await fastify.db.query(`
       SELECT id FROM deployments WHERE package_id = $1 AND status IN ('pending','running') LIMIT 1
     `, [req.params.id])

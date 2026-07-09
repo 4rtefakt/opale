@@ -101,8 +101,18 @@ test('POST /api/packages — sans Bearer → 401', { skip: SKIP }, async () => {
 
 // ─── POST / — création ────────────────────────────────────────────────────────
 
-test('POST /api/packages — non-admin peut créer (pas requireAdmin)', { skip: SKIP }, async () => {
+test('POST /api/packages — non-admin refusé (requireAdmin)', { skip: SKIP }, async () => {
   const token = await userToken('oid-pkg-create-user')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/packages',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { name: 'Mon App', type: 'winget', winget_id: 'My.App' },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
+test('POST /api/packages — admin peut créer', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-create-admin')
   const res = await fastify.inject({
     method: 'POST', url: '/api/packages',
     headers: { authorization: `Bearer ${token}` },
@@ -115,8 +125,19 @@ test('POST /api/packages — non-admin peut créer (pas requireAdmin)', { skip: 
   assert.ok(body.id, 'id doit être présent')
 })
 
+test('POST /api/packages — winget_id au format invalide → 400', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-badwinget-admin')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/packages',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { name: 'App', type: 'winget', winget_id: '--from=evil' },
+  })
+  assert.equal(res.statusCode, 400)
+  assert.match(res.json().error, /winget_id/)
+})
+
 test('POST /api/packages — name manquant → 400', { skip: SKIP }, async () => {
-  const token = await userToken('oid-pkg-noname-user')
+  const token = await adminToken('oid-pkg-noname-admin')
   const res = await fastify.inject({
     method: 'POST', url: '/api/packages',
     headers: { authorization: `Bearer ${token}` },
@@ -127,7 +148,7 @@ test('POST /api/packages — name manquant → 400', { skip: SKIP }, async () =>
 })
 
 test('POST /api/packages — type=winget sans winget_id → 400', { skip: SKIP }, async () => {
-  const token = await userToken('oid-pkg-nowinget-user')
+  const token = await adminToken('oid-pkg-nowinget-admin')
   const res = await fastify.inject({
     method: 'POST', url: '/api/packages',
     headers: { authorization: `Bearer ${token}` },

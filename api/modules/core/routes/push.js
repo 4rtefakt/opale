@@ -24,7 +24,17 @@ export async function sendPushToAll(fastify, payload) {
   initVapid()
   if (!_vapidConfigured) return
 
-  const { rows } = await fastify.db.query(`SELECT subscription FROM push_subscriptions`)
+  // Scope admin : les push portent des alertes sensibles (hostname, %
+  // disque, tamper). On ne les envoie qu'aux abonnés actuellement admins —
+  // le filtre est dynamique (JOIN sur users_cache.is_admin), donc un user
+  // promu/rétrogradé bascule automatiquement sans re-souscription. Sans ce
+  // filtre, tout utilisateur authentifié abonné recevait les alertes.
+  const { rows } = await fastify.db.query(`
+    SELECT ps.subscription
+    FROM push_subscriptions ps
+    JOIN users_cache u ON u.entra_id = ps.user_entra_id
+    WHERE u.is_admin = TRUE
+  `)
   for (const row of rows) {
     try {
       await webpush.sendNotification(row.subscription, JSON.stringify(payload))

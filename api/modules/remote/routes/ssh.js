@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { Client } from 'ssh2'
 import { SessionBuffer } from '../lib/session-buffer.js'
 import { parseReason, formatReasonLine } from '../lib/remote-reason.js'
@@ -74,6 +75,13 @@ export default async function sshRoute(fastify) {
     )
     if (!devices.length || !devices[0].ip_netbird) {
       send('error', 'Poste introuvable ou IP Netbird manquante'); socket.close(); return
+    }
+    // ip_netbird est reporté par l'agent (donnée semi-fiable). On exige une
+    // IP littérale (IPv4/IPv6) avant de l'utiliser comme hôte SSH : ça évite
+    // qu'un agent compromis fasse pointer la connexion (et le trafic terminal)
+    // vers un nom d'hôte / une infra qu'il contrôle.
+    if (!isIP(devices[0].ip_netbird)) {
+      send('error', 'IP du poste invalide'); socket.close(); return
     }
     const device = devices[0]
 

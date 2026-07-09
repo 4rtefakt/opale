@@ -7,10 +7,16 @@ import '/api.js'
 window.t = t
 
 // ─── Utilitaires globaux ───
-// Échappe les 5 caractères dangereux pour insertion HTML (body, attributs,
-// y compris dans un attribut onclick="fn('${esc(x)}')" — l'échappement de
-// l'apostrophe ferme la classe de bugs où une valeur user-controlled
-// casserait l'argument JS).
+// Échappe les 5 caractères dangereux pour une insertion HTML : contexte
+// texte (innerHTML) ET contexte attribut *entre guillemets* (href="…",
+// title="…", value="…") — les deux types de quotes sont échappés.
+//
+// ⚠ esc() n'est PAS suffisant dans un gestionnaire d'événement inline
+// (onclick="fn('…')") : le parseur HTML décode les entités AVANT que le JS
+// ne soit compilé, donc `&#39;` redevient `'` et referme l'argument JS.
+// Pour un argument JS d'un onclick, utiliser jsArg() (cf. plus bas).
+// esc() ne neutralise pas non plus un schéma d'URL javascript: ni un
+// contexte CSS/style.
 window.esc = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;')
   .replace(/>/g, '&gt;').replace(/"/g, '&quot;')

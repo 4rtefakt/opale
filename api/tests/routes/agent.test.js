@@ -143,6 +143,36 @@ test('POST /checkin — token lié à device A + body hostname → device B = 40
   assert.match(res.json().error, /autre device/i)
 })
 
+test('POST /checkin — token non lié ne peut pas s\'approprier un device déjà tenu par un autre token → 403', { skip: SKIP }, async () => {
+  // Un device déjà enrôlé (token propriétaire lié), et un token vierge créé
+  // manuellement (device_id NULL). Le token vierge tente un checkin en
+  // spoofant le hostname du device existant : doit être refusé.
+  const device = await seedDevice(db, { hostname: 'PC-OWNED' })
+  await seedAgentToken(db, { deviceId: device.id, label: 'owner-token' })
+  const { secret: orphanSecret } = await seedAgentToken(db, { label: 'orphan-token' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(orphanSecret),
+    payload: { hostname: 'PC-OWNED' },
+  })
+  assert.equal(res.statusCode, 403, `body: ${res.body}`)
+})
+
+test('POST /checkin — token non lié PEUT se lier à un device Intune-only (sans propriétaire) → 200', { skip: SKIP }, async () => {
+  // Device créé par sync Intune, aucun token agent propriétaire. Un token
+  // vierge doit pouvoir s'y lier au 1er checkin (flux d'enrôlement legit).
+  const device = await seedDevice(db, { hostname: 'PC-INTUNE-ONLY' })
+  const { secret } = await seedAgentToken(db, { label: 'fresh-token' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(secret),
+    payload: { hostname: 'PC-INTUNE-ONLY' },
+  })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+})
+
 // ─── POST /checkin — happy path + hook compliance ───────────────────────────
 
 test('POST /checkin — premier checkin met à jour last_seen + déclenche eval compliance', { skip: SKIP }, async () => {

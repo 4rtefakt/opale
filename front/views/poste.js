@@ -993,7 +993,7 @@ function netifRow(iface) {
       <div style="font-size:12px;font-weight:500">${esc(iface.adapter || '—')}</div>
       <div style="font-size:11px;color:var(--text-tertiary)">${esc(iface.ip || '—')} · ${esc(iface.mac || '—')}</div>
     </div>
-    <span class="badge">${iface.type}</span>
+    <span class="badge">${esc(iface.type || '—')}</span>
   </div>`
 }
 

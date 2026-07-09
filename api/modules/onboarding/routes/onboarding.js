@@ -7,7 +7,11 @@ import {
 export default async function onboardingRoute(fastify) {
 
   // GET /api/onboarding?kind=&status=
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // requireAdmin : les fiches d'onboarding contiennent des PII (nouveaux
+  // arrivants) et, pour les comptes créés via l'automatisation, le mot de
+  // passe temporaire Entra est écrit dans `notes` (cf. runAutomation plus
+  // bas). Réservé aux admins, comme toutes les autres routes du module.
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { kind, status } = req.query
     const conds = []; const params = []; let i = 1
     if (kind)   { conds.push(`kind = $${i++}`);   params.push(kind) }
@@ -66,7 +70,10 @@ export default async function onboardingRoute(fastify) {
   })
 
   // GET /api/onboarding/:id
-  fastify.get('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // requireAdmin : même raison que GET / (PII + mot de passe temporaire
+  // dans `notes`). Sans ce garde, n'importe quel utilisateur authentifié
+  // pouvait lire la fiche d'un onboarding arbitraire par son id (IDOR).
+  fastify.get('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows } = await fastify.db.query(
       'SELECT * FROM onboardings WHERE id = $1', [req.params.id]
     )

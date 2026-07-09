@@ -220,7 +220,7 @@ test('GET /:id — retourne onboarding + checks', { skip: SKIP }, async () => {
   assert.equal(first.done, false)
 })
 
-test('GET /:id — non-admin peut lire (route ouverte aux authentifiés)', { skip: SKIP }, async () => {
+test('GET /:id — non-admin refusé (requireAdmin : notes = mot de passe temporaire)', { skip: SKIP }, async () => {
   const adminTok = await adminToken('oid-ob-get-nonadmin-setup')
   const created = (await createOnboarding(adminTok, { person_name: 'Readable' })).json()
   const token = await userToken('oid-ob-get-nonadmin')
@@ -228,7 +228,7 @@ test('GET /:id — non-admin peut lire (route ouverte aux authentifiés)', { ski
     method: 'GET', url: `/api/onboarding/${created.id}`,
     headers: { authorization: `Bearer ${token}` },
   })
-  assert.equal(res.statusCode, 200)
+  assert.equal(res.statusCode, 403)
 })
 
 // ─── PATCH /:id — update ─────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { Client } from 'ssh2'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
 
@@ -156,11 +157,15 @@ export default async function scriptsRoute(fastify) {
       if (!targetIds.length) return reply.code(400).send({ error: 'Groupe natif vide ou ne contient aucun poste' })
     }
 
-    const { rows: devices } = await fastify.db.query(
+    const { rows: allDevices } = await fastify.db.query(
       `SELECT id, hostname, ip_netbird FROM devices WHERE id = ANY($1::uuid[]) AND ip_netbird IS NOT NULL`,
       [targetIds]
     )
-    if (!devices.length) return reply.code(400).send({ error: 'Aucun poste joignable (IP Netbird manquante)' })
+    // ip_netbird est reporté par l'agent : on ne garde que les postes dont
+    // l'IP est une IP littérale valide (anti-redirection du trafic script
+    // vers une cible contrôlée par un agent compromis).
+    const devices = allDevices.filter(d => isIP(d.ip_netbird))
+    if (!devices.length) return reply.code(400).send({ error: 'Aucun poste joignable (IP Netbird manquante ou invalide)' })
 
     const { entraId, displayName } = fastify.getUserIdentity(req)
 

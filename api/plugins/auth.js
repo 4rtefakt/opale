@@ -8,17 +8,19 @@ async function authPlugin(fastify, opts = {}) {
   // En test on passe createLocalJWKSet pour éviter le fetch HTTPS et
   // valider la chaîne signature + iss + aud sur une keypair locale.
   let jwks = opts.jwks || null
-  let jwksCachedAt = 0
   const CACHE_MS = 10 * 60 * 1000
 
   function getJWKS() {
     if (opts.jwks) return opts.jwks
-    if (!jwks || Date.now() - jwksCachedAt > CACHE_MS) {
+    // Construit le remote JWKS une seule fois : jose gère lui-même le cache
+    // (cacheMaxAge), le rafraîchissement sur rotation de clé, et le cooldown
+    // anti-hammering sur kid inconnu. Le reconstruire périodiquement jetait
+    // cet état interne et forçait un cold refetch à chaque cycle.
+    if (!jwks) {
       jwks = createRemoteJWKSet(
         new URL('https://login.microsoftonline.com/common/discovery/v2.0/keys'),
         { cacheMaxAge: CACHE_MS }
       )
-      jwksCachedAt = Date.now()
     }
     return jwks
   }
@@ -35,7 +37,12 @@ async function authPlugin(fastify, opts = {}) {
     for (const issuer of issuers) {
       for (const audience of audiences) {
         try {
-          const { payload } = await jwtVerify(token, getJWKS(), { issuer, audience })
+          // algorithms épinglé sur RS256 : Entra signe ses JWT en RS256, et
+          // épingler évite qu'un token forgé avec un alg inattendu (ex:
+          // confusion d'algorithme) ne soit accepté. Defense in depth.
+          const { payload } = await jwtVerify(token, getJWKS(), {
+            issuer, audience, algorithms: ['RS256'],
+          })
           return payload
         } catch {}
       }

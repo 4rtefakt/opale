@@ -280,13 +280,22 @@ export default async function ticketsRoute(fastify) {
     const {
       title, description, priority = 'normal', device_id,
       source = 'manual',
-      assigned_to_entra_id, assigned_to_name,
-      user_id,
+      assigned_to_entra_id: reqAssignedTo, assigned_to_name: reqAssignedToName,
+      user_id: reqUserId,
       tag_ids,
     } = req.body || {}
     if (!title) return reply.code(400).send({ error: 'Titre requis' })
 
     const { entraId, displayName } = fastify.getUserIdentity(req)
+
+    // Anti-usurpation : seul un admin peut désigner un demandeur (user_id) ou
+    // un assigné arbitraire — ces champs décident *qui* a accès au ticket
+    // (cf. checkTicketAccess). Un non-admin qui ouvre un ticket en est
+    // toujours le demandeur, et ne peut pas l'assigner à quelqu'un d'autre.
+    const isAdmin = await fastify.isAdmin(req)
+    const user_id             = isAdmin ? (reqUserId || null)        : entraId
+    const assigned_to_entra_id = isAdmin ? (reqAssignedTo || null)   : null
+    const assigned_to_name     = isAdmin ? (reqAssignedToName || null): null
 
     const client = await fastify.db.connect()
     try {
@@ -403,7 +412,19 @@ export default async function ticketsRoute(fastify) {
     const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
     if (!acl) return
     const { status, priority, assigned_to_entra_id, assigned_to_name, user_id, device_id } = req.body || {}
-    const { displayName } = acl
+    const { displayName, isAdmin } = acl
+
+    // Champs de workflow/appartenance réservés à l'admin. Un requester ou un
+    // assigné (accès accordé par checkTicketAccess) peut changer le statut et
+    // la priorité de SON ticket, mais pas le réassigner, en changer le
+    // demandeur ni le re-scoper sur un autre poste — ces champs redéfinissent
+    // qui a accès au ticket et ne doivent pas être pilotables par un non-admin.
+    const adminOnly = { assigned_to_entra_id, assigned_to_name, user_id, device_id }
+    if (!isAdmin && Object.values(adminOnly).some(v => v !== undefined)) {
+      return reply.code(403).send({
+        error: 'Réassignation / changement de demandeur ou de poste réservé aux admins',
+      })
+    }
 
     const fields = []
     const params = []
