@@ -11,6 +11,7 @@ import { join, dirname } from 'path'
 import dbPlugin           from './plugins/db.js'
 import authPlugin         from './plugins/auth.js'
 import cleanupPlugin      from './plugins/cleanup.js'
+import fleetWatchPlugin   from './plugins/fleet-watch.js'
 import errorHandlerPlugin from './plugins/error-handler.js'
 
 import { loadModules, startModuleWorkers } from './lib/module-loader.js'
@@ -82,6 +83,7 @@ await fastify.register(websocket)
 await fastify.register(dbPlugin)
 await fastify.register(authPlugin)
 await fastify.register(cleanupPlugin)
+await fastify.register(fleetWatchPlugin)
 await fastify.register(errorHandlerPlugin)
 await fastify.register(sensible)   // expose fastify.httpErrors.X()
 
