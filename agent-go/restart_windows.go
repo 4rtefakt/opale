@@ -12,17 +12,25 @@ import (
 
 // restartService — redémarre le service via un helper détaché en
 // background. Sans ce helper, sc stop/start depuis le service lui-même
-// le tuerait avant de pouvoir redémarrer. La séquence "timeout 5 ; stop ;
-// start" laisse le temps au service de remonter son état Stop au SCM.
+// le tuerait avant de pouvoir redémarrer. Le délai laisse le temps au
+// service de remonter son état Stop au SCM avant le stop/start.
+//
+// IMPORTANT : on utilise PowerShell Start-Sleep, PAS `timeout /t`. `timeout`
+// exige un handle console d'entrée ; lancé en DETACHED_PROCESS (sans console)
+// il échoue immédiatement — et avec l'ancien `&&`, l'échec court-circuitait
+// stop/start, donc le service NE redémarrait jamais (bug de l'incident
+// 07/2026). Start-Sleep ne dépend d'aucune console. Stop-Service -Force est
+// tolérant (SilentlyContinue) : si le service est déjà arrêté, Start-Service
+// le relance quand même.
 //
 // La fonction retourne dans tous les cas — c'est au caller de quitter
 // le service proprement (sortir de la boucle Run) après l'appel.
 func restartService() error {
-	args := []string{
-		"/c",
-		"timeout /t 5 /nobreak >nul && sc stop " + branding.ServiceName + " && sc start " + branding.ServiceName,
-	}
-	cmd := exec.Command("cmd.exe", args...)
+	svc := branding.ServiceName
+	ps := "Start-Sleep -Seconds 5; " +
+		"Stop-Service -Force -Name '" + svc + "' -ErrorAction SilentlyContinue; " +
+		"Start-Service -Name '" + svc + "'"
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: 0x00000008 | 0x00000200, // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP

@@ -36,11 +36,42 @@ var httpClient = &http.Client{
 	},
 }
 
+// metricsCollectTimeout — plafond de temps pour la collecte WMI/Win32.
+// La lib WMI (yusufpapurcu/wmi) n'est pas annulable ; on borne donc la
+// collecte via une goroutine + select. Un dépassement (WMI wedgé) dégrade
+// en checkin sauté au lieu de figer la goroutine de checkin — cf. incident
+// 07/2026. Inférieur au timeout global de 60s posé par runCheckin.
+const metricsCollectTimeout = 45 * time.Second
+
+// collectMetricsBounded exécute CollectMetrics avec un plafond de temps.
+// La goroutine sous-jacente peut fuiter si WMI ne rend jamais la main (rare,
+// borné par le watchdog qui redémarre le service) — un checkin qui rend la
+// main même dégradé vaut mieux qu'un agent gelé et invisible.
+func collectMetricsBounded(ctx context.Context) (*CheckinPayload, error) {
+	type result struct {
+		payload *CheckinPayload
+		err     error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		p, err := CollectMetrics()
+		ch <- result{p, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.payload, r.err
+	case <-time.After(metricsCollectTimeout):
+		return nil, fmt.Errorf("timeout %s (WMI bloqué ?)", metricsCollectTimeout)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // DoCheckin collecte les métriques, envoie le POST, et retourne la réponse
 // du serveur (commandes, déploiements, agent_update). En cas d'échec réseau,
 // retourne une erreur — le caller doit incrémenter le compteur de rollback.
 func DoCheckin(ctx context.Context, cfg *Config, st *State) (*CheckinResponse, error) {
-	payload, err := CollectMetrics()
+	payload, err := collectMetricsBounded(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("collecte métriques : %w", err)
 	}

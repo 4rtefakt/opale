@@ -2,11 +2,45 @@ package main
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 )
 
 // CheckinInterval — fréquence du checkin. 15 min comme inventory.ps1.
 const CheckinInterval = 15 * time.Minute
+
+// Supervision du checkin — protège contre un runCheckin qui ne revient
+// jamais (hang WMI non annulable, cf. incident 07/2026). Le checkin tourne
+// dans sa propre goroutine ; s'il n'est pas revenu au tick suivant, on skip
+// au lieu d'empiler, et le watchdog (service_windows) redémarre le service
+// si aucun checkin n'aboutit pendant trop longtemps.
+var (
+	checkinRunning    atomic.Bool
+	lastCheckinReturn atomic.Int64 // unix sec du dernier retour de runCheckin
+)
+
+func init() { lastCheckinReturn.Store(time.Now().Unix()) }
+
+// launchCheckin lance runCheckin en goroutine avec garde anti-chevauchement.
+func launchCheckin(ctx context.Context, cfg *Config, st *State) {
+	if !checkinRunning.CompareAndSwap(false, true) {
+		logWarn("checkin-overlap", "checkin précédent encore actif (hang probable), skip", nil)
+		return
+	}
+	go func() {
+		defer checkinRunning.Store(false)
+		runCheckin(ctx, cfg, st)
+		lastCheckinReturn.Store(time.Now().Unix())
+	}()
+}
+
+// checkinStalled — true si aucun runCheckin n'est revenu depuis maxAge.
+// Un checkin en échec réseau revient vite (erreur), donc ne déclenche PAS :
+// on ne cible que le vrai gel (goroutine qui ne rend jamais la main).
+func checkinStalled(maxAge time.Duration) bool {
+	last := time.Unix(lastCheckinReturn.Load(), 0)
+	return time.Since(last) > maxAge
+}
 
 // runCheckin — un cycle de checkin complet avec gestion d'erreur, rollback,
 // update et exécution des commandes/déploiements/détections demandés par le

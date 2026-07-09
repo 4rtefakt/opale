@@ -39,11 +39,21 @@ func (s *agentService) Execute(args []string, r <-chan svc.ChangeRequest, status
 	// ctx que le service : le SCM Stop annule les deux ensemble.
 	go RunWSClient(ctx, cfg)
 
-	// Premier checkin immédiat
-	runCheckin(ctx, cfg, st)
+	// Premier checkin en goroutine (via launchCheckin) : un hang au tout
+	// premier cycle ne doit pas empêcher le SCM de voir l'état Running ni
+	// de traiter un Stop.
+	launchCheckin(ctx, cfg, st)
 
 	tick := time.NewTicker(CheckinInterval)
 	defer tick.Stop()
+
+	// Watchdog : si aucun checkin n'aboutit (revient) pendant watchdogStall,
+	// on considère l'agent gelé (typiquement un appel WMI non annulable) et
+	// on redémarre le service. C'est le filet de sécurité qui manquait lors
+	// de l'incident 07/2026 où tout le parc est resté figé plusieurs jours.
+	const watchdogStall = 3 * CheckinInterval // 45 min
+	wd := time.NewTicker(time.Minute)
+	defer wd.Stop()
 
 	for {
 		select {
@@ -60,7 +70,15 @@ func (s *agentService) Execute(args []string, r <-chan svc.ChangeRequest, status
 				logf("svc cmd inattendue : %v", c.Cmd)
 			}
 		case <-tick.C:
-			runCheckin(ctx, cfg, st)
+			launchCheckin(ctx, cfg, st)
+		case <-wd.C:
+			if checkinStalled(watchdogStall) {
+				logError("watchdog-restart", fmt.Errorf("aucun checkin abouti depuis %s — redémarrage", watchdogStall), nil)
+				status <- svc.Status{State: svc.StopPending}
+				_ = restartService()
+				cancel()
+				return false, 0
+			}
 		}
 	}
 }
