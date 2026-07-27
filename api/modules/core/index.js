@@ -7,6 +7,9 @@ import settingsRoute  from './routes/settings.js'
 import dashboardRoute from './routes/dashboard.js'
 import pushRoute      from './routes/push.js'
 import meRoute        from './routes/me.js'
+import healthRoute    from './routes/health.js'
+
+import { warnIfNoAdmin } from './lib/bootstrap-admin.js'
 
 export default {
   name: 'core',
@@ -14,6 +17,9 @@ export default {
   async register(fastify) {
     // env / branding / manifest s'enregistrent sans prefix : ils déclarent
     // leurs paths complets en interne.
+    // health se déclare sans prefix (path complet /health) — les sondes
+    // Docker/proxy ne connaissent pas le préfixe /api.
+    await fastify.register(healthRoute)
     await fastify.register(envRoute)
     await fastify.register(brandingRoute)
     await fastify.register(manifestRoute)
@@ -24,5 +30,9 @@ export default {
     await fastify.register(dashboardRoute, { prefix: '/api/dashboard' })
     await fastify.register(pushRoute,      { prefix: '/api/push' })
     await fastify.register(meRoute,        { prefix: '/api/me' })
+
+    // Avertit tant que l'instance n'a aucun administrateur (cf.
+    // lib/bootstrap-admin.js). onReady : la base est connectée et migrée.
+    fastify.addHook('onReady', () => warnIfNoAdmin(fastify.db, fastify.log))
   }
 }

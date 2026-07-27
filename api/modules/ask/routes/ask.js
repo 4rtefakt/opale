@@ -20,7 +20,7 @@ import { compile }           from '../lib/compile.js'
 import { describeRegistry }  from '../lib/registry.js'
 import { logAudit }          from '../../core/lib/audit.js'
 
-const SETTINGS_KEYS = ['ask.enabled', 'ask.provider', 'ask.url', 'ask.model', 'disk_warn_pct', 'disk_critical_pct']
+const SETTINGS_KEYS = ['ask.enabled', 'ask.provider', 'ask.url', 'ask.model', 'disk_warn_pct', 'disk_critical_pct', 'org.name']
 
 async function loadConfig(fastify) {
   const { rows } = await fastify.db.query(
@@ -33,6 +33,9 @@ async function loadConfig(fastify) {
     url:      s['ask.url'] || '',
     model:    s['ask.model'] || '',
     apiKey:   process.env.OPALE_ASK_API_KEY || '',
+    // Contexte d'organisation injecté dans le prompt système — vient du
+    // setting, jamais du code (Opale est auto-hébergé par des tiers).
+    orgName:  s['org.name'] || '',
     thresholds: {
       warn:     parseInt(s.disk_warn_pct ?? '80', 10),
       critical: parseInt(s.disk_critical_pct ?? '90', 10),
@@ -69,6 +72,7 @@ export default async function askRoute(fastify) {
     try {
       raw = await askProvider({
         provider: cfg.provider, url: cfg.url, key: cfg.apiKey, model: cfg.model, question,
+        orgContext: cfg.orgName,
       })
     } catch (err) {
       fastify.log.warn({ err: err.message }, 'ask: provider failed')

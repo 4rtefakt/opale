@@ -36,7 +36,7 @@ test('generateSuggestion : utilise le systemPrompt fourni (override)', async () 
     return { ok: true, json: async () => ({ message: { content: 'ok' } }) }
   }
   await generateSuggestion({
-    title: 'T', url: 'u', model: 'm', fetchImpl,
+    title: 'T', url: 'http://ollama:11434', model: 'm', fetchImpl,
     systemPrompt: 'PROMPT PERSONNALISÉ XYZ',
   })
   assert.equal(captured.messages[0].role, 'system')
@@ -49,7 +49,7 @@ test('generateSuggestion : systemPrompt vide → fallback défaut', async () => 
     captured = JSON.parse(opts.body)
     return { ok: true, json: async () => ({ message: { content: 'ok' } }) }
   }
-  await generateSuggestion({ title: 'T', url: 'u', model: 'm', fetchImpl, systemPrompt: '   ' })
+  await generateSuggestion({ title: 'T', url: 'http://ollama:11434', model: 'm', fetchImpl, systemPrompt: '   ' })
   assert.match(captured.messages[0].content, /support informatique interne/)
 })
 
@@ -70,13 +70,13 @@ test('generateSuggestion : appelle Ollama /api/chat et retourne le texte', async
 
 test('generateSuggestion : url/model manquant → throw', async () => {
   await assert.rejects(() => generateSuggestion({ model: 'x', fetchImpl: async () => ({}) }), /url manquante/)
-  await assert.rejects(() => generateSuggestion({ url: 'x', fetchImpl: async () => ({}) }), /model manquant/)
+  await assert.rejects(() => generateSuggestion({ url: 'http://ollama:11434', fetchImpl: async () => ({}) }), /model manquant/)
 })
 
 test('generateSuggestion : réponse vide → throw', async () => {
   const fetchImpl = async () => ({ ok: true, json: async () => ({ message: { content: '' } }) })
   await assert.rejects(
-    () => generateSuggestion({ title: 'T', url: 'u', model: 'm', fetchImpl }),
+    () => generateSuggestion({ title: 'T', url: 'http://ollama:11434', model: 'm', fetchImpl }),
     /réponse vide/
   )
 })
@@ -84,7 +84,7 @@ test('generateSuggestion : réponse vide → throw', async () => {
 test('generateSuggestion : Ollama 500 → throw', async () => {
   const fetchImpl = async () => ({ ok: false, status: 500 })
   await assert.rejects(
-    () => generateSuggestion({ title: 'T', url: 'u', model: 'm', fetchImpl }),
+    () => generateSuggestion({ title: 'T', url: 'http://ollama:11434', model: 'm', fetchImpl }),
     /Ollama 500/
   )
 })

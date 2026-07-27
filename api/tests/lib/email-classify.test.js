@@ -100,7 +100,7 @@ test('classify : other', async () => {
 test('classify : Ollama HTTP non-OK → throw', async () => {
   const fetchImpl = mockOllama({}, { ok: false, status: 500 })
   await assert.rejects(
-    () => classifyWithOllama({ from: 'x@y' }, { url: 'http://x', model: 'm', fetchImpl }),
+    () => classifyWithOllama({ from: 'x@y' }, { url: 'http://ollama:11434', model: 'm', fetchImpl }),
     /Ollama 500/
   )
 })
@@ -108,7 +108,7 @@ test('classify : Ollama HTTP non-OK → throw', async () => {
 test('classify : content non-JSON → throw', async () => {
   const fetchImpl = mockOllama({ message: { content: 'pas du json' } })
   await assert.rejects(
-    () => classifyWithOllama({ from: 'x@y' }, { url: 'http://x', model: 'm', fetchImpl }),
+    () => classifyWithOllama({ from: 'x@y' }, { url: 'http://ollama:11434', model: 'm', fetchImpl }),
     /non-JSON/
   )
 })
@@ -116,7 +116,7 @@ test('classify : content non-JSON → throw', async () => {
 test('classify : format sortie non conforme → throw', async () => {
   const fetchImpl = mockOllama({ message: { content: '{"intent":"spam","confidence":1}' } })
   await assert.rejects(
-    () => classifyWithOllama({ from: 'x@y' }, { url: 'http://x', model: 'm', fetchImpl }),
+    () => classifyWithOllama({ from: 'x@y' }, { url: 'http://ollama:11434', model: 'm', fetchImpl }),
     /format de sortie invalide/
   )
 })
@@ -130,7 +130,7 @@ test('classify : url manquante → throw avant fetch', async () => {
 
 test('classify : model manquant → throw avant fetch', async () => {
   await assert.rejects(
-    () => classifyWithOllama({ from: 'x@y' }, { url: 'http://x', model: '' }),
+    () => classifyWithOllama({ from: 'x@y' }, { url: 'http://ollama:11434', model: '' }),
     /model manquant/
   )
 })

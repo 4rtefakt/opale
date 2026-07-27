@@ -1,4 +1,5 @@
 import { searchAADUsers, getAllAADUsers, getUserPhoto, getEntraUser } from '../lib/graph.js'
+import { maybeBootstrapAdmin } from '../lib/bootstrap-admin.js'
 
 // Cache photos en mémoire 1h pour éviter de re-fetcher Graph à chaque affichage
 const photoCache = new Map()
@@ -85,6 +86,11 @@ export default async function usersRoute(fastify) {
          synced_at    = now()`,
       [entraId, displayName, email]
     )
+
+    // Bootstrap : si l'instance n'a encore AUCUN admin, ce compte le devient.
+    // Doit venir après l'upsert (la ligne users_cache doit exister) et avant
+    // la lecture de is_admin (pour que la réponse reflète la promotion).
+    await maybeBootstrapAdmin(fastify.db, fastify.log, { entraId, email, displayName })
 
     const res = await fastify.db.query(
       'SELECT is_admin, job_title FROM users_cache WHERE entra_id = $1',

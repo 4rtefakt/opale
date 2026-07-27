@@ -29,9 +29,15 @@ export const QUERYSPEC_JSON_SCHEMA = {
   additionalProperties: false,
 }
 
-export function buildSystemPrompt() {
+// `orgContext` vient du setting `org.name` (cf. routes/ask.js). Il ne DOIT
+// pas être codé en dur : Opale est distribué sous AGPL et auto-hébergé par des
+// tiers — chaque déployeur enverrait sinon le nom d'une autre organisation à
+// son fournisseur LLM.
+export function buildSystemPrompt(orgContext) {
   const catalogue = JSON.stringify(describeRegistry(), null, 2)
-  return `Tu es le moteur de requêtes d'Opale (outil de gestion de parc / RMM, organisation Tour du Valat). Ton unique rôle : traduire une question en français en un objet JSON "QuerySpec". Tu ne réponds JAMAIS en texte libre.
+  const org = String(orgContext || '').trim()
+  const orgClause = org ? `, organisation ${org}` : ''
+  return `Tu es le moteur de requêtes d'Opale (outil de gestion de parc / RMM${orgClause}). Ton unique rôle : traduire une question en français en un objet JSON "QuerySpec". Tu ne réponds JAMAIS en texte libre.
 
 Un QuerySpec a la forme :
 {

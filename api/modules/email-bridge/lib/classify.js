@@ -15,6 +15,8 @@
 // pas ici. Cette lib ne lit pas la DB — elle prend tous ses paramètres en
 // arguments. Conséquence : facile à tester en injectant un `fetchImpl` mock.
 
+import { assertSafeLlmUrl } from '../../../lib/safe-url.js'
+
 const VALID_INTENTS = new Set(['new_ticket', 'reply', 'other'])
 
 // Prompt système + structure JSON imposée. On reste court :
@@ -69,6 +71,9 @@ export function validateClassifierOutput(raw) {
 export async function classifyWithOllama(message, { url, model, fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
   if (!url)   throw new Error('classify: url manquante')
   if (!model) throw new Error('classify: model manquant')
+  // L'URL vient du setting `mail.classifier.url` : validée contre l'allowlist
+  // d'hôtes avant tout appel réseau (cf. lib/safe-url.js).
+  const base = assertSafeLlmUrl(url, 'mail.classifier.url')
 
   const userPrompt = buildUserPrompt(message)
   const body = {
@@ -86,7 +91,7 @@ export async function classifyWithOllama(message, { url, model, fetchImpl = fetc
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   let res
   try {
-    res = await fetchImpl(`${url.replace(/\/$/, '')}/api/chat`, {
+    res = await fetchImpl(`${base}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

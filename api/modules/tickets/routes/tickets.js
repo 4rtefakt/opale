@@ -570,7 +570,7 @@ export default async function ticketsRoute(fastify) {
     const { rows: cfgRows } = await fastify.db.query(
       `SELECT key, value FROM settings WHERE key IN
         ('tickets.assistant.enabled','tickets.assistant.url','tickets.assistant.model',
-         'tickets.assistant.system_prompt')`
+         'tickets.assistant.system_prompt','org.name')`
     )
     const cfg = Object.fromEntries(cfgRows.map(r => [r.key, r.value]))
     if (cfg['tickets.assistant.enabled'] !== 'true') {
@@ -619,6 +619,9 @@ export default async function ticketsRoute(fastify) {
         device: dev, requester, tags: tagsR.rows.map(r => r.name),
         messages: msgsR.rows, url, model,
         systemPrompt: cfg['tickets.assistant.system_prompt'],
+        // Le nom de l'organisation vient du setting, jamais du code
+        // (cf. lib/assistant.js — Opale est auto-hébergé par des tiers).
+        orgName: cfg['org.name'],
       })
     } catch (err) {
       req.log?.warn({ err: err.message, ticketId: req.params.id }, 'ai-suggest: génération échouée')

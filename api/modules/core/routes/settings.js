@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import { getAppToken, invalidateUserFilterCache } from '../lib/graph.js'
 import { logAudit } from '../lib/audit.js'
+import { checkSafeLlmUrl } from '../../../lib/safe-url.js'
 
 // ─── Helpers ───
 function genToken() {
@@ -180,6 +181,14 @@ export default async function settingsRoute(fastify) {
         return reply.code(400).send({ error: "ask.enabled doit valoir 'true' ou 'false'" })
       }
     }
+    // ask.url : validée à l'écriture pour un 400 lisible tout de suite. La
+    // vraie frontière reste au point d'appel (lib/safe-url.js, appelée depuis
+    // ask/lib/provider.js) — c'est elle qui couvre les valeurs arrivées en
+    // base par un autre chemin (migration, psql).
+    if (req.body?.['ask.url'] !== undefined && String(req.body['ask.url']).trim() !== '') {
+      const res = checkSafeLlmUrl(req.body['ask.url'], 'ask.url')
+      if (!res.ok) return reply.code(400).send({ error: res.error })
+    }
     if (req.body?.['ask.provider'] !== undefined) {
       const v = String(req.body['ask.provider'])
       if (v !== 'mistral' && v !== 'anthropic') {
@@ -279,7 +288,28 @@ export default async function settingsRoute(fastify) {
   fastify.patch('/admins/:entraId', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { is_admin } = req.body || {}
     if (typeof is_admin !== 'boolean') return reply.code(400).send({ error: 'is_admin (bool) requis' })
-    const { displayName } = fastify.getUserIdentity(req)
+    const { displayName, entraId: actorId } = fastify.getUserIdentity(req)
+
+    // Deux garde-fous contre le verrouillage définitif de l'instance. Sans
+    // eux, un seul clic peut rendre Opale inadministrable : il n'existe aucun
+    // chemin de récupération en dehors d'un UPDATE manuel en psql.
+    if (!is_admin) {
+      if (req.params.entraId === actorId) {
+        return reply.code(409).send({
+          error: 'Vous ne pouvez pas retirer vos propres droits administrateur — demandez à un autre admin.',
+        })
+      }
+      const { rows: others } = await fastify.db.query(
+        'SELECT count(*)::int AS n FROM users_cache WHERE is_admin AND entra_id <> $1',
+        [req.params.entraId]
+      )
+      if (others[0].n === 0) {
+        return reply.code(409).send({
+          error: 'Impossible de retirer le dernier administrateur — promouvez quelqu\'un d\'autre d\'abord.',
+        })
+      }
+    }
+
     const { rows } = await fastify.db.query(`
       UPDATE users_cache SET is_admin = $1 WHERE entra_id = $2 RETURNING entra_id, display_name, is_admin
     `, [is_admin, req.params.entraId])

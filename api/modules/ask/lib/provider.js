@@ -11,6 +11,7 @@
 // exportés pour être testés unitairement.
 
 import { buildSystemPrompt, buildUserPrompt, QUERYSPEC_JSON_SCHEMA } from './prompt.js'
+import { assertSafeLlmUrl } from '../../../lib/safe-url.js'
 
 const DEFAULT_URLS = {
   mistral:   'https://api.mistral.ai',
@@ -52,10 +53,12 @@ export function extractAnthropic(data) {
   return block.input
 }
 
-function buildRequest({ provider, url, key, model, question }) {
-  const system = buildSystemPrompt()
+function buildRequest({ provider, url, key, model, question, orgContext }) {
+  const system = buildSystemPrompt(orgContext)
   const user = buildUserPrompt(question)
-  const base = (url || DEFAULT_URLS[provider] || '').replace(/\/$/, '')
+  // La clé API part dans les en-têtes de cette requête : l'hôte de
+  // destination doit être validé AVANT de la construire, pas après.
+  const base = assertSafeLlmUrl(url || DEFAULT_URLS[provider], `ask.url (${provider})`)
 
   if (provider === 'mistral') {
     return {
@@ -105,7 +108,7 @@ function buildRequest({ provider, url, key, model, question }) {
 }
 
 export async function askProvider({
-  provider, url, key, model, question,
+  provider, url, key, model, question, orgContext,
   fetchImpl = fetch, timeoutMs = 20_000,
 } = {}) {
   if (!provider) throw new Error('askProvider: provider manquant')
@@ -113,7 +116,7 @@ export async function askProvider({
   if (!model)    throw new Error('askProvider: model manquant')
   if (!question || !String(question).trim()) throw new Error('askProvider: question vide')
 
-  const { endpoint, headers, body, extract } = buildRequest({ provider, url, key, model, question })
+  const { endpoint, headers, body, extract } = buildRequest({ provider, url, key, model, question, orgContext })
 
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
