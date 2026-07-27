@@ -101,8 +101,21 @@ test('POST /api/packages — sans Bearer → 401', { skip: SKIP }, async () => {
 
 // ─── POST / — création ────────────────────────────────────────────────────────
 
-test('POST /api/packages — non-admin peut créer (pas requireAdmin)', { skip: SKIP }, async () => {
+// Un package porte un install_script exécuté en SYSTEM sur le parc : sa
+// création est réservée aux admins, même si le déploiement reste derrière le
+// gate d'approbation.
+test('POST /api/packages — non-admin → 403', { skip: SKIP }, async () => {
   const token = await userToken('oid-pkg-create-user')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/packages',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { name: 'Mon App', type: 'winget', winget_id: 'My.App' },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
+test('POST /api/packages — admin crée en draft', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-create-admin')
   const res = await fastify.inject({
     method: 'POST', url: '/api/packages',
     headers: { authorization: `Bearer ${token}` },
@@ -116,7 +129,7 @@ test('POST /api/packages — non-admin peut créer (pas requireAdmin)', { skip: 
 })
 
 test('POST /api/packages — name manquant → 400', { skip: SKIP }, async () => {
-  const token = await userToken('oid-pkg-noname-user')
+  const token = await adminToken('oid-pkg-noname-admin')
   const res = await fastify.inject({
     method: 'POST', url: '/api/packages',
     headers: { authorization: `Bearer ${token}` },
@@ -127,7 +140,7 @@ test('POST /api/packages — name manquant → 400', { skip: SKIP }, async () =>
 })
 
 test('POST /api/packages — type=winget sans winget_id → 400', { skip: SKIP }, async () => {
-  const token = await userToken('oid-pkg-nowinget-user')
+  const token = await adminToken('oid-pkg-nowinget-admin')
   const res = await fastify.inject({
     method: 'POST', url: '/api/packages',
     headers: { authorization: `Bearer ${token}` },
@@ -457,4 +470,134 @@ test('POST /jobs/:jobId/cancel — job introuvable → 404', { skip: SKIP }, asy
     headers: { authorization: `Bearer ${token}` },
   })
   assert.equal(res.statusCode, 404)
+})
+
+// ─── Liaison contenu ↔ approbation (migration 072) ────────────────────────────
+//
+// Le gate d'approbation ne vaut que s'il porte sur un CONTENU, pas seulement
+// sur un statut. Ces tests couvrent la fenêtre qui restait ouverte : modifier
+// un package tant qu'il est en 'draft' — donc entre l'affichage par l'admin et
+// son clic sur « Approuver » — ne déclenchait aucun retour en draft.
+
+test('POST /:id/approve — fige le digest du contenu approuvé', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-digest-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Digest', status: 'draft' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/approve`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.match(res.json().approved_digest, /^[0-9a-f]{64}$/)
+})
+
+test('POST /:id/approve — expected_digest obsolète → 409 PACKAGE_CHANGED', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-digest2-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Digest Stale', status: 'draft' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/approve`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { expected_digest: 'f'.repeat(64) },
+  })
+  assert.equal(res.statusCode, 409)
+  assert.equal(res.json().code, 'PACKAGE_CHANGED')
+
+  const { rows: [p] } = await db.query('SELECT status FROM packages WHERE id = $1', [pkg.id])
+  assert.equal(p.status, 'draft', 'le package ne doit pas avoir été approuvé')
+})
+
+test('POST /:id/approve — expected_digest correct → approuvé', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-digest3-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Digest Fresh', status: 'draft' })
+
+  const detail = await fastify.inject({
+    method: 'GET', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  const digest = detail.json().content_digest
+  assert.match(digest, /^[0-9a-f]{64}$/)
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/approve`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { expected_digest: digest },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().status, 'approved')
+})
+
+test('POST /:id/deploy — contenu modifié après approbation → 409', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-digest4-admin')
+  const dev = await seedDevice(db, { hostname: 'PC-DIGEST', ipNetbird: '100.64.0.90' })
+  const pkg = await insertPackage(db, { name: 'Pkg Tampered', type: 'script', status: 'draft' })
+  await db.query(`UPDATE packages SET install_script = 'Install-Legit' WHERE id = $1`, [pkg.id])
+
+  await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/approve`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+
+  // Altération directe en base : simule un contournement du PATCH (script de
+  // maintenance, psql, ou une future route qui oublierait le retour en draft).
+  await db.query(
+    `UPDATE packages SET install_script = 'Install-Legit; Invoke-Expression $evil' WHERE id = $1`,
+    [pkg.id]
+  )
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/deploy`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { scope: 'device', device_ids: [dev.id], confirmed: true },
+  })
+  assert.equal(res.statusCode, 409)
+  assert.equal(res.json().code, 'PACKAGE_CHANGED')
+
+  const { rows } = await db.query('SELECT count(*)::int AS n FROM deployments WHERE package_id = $1', [pkg.id])
+  assert.equal(rows[0].n, 0, 'aucun déploiement ne doit avoir été créé')
+})
+
+test('POST /:id/deploy — approved_digest NULL (approbation pré-072) reste déployable', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-digest5-admin')
+  const dev = await seedDevice(db, { hostname: 'PC-LEGACY', ipNetbird: '100.64.0.91' })
+  const pkg = await insertPackage(db, { name: 'Pkg Legacy Approved', status: 'approved' })
+  await db.query('UPDATE packages SET approved_digest = NULL WHERE id = $1', [pkg.id])
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/deploy`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { scope: 'device', device_ids: [dev.id], confirmed: true },
+  })
+  assert.equal(res.statusCode, 201, 'ne doit pas casser un parc déjà en production')
+})
+
+// ─── Écritures réservées aux admins ───────────────────────────────────────────
+
+test('PATCH /:id — non-admin → 403', { skip: SKIP }, async () => {
+  const userTk = await userToken('oid-pkg-patch-user')
+  const pkg = await insertPackage(db, { name: 'Pkg Patch Guard', status: 'draft' })
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${userTk}` },
+    payload: { install_script: 'Invoke-Expression $evil' },
+  })
+  assert.equal(res.statusCode, 403)
+
+  const { rows: [p] } = await db.query('SELECT install_script FROM packages WHERE id = $1', [pkg.id])
+  assert.notEqual(p.install_script, 'Invoke-Expression $evil')
+})
+
+test('DELETE /:id — non-admin → 403', { skip: SKIP }, async () => {
+  const userTk = await userToken('oid-pkg-del-user')
+  const pkg = await insertPackage(db, { name: 'Pkg Delete Guard' })
+
+  const res = await fastify.inject({
+    method: 'DELETE', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${userTk}` },
+  })
+  assert.equal(res.statusCode, 403)
+
+  const { rows } = await db.query('SELECT count(*)::int AS n FROM packages WHERE id = $1', [pkg.id])
+  assert.equal(rows[0].n, 1, 'le package ne doit pas avoir été supprimé')
 })

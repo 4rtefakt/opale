@@ -460,11 +460,21 @@ async function pkgApprove() {
   if (!_selected) return
   if (!confirm(`Approuver le package "${_selected.name}" ?`)) return
   try {
-    await window.api.approvePackage(_selected.id)
+    // On renvoie le digest du contenu affiché : si quelqu'un a modifié le
+    // package entre l'affichage de cette page et le clic, le serveur refuse
+    // (409 PACKAGE_CHANGED) plutôt que d'approuver du code non relu.
+    await window.api.approvePackage(_selected.id, _selected.content_digest)
     showToast('Package approuvé', 'success')
     await loadPackages()
     await pkgSelect(_selected.id)
-  } catch (err) { showToast(err.message || 'Erreur', 'error') }
+  } catch (err) {
+    if (err?.body?.code === 'PACKAGE_CHANGED') {
+      showToast('Le package a été modifié depuis son affichage — rechargez et relisez avant d\'approuver.', 'error')
+      await pkgSelect(_selected.id)
+      return
+    }
+    showToast(err.message || 'Erreur', 'error')
+  }
 }
 
 async function pkgDelete() {

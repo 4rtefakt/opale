@@ -346,3 +346,104 @@ test('GET /audit — structure : { rows, total } avec pagination', { skip: SKIP 
   assert.equal(typeof body.total, 'number')
   assert.ok(body.rows.length <= 10)
 })
+
+// ─── PATCH /admins/:entraId — garde-fous anti-verrouillage ────────────────────
+//
+// Sans ces contrôles, un seul clic rendait l'instance inadministrable : il
+// n'existe aucun chemin de récupération dans l'UI, seulement un UPDATE en psql.
+
+test('PATCH /admins/:id — refuse de retirer le dernier admin', { skip: SKIP }, async () => {
+  await db.query('DELETE FROM users_cache')
+  await seedAdmin(db, { entraId: 'oid-lock-solo', displayName: 'Solo Admin' })
+  await seedNonAdmin(db, { entraId: 'oid-lock-other', displayName: 'Autre' })
+  const token = await jwt.sign({ oid: 'oid-lock-solo' })
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: '/api/settings/admins/oid-lock-solo',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { is_admin: false },
+  })
+  assert.equal(res.statusCode, 409)
+  assert.match(res.json().error, /dernier administrateur|propres droits/)
+
+  const { rows } = await db.query('SELECT count(*)::int AS n FROM users_cache WHERE is_admin')
+  assert.equal(rows[0].n, 1, 'l\'instance doit garder son admin')
+})
+
+test('PATCH /admins/:id — refuse l\'auto-révocation même avec d\'autres admins', { skip: SKIP }, async () => {
+  await db.query('DELETE FROM users_cache')
+  await seedAdmin(db, { entraId: 'oid-lock-a', displayName: 'Admin A' })
+  await seedAdmin(db, { entraId: 'oid-lock-b', displayName: 'Admin B' })
+  const token = await jwt.sign({ oid: 'oid-lock-a' })
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: '/api/settings/admins/oid-lock-a',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { is_admin: false },
+  })
+  assert.equal(res.statusCode, 409)
+  assert.match(res.json().error, /propres droits/)
+})
+
+test('PATCH /admins/:id — révoquer un AUTRE admin reste possible', { skip: SKIP }, async () => {
+  await db.query('DELETE FROM users_cache')
+  await seedAdmin(db, { entraId: 'oid-lock-c', displayName: 'Admin C' })
+  await seedAdmin(db, { entraId: 'oid-lock-d', displayName: 'Admin D' })
+  const token = await jwt.sign({ oid: 'oid-lock-c' })
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: '/api/settings/admins/oid-lock-d',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { is_admin: false },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().is_admin, false)
+})
+
+test('PATCH /admins/:id — promouvoir reste possible sans restriction', { skip: SKIP }, async () => {
+  await db.query('DELETE FROM users_cache')
+  await seedAdmin(db, { entraId: 'oid-lock-e', displayName: 'Admin E' })
+  await seedNonAdmin(db, { entraId: 'oid-lock-f', displayName: 'User F' })
+  const token = await jwt.sign({ oid: 'oid-lock-e' })
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: '/api/settings/admins/oid-lock-f',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { is_admin: true },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().is_admin, true)
+})
+
+// ─── PATCH / — validation de ask.url ──────────────────────────────────────────
+
+test('PATCH / — ask.url hors allowlist → 400', { skip: SKIP }, async () => {
+  await db.query('DELETE FROM users_cache')
+  await seedAdmin(db, { entraId: 'oid-askurl-admin', displayName: 'Admin URL' })
+  const token = await jwt.sign({ oid: 'oid-askurl-admin' })
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: '/api/settings/',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { 'ask.url': 'https://exfiltration.example' },
+  })
+  assert.equal(res.statusCode, 400)
+  assert.match(res.json().error, /non autorisé/)
+
+  const { rows } = await db.query(`SELECT value FROM settings WHERE key = 'ask.url'`)
+  assert.notEqual(rows[0]?.value, 'https://exfiltration.example', 'la valeur refusée ne doit pas avoir été écrite')
+})
+
+test('PATCH / — ask.url sur un hôte autorisé → 200', { skip: SKIP }, async () => {
+  await db.query('DELETE FROM users_cache')
+  await seedAdmin(db, { entraId: 'oid-askurl2-admin', displayName: 'Admin URL 2' })
+  const token = await jwt.sign({ oid: 'oid-askurl2-admin' })
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: '/api/settings/',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { 'ask.url': 'https://api.anthropic.com' },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json()['ask.url'], 'https://api.anthropic.com')
+})

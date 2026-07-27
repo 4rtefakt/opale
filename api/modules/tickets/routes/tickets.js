@@ -16,6 +16,13 @@ const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 // Couleurs autorisées pour les tags : palette fermée alignée avec le front.
 const TAG_COLORS = ['slate', 'blue', 'green', 'amber', 'red', 'violet', 'pink', 'teal']
 const PRIORITIES = ['low', 'normal', 'high', 'critical']
+
+// Statuts valides. `merged` est volontairement HORS des statuts posables via
+// PATCH : il n'a de sens qu'accompagné de `merged_into`, que seule la route de
+// fusion renseigne. L'autoriser au PATCH permettrait de créer un ticket
+// « fusionné avec rien », état que le reste du code ne sait pas rendre.
+const TICKET_STATUSES          = ['open', 'in_progress', 'resolved', 'closed', 'merged']
+const TICKET_STATUSES_SETTABLE = ['open', 'in_progress', 'resolved', 'closed']
 const USER_ROLES = ['requester', 'involved']
 
 function parseCsv(v) {
@@ -285,6 +292,11 @@ export default async function ticketsRoute(fastify) {
       tag_ids,
     } = req.body || {}
     if (!title) return reply.code(400).send({ error: 'Titre requis' })
+    if (!PRIORITIES.includes(priority)) {
+      return reply.code(400).send({
+        error: `priority invalide : « ${priority} » (attendu : ${PRIORITIES.join(', ')})`,
+      })
+    }
 
     const { entraId, displayName } = fastify.getUserIdentity(req)
 
@@ -404,6 +416,20 @@ export default async function ticketsRoute(fastify) {
     if (!acl) return
     const { status, priority, assigned_to_entra_id, assigned_to_name, user_id, device_id } = req.body || {}
     const { displayName } = acl
+
+    // Énumérations validées côté serveur. Sans ça, un statut arbitraire
+    // s'écrivait en base et cassait silencieusement le regroupement Kanban et
+    // les filtres de liste, sans qu'aucune erreur ne remonte.
+    if (status !== undefined && !TICKET_STATUSES_SETTABLE.includes(status)) {
+      return reply.code(400).send({
+        error: `status invalide : « ${status} » (attendu : ${TICKET_STATUSES_SETTABLE.join(', ')})`,
+      })
+    }
+    if (priority !== undefined && !PRIORITIES.includes(priority)) {
+      return reply.code(400).send({
+        error: `priority invalide : « ${priority} » (attendu : ${PRIORITIES.join(', ')})`,
+      })
+    }
 
     const fields = []
     const params = []

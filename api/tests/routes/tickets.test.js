@@ -1123,3 +1123,78 @@ test('POST /:id/merge — email_thread_mapping repointé vers target',
     assert.equal(rows[0].ticket_id, tgt.json().id)
   }
 )
+
+// ─── Validation des énumérations (migration 073) ──────────────────────────────
+//
+// status et priority étaient des TEXT libres écrits tels quels depuis le body :
+// un statut arbitraire cassait silencieusement le regroupement Kanban et les
+// filtres, sans erreur nulle part.
+
+test('PATCH /:id — status inconnu → 400', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tk-enum-1')
+  const tk = (await createTicketAs(token, { title: 'Enum status' })).json()
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${tk.id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { status: 'en_cours_peut_etre' },
+  })
+  assert.equal(res.statusCode, 400)
+  assert.match(res.json().error, /status invalide/)
+
+  const { rows } = await db.query('SELECT status FROM tickets WHERE id = $1', [tk.id])
+  assert.equal(rows[0].status, 'open', 'le statut ne doit pas avoir bougé')
+})
+
+test('PATCH /:id — priority inconnue → 400', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tk-enum-2')
+  const tk = (await createTicketAs(token, { title: 'Enum prio' })).json()
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${tk.id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { priority: 'medium' },
+  })
+  assert.equal(res.statusCode, 400)
+  assert.match(res.json().error, /priority invalide/)
+})
+
+test('PATCH /:id — status=merged refusé (réservé à la fusion)', { skip: SKIP }, async () => {
+  // `merged` n'a de sens qu'accompagné de merged_into, que seule la route de
+  // fusion renseigne. Le poser à la main créerait un ticket « fusionné avec
+  // rien », état que le rendu ne sait pas traiter.
+  const { token } = await adminAuth('oid-tk-enum-3')
+  const tk = (await createTicketAs(token, { title: 'Enum merged' })).json()
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${tk.id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { status: 'merged' },
+  })
+  assert.equal(res.statusCode, 400)
+})
+
+test('PATCH /:id — les statuts valides passent toujours', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tk-enum-4')
+  for (const status of ['in_progress', 'resolved', 'closed', 'open']) {
+    const tk = (await createTicketAs(token, { title: `Enum ok ${status}` })).json()
+    const res = await fastify.inject({
+      method: 'PATCH', url: `/api/tickets/${tk.id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { status },
+    })
+    assert.equal(res.statusCode, 200, `status ${status} doit être accepté`)
+    assert.equal(res.json().status, status)
+  }
+})
+
+test('POST / — priority inconnue à la création → 400', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tk-enum-5')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/tickets/',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { title: 'Création prio invalide', priority: 'urgentissime' },
+  })
+  assert.equal(res.statusCode, 400)
+  assert.match(res.json().error, /priority invalide/)
+})

@@ -1,5 +1,7 @@
 import { getGroupDeviceHostnames } from '../../core/lib/graph.js'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
+import { packageDigest } from '../lib/package-digest.js'
+import { logAudit } from '../../core/lib/audit.js'
 
 // Gestion des packages déployables (winget ou script PowerShell)
 export default async function packagesRoute(fastify) {
@@ -53,7 +55,13 @@ export default async function packagesRoute(fastify) {
   })
 
   // POST /api/packages — créer un package (draft)
-  fastify.post('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  //
+  // requireAdmin : un package porte un `install_script` PowerShell qui sera
+  // exécuté en SYSTEM sur les postes. Le gate d'approbation ci-dessous limite
+  // le déploiement, mais laisser la CRÉATION ouverte à tout utilisateur
+  // authentifié du tenant revient à laisser n'importe qui déposer du code
+  // dans la file d'attente d'un admin.
+  fastify.post('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
     if (!name) return reply.code(400).send({ error: 'name requis' })
     if (type === 'winget' && !winget_id) return reply.code(400).send({ error: 'winget_id requis pour type=winget' })
@@ -152,7 +160,14 @@ export default async function packagesRoute(fastify) {
       ORDER BY j.created_at DESC
     `, [req.params.id])
 
-    reply.send({ ...pkg, deployments, counts, software, active_jobs })
+    // `content_digest` = empreinte du contenu actuellement affiché. Le front
+    // la renvoie en `expected_digest` au moment d'approuver, ce qui garantit
+    // que l'admin approuve bien ce qu'il a sous les yeux.
+    reply.send({
+      ...pkg,
+      content_digest: packageDigest(pkg),
+      deployments, counts, software, active_jobs,
+    })
   })
 
   // POST /api/packages/:id/cancel-all — coupure d'urgence : annule tous
@@ -203,7 +218,7 @@ export default async function packagesRoute(fastify) {
   })
 
   // PATCH /api/packages/:id — modifier (repasse en draft si approuvé)
-  fastify.patch('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.patch('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: [existing] } = await fastify.db.query(`SELECT * FROM packages WHERE id = $1`, [req.params.id])
     if (!existing) return reply.code(404).send({ error: 'Package introuvable' })
 
@@ -236,7 +251,7 @@ export default async function packagesRoute(fastify) {
   })
 
   // DELETE /api/packages/:id — supprimer (bloqué si déploiements actifs)
-  fastify.delete('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.delete('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: active } = await fastify.db.query(`
       SELECT id FROM deployments WHERE package_id = $1 AND status IN ('pending','running') LIMIT 1
     `, [req.params.id])
@@ -247,17 +262,43 @@ export default async function packagesRoute(fastify) {
   })
 
   // POST /api/packages/:id/approve — approuver (admin requis)
+  //
+  // L'approbation FIGE le digest du contenu exécutable (cf.
+  // lib/package-digest.js). C'est ce digest que /deploy revérifie : sans lui,
+  // « approuvé » ne désignerait qu'un statut, pas un contenu.
+  //
+  // Body optionnel { expected_digest } : le digest que le client affichait au
+  // moment du clic. Fourni, il est comparé à l'état réel — l'admin ne peut
+  // alors pas approuver une version modifiée depuis l'affichage de sa page.
   fastify.post('/:id/approve', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: [pkg] } = await fastify.db.query(`SELECT * FROM packages WHERE id = $1`, [req.params.id])
     if (!pkg) return reply.code(404).send({ error: 'Package introuvable' })
     if (pkg.status === 'approved') return reply.code(409).send({ error: 'Package déjà approuvé' })
 
-    const { entraId } = fastify.getUserIdentity(req)
+    const digest = packageDigest(pkg)
+    const expected = req.body?.expected_digest
+    if (expected && expected !== digest) {
+      return reply.code(409).send({
+        error: 'Le contenu du package a changé depuis son affichage — rechargez la page et relisez avant d\'approuver.',
+        code:  'PACKAGE_CHANGED',
+        current_digest: digest,
+      })
+    }
+
+    const { entraId, displayName } = fastify.getUserIdentity(req)
     const { rows } = await fastify.db.query(`
-      UPDATE packages SET status = 'approved', approved_by = $1, approved_at = now(), updated_at = now()
-      WHERE id = $2
+      UPDATE packages SET status = 'approved', approved_by = $1, approved_at = now(),
+                          approved_digest = $2, updated_at = now()
+      WHERE id = $3
       RETURNING *
-    `, [entraId, req.params.id])
+    `, [entraId, digest, req.params.id])
+
+    await logAudit(fastify.db, fastify.log, {
+      action:  'package_approved',
+      byUser:  displayName || entraId,
+      target:  pkg.name,
+      details: { package_id: pkg.id, digest, type: pkg.type },
+    })
 
     reply.send(rows[0])
   })
@@ -275,6 +316,16 @@ export default async function packagesRoute(fastify) {
     const { rows: [pkg] } = await fastify.db.query(`SELECT * FROM packages WHERE id = $1`, [req.params.id])
     if (!pkg) return reply.code(404).send({ error: 'Package introuvable' })
     if (pkg.status !== 'approved') return reply.code(409).send({ error: 'Le package doit être approuvé avant déploiement' })
+
+    // Le contenu doit être CELUI qui a été approuvé. approved_digest NULL =
+    // package approuvé avant la migration 072 : on laisse passer pour ne pas
+    // bloquer un parc en production, la prochaine approbation posera le digest.
+    if (pkg.approved_digest && packageDigest(pkg) !== pkg.approved_digest) {
+      return reply.code(409).send({
+        error: 'Le contenu du package a changé depuis son approbation — il doit être ré-approuvé.',
+        code:  'PACKAGE_CHANGED',
+      })
+    }
 
     const { scope = 'device', device_ids, group_id, native_group_id, user_entra_id, confirmed } = req.body || {}
     const { entraId } = fastify.getUserIdentity(req)

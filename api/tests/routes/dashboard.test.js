@@ -118,7 +118,7 @@ test('GET / — devices_total + devices_online reflètent les devices en DB', { 
 test('GET / — tickets_open reflète les tickets ouverts', { skip: SKIP }, async () => {
   await db.query(`
     INSERT INTO tickets (title, status, priority) VALUES
-      ('Ticket ouvert', 'open', 'medium'),
+      ('Ticket ouvert', 'open', 'normal'),
       ('Ticket résolu', 'resolved', 'low')
   `)
 

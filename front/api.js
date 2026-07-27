@@ -213,7 +213,14 @@ class API {
   createPackage(body)         { return this._fetch('/packages', { method: 'POST', body }) }
   updatePackage(id, body)     { return this._fetch(`/packages/${id}`, { method: 'PATCH', body }) }
   deletePackage(id)           { return this._fetch(`/packages/${id}`, { method: 'DELETE' }) }
-  approvePackage(id)          { return this._fetch(`/packages/${id}/approve`, { method: 'POST', body: {} }) }
+  // expectedDigest = empreinte du contenu affiché à l'écran. Le serveur
+  // refuse l'approbation si le package a changé entre l'affichage et le clic.
+  approvePackage(id, expectedDigest) {
+    return this._fetch(`/packages/${id}/approve`, {
+      method: 'POST',
+      body: expectedDigest ? { expected_digest: expectedDigest } : {},
+    })
+  }
   deployPackage(id, body)     { return this._fetch(`/packages/${id}/deploy`, { method: 'POST', body }) }
   cancelAllDeployments(id)    { return this._fetch(`/packages/${id}/cancel-all`, { method: 'POST', body: {} }) }
   searchWinget(q, limit = 20) { return this._fetch(`/packages/winget/search?q=${encodeURIComponent(q)}&limit=${limit}`) }
