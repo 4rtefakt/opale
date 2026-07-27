@@ -106,7 +106,7 @@ function renderList() {
 
 function renderDetailSheet(p) {
   const approved = p.status === 'approved'
-  const pendingDeps = p.deployments.filter(d => d.status === 'pending' || d.status === 'running')
+  p.deployments.filter(d => d.status === 'pending' || d.status === 'running')
   window.mShowSheet(`
     <div class="m-sheet-title">${esc(p.name)}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">

@@ -1,0 +1,11 @@
+{
+  "name": "opale-front-vendors",
+  "private": true,
+  "description": "Dépendances front self-hébergées. Servent uniquement à figer les versions et à vérifier leur intégrité — le front lui-même n'a ni build ni bundler. Voir setup.sh et front/VENDORS.md.",
+  "dependencies": {
+    "@azure/msal-browser": "3.30.0",
+    "@tabler/icons-webfont": "3.19.0",
+    "@xterm/xterm": "5.5.0",
+    "chart.js": "4.5.1"
+  }
+}

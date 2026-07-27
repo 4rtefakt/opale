@@ -18,7 +18,7 @@ import ticketsRoute from '../../modules/tickets/routes/tickets.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 let prevEnv = {}
 // Stub mutable de l'assistant IA (évite tout appel Ollama réseau). Les
 // tests le réassignent selon le cas (succès / panne).
@@ -31,7 +31,7 @@ before(async () => {
   process.env.ENTRA_CLIENT_ID = 'test-client'
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   fastify = await buildApp({

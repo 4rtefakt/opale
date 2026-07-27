@@ -99,7 +99,7 @@ test('runMigration : mapping pending_review → ignoré (idempotence après re-r
   { skip: SKIP }, async () => {
     const id = await seedMapping(db, { action: 'pending_review' })
     const stub = async () => ({ intent: 'other', confidence: 0.9 })
-    const res = await runMigration(db, { log: quietLog, classifierFn: stub })
+    await runMigration(db, { log: quietLog, classifierFn: stub })
 
     // Le mapping ne devrait pas être compté (filtre WHERE action='skipped_other')
     const { rows } = await db.query(`SELECT action FROM email_thread_mapping WHERE id = $1`, [id])

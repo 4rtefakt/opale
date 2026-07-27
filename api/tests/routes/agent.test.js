@@ -21,7 +21,6 @@
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import crypto from 'node:crypto'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { buildApp } from '../helpers/build-app.js'
@@ -32,7 +31,7 @@ import agentRoute from '../../modules/inventory/routes/agent.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify
+let db, release, fastify
 
 before(async () => {
   if (!isDbAvailable()) return
@@ -41,7 +40,7 @@ before(async () => {
   delete process.env.VAPID_PRIVATE_KEY
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
 
   fastify = await buildApp({
     db,

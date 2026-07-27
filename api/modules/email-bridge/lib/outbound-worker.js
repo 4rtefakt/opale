@@ -29,11 +29,6 @@ const MAX_BATCH = 20  // bound le travail par tick pour ne pas bloquer
 const MAX_ATTEMPTS = 5 // au-delà → dead-letter (≈ 50s de retries à 10s/tick)
 let _timer = null
 
-async function getSetting(db, key) {
-  const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [key])
-  return rows[0]?.value ?? null
-}
-
 async function getConfig(db) {
   const { rows } = await db.query(
     `SELECT key, value FROM settings WHERE key IN (

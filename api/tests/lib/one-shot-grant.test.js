@@ -3,7 +3,7 @@
 // 9 cas couverts : nonce format, happy path, nonce manquant, nonce inconnu,
 // one-shot, expiration, size(), cleanup auto setTimeout, isolation entre stores.
 
-import { test, mock } from 'node:test'
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createGrantStore } from '../../modules/remote/lib/one-shot-grant.js'
 

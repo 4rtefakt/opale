@@ -26,7 +26,7 @@ import adminCredentialsRoute from '../../modules/inventory/routes/admin-credenti
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 let tmpKeyPath, rsaPublicKey
 let prevEnv = {}
 
@@ -54,7 +54,7 @@ before(async () => {
   process.env.LAPS_PRIVATE_KEY = tmpKeyPath
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   fastify = await buildApp({

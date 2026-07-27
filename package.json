@@ -1,9 +1,14 @@
 {
   "name": "opale",
+  "private": true,
+  "type": "module",
   "scripts": {
+    "lint": "eslint .",
     "check:locales": "node --no-warnings scripts/check-locales-parity.mjs"
   },
-  "dependencies": {
-    "ssh2": "^1.17.0"
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0"
   }
 }

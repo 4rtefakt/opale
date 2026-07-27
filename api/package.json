@@ -14,7 +14,7 @@
     "@fastify/multipart": "^9.4.0",
     "@fastify/rate-limit": "^10",
     "@fastify/sensible": "^6.0.4",
-    "@fastify/static": "^9",
+    "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11",
     "fastify": "^5",
     "fastify-plugin": "^5",

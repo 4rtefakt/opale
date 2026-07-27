@@ -12,13 +12,12 @@ import dbPlugin           from './plugins/db.js'
 import authPlugin         from './plugins/auth.js'
 import cleanupPlugin      from './plugins/cleanup.js'
 import errorHandlerPlugin from './plugins/error-handler.js'
+import securityHeadersPlugin, { CSP } from './plugins/security-headers.js'
 
 import { loadModules, startModuleWorkers } from './lib/module-loader.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname  = dirname(__filename)
-
-const CSP = "frame-ancestors 'self'"
 
 const fastify = Fastify({
   logger: { level: process.env.NODE_ENV === 'production' ? 'info' : 'debug' }
@@ -40,6 +39,10 @@ const corsOrigin = process.env.FRONTEND_URL
       ? (() => { throw new Error('FRONTEND_URL requis en production (CORS)') })()
       : true)
 
+// En-têtes de sécurité en premier : le hook onSend qu'il installe doit
+// couvrir toutes les réponses, y compris celles du static et des 404.
+await fastify.register(securityHeadersPlugin)
+
 await fastify.register(cors, {
   origin: corsOrigin,
   // @fastify/cors v11 a restreint les méthodes par défaut aux CORS-safelistées
@@ -50,6 +53,9 @@ await fastify.register(cors, {
 await fastify.register(staticFiles, {
   root: join(__dirname, 'front'),
   prefix: '/',
+  // La CSP est déjà posée par le hook onSend de securityHeadersPlugin ;
+  // @fastify/static court-circuite onSend pour les fichiers servis en stream,
+  // d'où cette pose explicite.
   setHeaders: (res) => res.setHeader('Content-Security-Policy', CSP)
 })
 

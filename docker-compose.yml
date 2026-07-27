@@ -2,8 +2,24 @@ services:
   api:
     build: { context: ., dockerfile: api/Dockerfile }
     restart: unless-stopped
+    # Durcissement runtime. Le conteneur API détient la clé de signature des
+    # binaires agent, la clé LAPS, la clé SSH du parc et le secret Entra :
+    # toute exécution de code non voulue doit y être aussi contrainte que
+    # possible.
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     env_file: .env
-    ports: ["3010:3010"]
+    # Publié sur la LOOPBACK uniquement : le reverse-proxy TLS (Caddy,
+    # nginx, Traefik) se place devant. `"3010:3010"` écoutait sur 0.0.0.0,
+    # donc exposait l'API en clair à Internet si l'hôte n'a pas de
+    # pare-feu. Pour un accès distant direct, passer par le proxy.
+    ports: ["127.0.0.1:3010:3010"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3010/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout:  5s
+      retries:  3
+      start_period: 20s
     depends_on:
       db:
         condition: service_healthy
@@ -24,7 +40,12 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./api/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
+      # Le schéma est appliqué par le runner de migrations au démarrage de
+      # l'API (api/lib/migrate.js), qui applique 001..NNN une fois et une
+      # seule et trace l'état dans la table schema_migrations. Aucun montage
+      # dans docker-entrypoint-initdb.d n'est nécessaire : celui-ci
+      # n'appliquait que 001_init.sql, laissant le schéma 60+ migrations en
+      # retard sur le code.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
@@ -36,7 +57,9 @@ services:
   # tient en RAM CPU (~3 GB). Volume persistant pour ne pas re-pull à chaque
   # déploiement. Pas de port exposé : seule l'API y accède via DNS interne.
   ollama:
-    image: ollama/ollama:latest
+    # Version épinglée : `latest` rendait les déploiements non reproductibles
+    # sur un composant qui exécute des modèles sur le contenu des mails.
+    image: ollama/ollama:0.5.7
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
@@ -46,7 +69,9 @@ services:
   #   1. OLLAMA_PULL_MODEL=<nouveau> docker compose run --rm ollama-init
   #   2. UPDATE settings SET value='<nouveau>' WHERE key='mail.classifier.model';
   ollama-init:
-    image: ollama/ollama:latest
+    # Version épinglée : `latest` rendait les déploiements non reproductibles
+    # sur un composant qui exécute des modèles sur le contenu des mails.
+    image: ollama/ollama:0.5.7
     depends_on:
       ollama:
         condition: service_started

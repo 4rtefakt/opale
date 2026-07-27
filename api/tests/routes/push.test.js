@@ -31,7 +31,7 @@ const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 const TEST_VAPID_PUBLIC  = 'BJ6aqTfyvBhkAHYZ2AiTIVQ8eXzJVlJqiIa8bfJ2DvAl_t1Hf9OHGr7BN2MQ9VB8sXb5tLJcH8XuKn3rQ0Lg8Q0'
 const TEST_VAPID_PRIVATE = 'BJ6aqTfyvBhkAHYZ2AiTIVQ8eXzJVlJqiIa8bfJ2DvA'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 let prevEnv = {}
 
 before(async () => {
@@ -50,7 +50,7 @@ before(async () => {
   process.env.VAPID_EMAIL       = 'test@example.com'
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   try {

@@ -1,11 +1,15 @@
 # Dépendances
 node_modules/
 api/node_modules/
+front/node_modules/
 
 # Environnement
 .env
 
-# Vendeurs front (télécharger via setup.sh)
+# Vendeurs front — copiés depuis front/node_modules par setup.sh.
+# Les VERSIONS et leurs empreintes d'intégrité, elles, sont committées
+# (front/package.json + front/package-lock.json) : c'est ce qui rend les
+# builds reproductibles et détectables en cas d'altération amont.
 front/msal-browser.min.js
 front/xterm.js
 front/chart.umd.min.js

@@ -33,6 +33,12 @@ export default {
 
     // Avertit tant que l'instance n'a aucun administrateur (cf.
     // lib/bootstrap-admin.js). onReady : la base est connectée et migrée.
-    fastify.addHook('onReady', () => warnIfNoAdmin(fastify.db, fastify.log))
+    //
+    // Le corps est en accolades — donc renvoie `undefined` — et PAS
+    // `() => warnIfNoAdmin(…)` : Fastify interprète la valeur résolue d'un
+    // hook onReady comme une erreur, et `warnIfNoAdmin` retourne un booléen.
+    // Sans ça, le seul cas où l'avertissement est utile (aucun admin → true)
+    // faisait échouer le démarrage.
+    fastify.addHook('onReady', async () => { await warnIfNoAdmin(fastify.db, fastify.log) })
   }
 }

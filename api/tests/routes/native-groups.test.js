@@ -13,7 +13,7 @@ import nativeGroupsRoute from '../../modules/groups/routes/native-groups.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 
 // Stub Graph partagé — les tests Entra réassignent les fonctions avant appel.
 const graph = {
@@ -24,7 +24,7 @@ const graph = {
 before(async () => {
   if (!isDbAvailable()) return
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   fastify = await buildApp({

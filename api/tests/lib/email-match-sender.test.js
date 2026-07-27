@@ -17,12 +17,12 @@ import { matchSender } from '../../modules/email-bridge/lib/match-sender.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip match-sender suite'
 
-let schema, db, release
+let db, release
 
 before(async () => {
   if (SKIP) return
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
 })
 
 after(async () => {

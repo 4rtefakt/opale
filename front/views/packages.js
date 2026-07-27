@@ -122,7 +122,7 @@ function renderDetail() {
   const failCount        = c.failed
   const detectedCount    = c.detected
   // pendingDeps utilisé plus bas pour la table — on garde la liste des 50
-  const pendingDeps = p.deployments.filter(d => d.status === 'pending' || d.status === 'running')
+  p.deployments.filter(d => d.status === 'pending' || d.status === 'running')
 
   detail.innerHTML = `
     <div style="max-width:860px">

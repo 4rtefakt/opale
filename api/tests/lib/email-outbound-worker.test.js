@@ -20,12 +20,12 @@ import { flushOutbox } from '../../modules/email-bridge/lib/outbound-worker.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip outbound-worker suite'
 
-let schema, db, release
+let db, release
 
 before(async () => {
   if (SKIP) return
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
 
   await db.query(`UPDATE settings SET value = 'true'              WHERE key = 'mail.send_enabled'`)
   await db.query(`UPDATE settings SET value = 'sender@example.com' WHERE key = 'mail.sender_address'`)

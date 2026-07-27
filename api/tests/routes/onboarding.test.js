@@ -12,7 +12,7 @@
 // inconnu → 500 sans Graph), ou skippées avec note pour les cas nécessitant
 // une vraie réponse Graph (create_account, assign_license, etc.).
 
-import { test, before, after, mock } from 'node:test'
+import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
@@ -24,7 +24,7 @@ import onboardingRoute from '../../modules/onboarding/routes/onboarding.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 let prevEnv = {}
 
 before(async () => {
@@ -34,7 +34,7 @@ before(async () => {
   process.env.ENTRA_CLIENT_ID = 'test-client'
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   fastify = await buildApp({

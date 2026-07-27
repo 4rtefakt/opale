@@ -109,6 +109,7 @@ async function graphPatch(path, body) {
   return null
 }
 
+// eslint-disable-next-line no-unused-vars -- conservé : pendant des graphGet/graphPost, utilisé dès qu'une suppression Graph sera câblée
 async function graphDelete(path) {
   const token = await getAppToken()
   const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {

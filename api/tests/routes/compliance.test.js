@@ -24,7 +24,7 @@ import { RULES } from '../../modules/monitoring/lib/compliance.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 let prevEnv = {}
 
 before(async () => {
@@ -34,7 +34,7 @@ before(async () => {
   process.env.ENTRA_CLIENT_ID = 'test-client'
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   fastify = await buildApp({
@@ -57,7 +57,7 @@ after(async () => {
 
 async function adminAuth() {
   const a = await seedAdmin(db, { entraId: 'oid-comp-admin' })
-  return await jwt.sign({ oid: a.entraId, name: a.displayName, preferred_username: a.email })
+  return jwt.sign({ oid: a.entraId, name: a.displayName, preferred_username: a.email })
 }
 
 // Insert un device + 12 rows compliance_results en pass (sauf l'override

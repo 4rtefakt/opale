@@ -233,7 +233,7 @@ async function runAuto(obId, checkId) {
   btn.disabled = true
   btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i>'
   try {
-    const { result } = await window.api.runAutoCheck(obId, checkId)
+    await window.api.runAutoCheck(obId, checkId)
     showToast(t('onboarding.toast.auto_ok'), 'success')
     const ob = await window.api.getOnboarding(obId)
     const idx = _items.findIndex(i => i.id === obId)

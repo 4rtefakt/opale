@@ -19,19 +19,19 @@ import assert from 'node:assert/strict'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
-import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
+import { seedNonAdmin } from '../fixtures/users.js'
 
 import groupsRoute from '../../modules/groups/routes/groups.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 
 before(async () => {
   if (!isDbAvailable()) return
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   fastify = await buildApp({

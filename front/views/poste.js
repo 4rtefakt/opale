@@ -80,7 +80,6 @@ function renderBody() {
   document.getElementById('pd-status-badge').outerHTML =
     `<span id="pd-status-badge" class="badge badge-${statusColor(d.status)}">${t('status.' + d.status)}</span>`
 
-  const diskC = (d.disks || []).find(dk => dk.letter === 'C:') || d.disks?.[0]
 
   body.innerHTML = `
     <!-- Grille principale -->

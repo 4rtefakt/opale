@@ -17,12 +17,12 @@ import { flushMarkRead } from '../../modules/email-bridge/lib/mark-read-worker.j
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip mark-read-worker suite'
 
-let schema, db, release
+let db, release
 
 before(async () => {
   if (SKIP) return
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   await db.query(`UPDATE settings SET value='true' WHERE key='mail.mark_as_read_enabled'`)
 })
 
@@ -116,7 +116,7 @@ test('mark-read : message_appended → marqué immédiatement (sans proposal)', 
 
 test('mark-read : idempotence — mapping déjà marqué non re-traité', { skip: SKIP }, async () => {
   const pid = await seedProposal('accepted')
-  const mid = await seedMapping({ action: 'proposal_created', proposalId: pid })
+  await seedMapping({ action: 'proposal_created', proposalId: pid })
   // 1er passage : marque
   const cap1 = []
   await flushMarkRead(db, null, { markImpl: stubMark(cap1) })

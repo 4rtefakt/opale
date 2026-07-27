@@ -15,7 +15,7 @@ import meRoute from '../../modules/core/routes/me.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt, user
+let db, release, fastify, jwt, user
 let prevEnv = {}
 
 before(async () => {
@@ -25,7 +25,7 @@ before(async () => {
   process.env.ENTRA_CLIENT_ID = 'test-client'
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   // user_prefs.entra_id est FK vers users_cache → on seed le user qui auth.

@@ -13,12 +13,12 @@ import manifestRoute, { invalidateManifestCache } from '../../modules/core/route
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify
+let db, release, fastify
 
 before(async () => {
   if (!isDbAvailable()) return
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
 
   fastify = await buildApp({
     db,

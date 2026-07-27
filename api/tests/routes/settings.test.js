@@ -18,7 +18,7 @@ import settingsRoute from '../../modules/core/routes/settings.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 let cacheCalls = { branding: 0, manifest: 0 }
 let prevEnv = {}
 
@@ -29,7 +29,7 @@ before(async () => {
   process.env.ENTRA_CLIENT_ID = 'test-client'
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   // Les decorators invalidateBrandingCache et invalidateManifestCache

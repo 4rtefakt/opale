@@ -11,7 +11,7 @@
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { rm } from 'node:fs/promises'
@@ -58,7 +58,7 @@ after(async () => {
 // ─── Sécurité : nom d'asset ────────────────────────────────────────────────
 
 test('GET /branding/:asset — nom avec path traversal → 400', async () => {
-  const res = await fastify.inject({ method: 'GET', url: '/branding/../index.html' })
+  await fastify.inject({ method: 'GET', url: '/branding/../index.html' })
   // Fastify peut décoder %2F mais le basename protège : on teste directement
   // avec un nom invalide. Le slash est encodé par fastify.inject automatiquement.
   // On teste un nom avec caractères spéciaux refusés par safeAssetName.

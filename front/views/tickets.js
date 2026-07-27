@@ -2309,7 +2309,7 @@ function proposalCard(p) {
 
 async function tkAcceptProposal(id) {
   try {
-    const result = await window.api.acceptProposal(id, {})
+    await window.api.acceptProposal(id, {})
     showToast(t('tickets.proposals.toast.accepted'), 'success')
     await loadProposalsCount()
     await loadTickets()

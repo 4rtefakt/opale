@@ -11,7 +11,7 @@
 // `acquireSchema` rejoue toutes les migrations, donc la table
 // email_thread_mapping a bien les colonnes Phase 2/3.
 
-import { test, before, beforeEach, after } from 'node:test'
+import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
@@ -19,12 +19,12 @@ import { processOne } from '../../modules/email-bridge/lib/process-mail.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip process-mail suite'
 
-let schema, db, release
+let db, release
 
 before(async () => {
   if (SKIP) return
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
 
   // Activer le classifieur côté settings (on injecte un stub donc l'URL/model
   // bidons ne sont pas appelés). Sans `enabled=true`, classifySafe retourne

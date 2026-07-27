@@ -19,7 +19,7 @@ import { evaluateAndPersist, RULES } from '../../modules/monitoring/lib/complian
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip compliance-persist suite'
 
-let schema, db, release, fastify, logCapture
+let db, release, fastify, logCapture
 
 // Snapshot "tout pass" — passes les 12 règles. Sert de baseline ; les tests
 // le clonent et tweakent les champs voulus pour forcer un fail.
@@ -63,7 +63,7 @@ before(async () => {
   delete process.env.VAPID_PRIVATE_KEY
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
 
   // logCapture remplace fastify.log — on inspecte les .warn() pour vérifier
   // que evaluateAndPersist log au lieu de throw.

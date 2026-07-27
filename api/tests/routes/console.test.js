@@ -27,7 +27,7 @@ import consoleRoute from '../../modules/remote/routes/console.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt, agentWsFake, consoleSessionsFake
+let db, release, fastify, jwt, agentWsFake, consoleSessionsFake
 let prevEnv = {}
 
 // Fakes pour les décorateurs agentWs / consoleSessions. setAgent(deviceId, conn)
@@ -64,7 +64,7 @@ before(async () => {
   process.env.ENTRA_CLIENT_ID = 'test-client'
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
   agentWsFake = makeAgentWsFake()
   consoleSessionsFake = makeConsoleSessionsFake()

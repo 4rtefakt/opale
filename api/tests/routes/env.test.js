@@ -15,7 +15,7 @@ import envRoute from '../../modules/core/routes/env.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify
+let db, release, fastify
 let prevEnv = {}
 
 before(async () => {
@@ -30,7 +30,7 @@ before(async () => {
   process.env.API_BASE_URL    = '/api'
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
 
   fastify = await buildApp({
     db,

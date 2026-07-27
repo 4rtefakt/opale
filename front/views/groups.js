@@ -169,7 +169,7 @@ function renderMap() {
   const H = svg.clientHeight || svg.parentElement.clientHeight || 340
   const cx = W / 2, cy = H / 2
 
-  const byId = new Map(_groups.map(g => [g.id, g]))
+  new Map(_groups.map(g => [g.id, g]))
   const parentOf = computeNesting(_groups, _overlaps)
   // Overlaps "partiels" (intersection sans inclusion) entre racines : ils
   // rapprochent/chevauchent les bulles proportionnellement au Jaccard.
@@ -716,7 +716,6 @@ function groupesDetachFromEntra(groupId, name) {
 
 function groupForm({ name = '', description = '', color = 'slate' } = {}) {
   const colorOptions = COLOR_KEYS.map(k => {
-    const p = PALETTE[k]
     return `<option value="${k}" ${k === color ? 'selected' : ''}>${COLOR_LABELS[k]}</option>`
   }).join('')
   return `

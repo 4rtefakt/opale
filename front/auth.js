@@ -15,7 +15,24 @@ class Auth {
         authority: `https://login.microsoftonline.com/${tenantId}`,
         redirectUri: window.location.origin
       },
-      cache: { cacheLocation: 'localStorage' }
+      // sessionStorage (défaut MSAL) plutôt que localStorage : les jetons
+      // d'accès d'un RMM qui dispose de SSH, LAPS et exécution de scripts ne
+      // doivent pas survivre à la fermeture de l'onglet, ni être partagés
+      // entre tous les onglets de l'origine. Le rendu du front repose sur
+      // ~300 `innerHTML` interpolés à la main : c'est ce qui détermine
+      // l'impact d'un `esc()` oublié, et il faut le réduire.
+      //
+      // Conséquence assumée : rouvrir un onglet redemande une authentification
+      // silencieuse à Entra (redirect SSO, sans ressaisie de mot de passe tant
+      // que la session Microsoft est valide).
+      //
+      // storeAuthStateInCookie reste false : le cookie n'est utile qu'aux
+      // très vieux navigateurs (IE11/Edge legacy) et ajouterait une copie de
+      // l'état d'authentification.
+      cache: {
+        cacheLocation: 'sessionStorage',
+        storeAuthStateInCookie: false,
+      }
     })
 
     await this._app.initialize()

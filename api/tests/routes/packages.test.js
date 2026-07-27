@@ -18,7 +18,7 @@ import packagesRoute from '../../modules/inventory/routes/packages.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 
 // Stub winget : non prêt par défaut — pas de fetch réseau en test.
 const wingetStub = { ready: () => false, search: () => ({ results: [] }) }
@@ -26,7 +26,7 @@ const wingetStub = { ready: () => false, search: () => ({ results: [] }) }
 before(async () => {
   if (!isDbAvailable()) return
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   fastify = await buildApp({
@@ -174,7 +174,7 @@ test('GET /api/packages — admin reçoit la liste des packages', { skip: SKIP }
 // ─── POST /:id/approve ────────────────────────────────────────────────────────
 
 test('POST /:id/approve — non-admin → 403', { skip: SKIP }, async () => {
-  const adminTk = await adminToken('oid-pkg-approv-setup')
+  await adminToken('oid-pkg-approv-setup')
   const userTk = await userToken('oid-pkg-approv-user')
   const pkg = await insertPackage(db, { name: 'Pkg Approve Test', status: 'draft' })
 
@@ -314,7 +314,7 @@ test('POST /:id/deploy — scope=user, 1 device assigné → 1 deployment', { sk
   await seedNonAdmin(db, { entraId: userEntraId, displayName: 'User Assigné', email: 'ua@x' })
 
   const pkg = await insertPackage(db, { name: 'Pkg User Deploy' })
-  const dev = await seedDeviceForUser(db, 'PC-USERASSIGNED', userEntraId)
+  await seedDeviceForUser(db, 'PC-USERASSIGNED', userEntraId)
 
   const res = await fastify.inject({
     method: 'POST', url: `/api/packages/${pkg.id}/deploy`,

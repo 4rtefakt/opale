@@ -20,7 +20,7 @@ import usersRoute from '../../modules/core/routes/users.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt
+let db, release, fastify, jwt
 
 // Stub Graph : les endpoints Graph-dépendants ne sont pas exercés en logique
 // mais la route les importe — on n'injecte pas de mock, juste évite les crash
@@ -32,7 +32,7 @@ before(async () => {
   if (!isDbAvailable()) return
 
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
   jwt = await setupTestJwks()
 
   fastify = await buildApp({
@@ -130,7 +130,7 @@ test('POST /sync-me — upsert users_cache + retourne contrat attendu', { skip: 
 })
 
 test('POST /sync-me — isAdmin = true si le user est admin en DB', { skip: SKIP }, async () => {
-  const { user, token } = await makeAdminToken('oid-syncme-admin')
+  const { token } = await makeAdminToken('oid-syncme-admin')
 
   const res = await fastify.inject({
     method: 'POST', url: '/api/users/sync-me',

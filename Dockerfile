@@ -9,22 +9,33 @@
 # Run   : voir docker-compose.example.yml
 
 # ─── Stage 1 : vendorise les dépendances front ──────────────────────────────
-# setup.sh télécharge MSAL, Tabler Icons, etc. dans front/. On le fait dans
-# un stage séparé pour ne pas polluer l'image finale avec curl/bash.
-FROM alpine:3.20 AS frontvendor
-RUN apk add --no-cache bash curl ca-certificates
+# setup.sh installe MSAL, Tabler Icons, xterm et Chart.js depuis npm en
+# s'appuyant sur front/package-lock.json — versions exactes et empreintes
+# d'intégrité vérifiées. Stage séparé pour garder npm et bash hors de l'image
+# finale.
+#
+# Même image de base que le runtime : npm y est déjà présent, et cela évite de
+# suivre deux distributions.
+FROM node:22-alpine AS frontvendor
+RUN apk add --no-cache bash
 WORKDIR /src
 COPY setup.sh ./
 COPY front/ ./front/
-RUN chmod +x setup.sh && ./setup.sh
+RUN chmod +x setup.sh && ./setup.sh && rm -rf front/node_modules
 
 # ─── Stage 2 : runtime API ──────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+# node:22 — Node 20 est en fin de vie depuis avril 2026 et ne reçoit plus de
+# correctifs de sécurité.
+FROM node:22-alpine AS runtime
 WORKDIR /app
 
-# Installation des dépendances API uniquement (pas devDependencies).
-COPY api/package.json ./
-RUN npm install --omit=dev && npm cache clean --force
+# `npm ci` avec le lockfile, PAS `npm install` avec le seul package.json :
+# toutes les dépendances sont déclarées en plages larges (^5, ^8…), donc
+# `npm install` résolvait un arbre potentiellement différent de celui testé
+# en CI. Une version malveillante publiée sur une dépendance transitive
+# entrait alors dans l'image sans qu'aucun test ne l'ait vue.
+COPY api/package.json api/package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Code de l'API.
 COPY api/ ./
@@ -41,5 +52,19 @@ COPY --from=frontvendor /src/front/ ./front/
 COPY agent-go/keys/signing.pub ./agent-go/keys/signing.pub
 COPY agent-go/keys/laps.pub    ./agent-go/keys/laps.pub
 
+# Le processus ne tourne PAS en root. Ce conteneur détient simultanément la
+# clé de signature des binaires agent, la clé de déchiffrement LAPS, la clé
+# SSH d'accès au parc et le secret Entra : une exécution de code non
+# privilégiée y est nettement moins exploitable qu'une exécution root.
+# L'utilisateur `node` (uid 1000) est fourni par l'image de base.
+RUN chown -R node:node /app
+USER node
+
 EXPOSE 3010
+
+# Sonde applicative : vérifie que l'API répond ET que la base est joignable
+# (cf. modules/core/routes/health.js).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3010)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 CMD ["node", "index.js"]

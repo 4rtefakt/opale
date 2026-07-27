@@ -16,12 +16,12 @@ import { matchThread } from '../../modules/email-bridge/lib/match-thread.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip match-thread suite'
 
-let schema, db, release
+let db, release
 
 before(async () => {
   if (SKIP) return
   const acquired = await acquireSchema()
-  schema = acquired.schema; db = acquired.db; release = acquired.release
+  db = acquired.db; release = acquired.release
 })
 
 after(async () => {

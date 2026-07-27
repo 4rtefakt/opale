@@ -22,7 +22,7 @@ const PRIORITIES = ['low', 'normal', 'high', 'critical']
 // fusion renseigne. L'autoriser au PATCH permettrait de créer un ticket
 // « fusionné avec rien », état que le reste du code ne sait pas rendre.
 const TICKET_STATUSES          = ['open', 'in_progress', 'resolved', 'closed', 'merged']
-const TICKET_STATUSES_SETTABLE = ['open', 'in_progress', 'resolved', 'closed']
+const TICKET_STATUSES_SETTABLE = TICKET_STATUSES.filter(s => s !== 'merged')
 const USER_ROLES = ['requester', 'involved']
 
 function parseCsv(v) {
