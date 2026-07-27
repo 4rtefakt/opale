@@ -2,6 +2,11 @@ import { syncIntuneDevice } from '../../core/lib/graph.js'
 import { fetchBandwidth }   from '../../monitoring/lib/bandwidth.js'
 import { logAudit } from '../../core/lib/audit.js'
 
+// Connexions SSH sortantes simultanées (cf. routes/scripts.js).
+const SSH_CONCURRENCY = parseInt(process.env.OPALE_SSH_CONCURRENCY || '10', 10)
+import { makeHostVerifier, loadKnownHostKey } from '../../remote/lib/ssh-host-key.js'
+import { pMap } from '../../../lib/p-map.js'
+
 async function getThresholds(fastify) {
   const res = await fastify.db.query(
     `SELECT key, value FROM settings WHERE key IN ('disk_warn_pct', 'disk_critical_pct')`
@@ -309,7 +314,14 @@ export default async function devicesRoute(fastify) {
     const errors = []
     const restarted = []  // { hostname, service } — alimente audit_logs.target
 
-    await Promise.all(rows.map(d => new Promise(resolve => {
+    // Empreintes chargées en amont : le hostVerifier de ssh2 est synchrone.
+    const knownFps = new Map(
+      await Promise.all(rows.map(async d => [d.id, await loadKnownHostKey(fastify.db, d.id)]))
+    )
+
+    // Concurrence bornée : un force-checkin sur tout le parc ouvrait autant
+    // de connexions SSH que de postes, d'un seul coup.
+    await pMap(rows, d => new Promise(resolve => {
       if (!d.ip_netbird) { skipped++; return resolve() }
 
       const conn = new Client()
@@ -350,9 +362,14 @@ export default async function devicesRoute(fastify) {
         port:       parseInt(process.env.SSH_PORT || '22', 10),
         username:   (process.env.SSH_USER || '').split('@')[0],
         privateKey: sshKey,
+        hostVerifier: makeHostVerifier(
+          { db: fastify.db, log: fastify.log },
+          d, knownFps.get(d.id),
+          { onReject: (msg) => errors.push(`[${d.hostname}] ${msg}`) }
+        ),
         readyTimeout: 8000,
       })
-    })))
+    }), SSH_CONCURRENCY)
 
     if (ok > 0) {
       const { entraId, displayName } = fastify.getUserIdentity(req)
@@ -361,6 +378,33 @@ export default async function devicesRoute(fastify) {
     }
 
     reply.send({ ok, skipped, errors })
+  })
+
+  // DELETE /api/devices/:id/ssh-host-key — oublie l'empreinte d'hôte SSH
+  // mémorisée, pour qu'elle soit réapprise au prochain contact.
+  //
+  // Chemin de récupération légitime après une réinstallation du poste ou une
+  // régénération des clés sshd : sans lui, un poste réinstallé resterait
+  // définitivement injoignable. Réservé aux admins et audité — c'est la seule
+  // action qui rouvre volontairement une fenêtre TOFU.
+  fastify.delete('/:id/ssh-host-key', {
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
+  }, async (req, reply) => {
+    const { rows } = await fastify.db.query(
+      `UPDATE devices SET ssh_host_key_fp = NULL, ssh_host_key_learned_at = NULL
+       WHERE id = $1 RETURNING hostname, ssh_host_key_fp`,
+      [req.params.id]
+    )
+    if (!rows.length) return reply.code(404).send({ error: 'Poste introuvable' })
+
+    const { entraId, displayName } = fastify.getUserIdentity(req)
+    await logAudit(fastify.db, fastify.log, {
+      action:  'ssh_host_key_reset',
+      byUser:  displayName || entraId,
+      target:  req.params.id,
+      details: { hostname: rows[0].hostname },
+    })
+    reply.code(204).send()
   })
 }
 

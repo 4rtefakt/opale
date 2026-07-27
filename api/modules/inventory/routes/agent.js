@@ -23,6 +23,35 @@ const AGENT_GO_DIR = process.env.AGENT_GO_DIR ||
 // agents qui ont reçu un binaire pré-matrix-arch et ne précisent pas l'arch).
 const VALID_ARCH = new Set(['amd64', 'arm64', '386'])
 
+// ── Bornes sur les données remontées par un agent ────────────────────────
+// Le checkin bouclait sur `disks`, `network`, `bandwidth` et `ping` avec UNE
+// REQUÊTE SQL PAR ÉLÉMENT et sans borne de longueur. Un agent compromis — ou
+// simplement buggé — pouvait donc déclencher des milliers d'INSERT séquentiels
+// sur le pool de 10 connexions partagé par toute l'application.
+// Les valeurs couvrent très largement le réel : un poste a une poignée de
+// disques et d'interfaces, pas 64.
+const MAX_DISKS      = 64
+const MAX_INTERFACES = 64
+const MAX_BANDWIDTH  = 64
+const MAX_PING       = 64
+const MAX_DEPLOY_RESULTS = 256
+const MAX_DETECT_RESULTS = 256
+
+// Tronque un tableau en signalant ce qui a été ignoré — un silence rendrait
+// indétectable un agent qui remonte n'importe quoi.
+function boundArray(value, max, { log, what, hostname }) {
+  const arr = Array.isArray(value) ? value : []
+  if (arr.length <= max) return arr
+  log.warn({ hostname, what, received: arr.length, kept: max },
+    'checkin : tableau tronqué (borne de sécurité)')
+  return arr.slice(0, max)
+}
+
+// Bornes sur les logs d'installation non authentifiés (cf. POST /setup-log).
+const SETUP_LOG_MAX_CHARS = 8_000
+const SETUP_LOG_HOSTNAME_MAX = 255
+const SETUP_LOG_SCRIPT_MAX   = 100
+
 function agentBinPath(arch) {
   // Défense en profondeur : whitelist avant le glob. Le glob filesystem
   // empêche déjà un path traversal classique (il ne trouverait pas de
@@ -501,11 +530,32 @@ export default async function agentRoute(fastify) {
   fastify.post('/setup-log', {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } }
   }, async (req, reply) => {
-    const { hostname, script, level = 'info', log } = req.body || {}
-    if (!hostname || !log) return reply.code(400).send({ error: 'hostname et log requis' })
+    const { hostname: rawHostname, script: rawScript, level: rawLevel = 'info', log: rawLog } = req.body || {}
+    if (!rawHostname || !rawLog) return reply.code(400).send({ error: 'hostname et log requis' })
+
+    // Cet endpoint est ouvert (le script Intune tourne en SYSTEM avant tout
+    // enrôlement, il n'a pas encore de jeton). Il écrit donc dans audit_logs
+    // sans authentification, ce qui impose trois précautions :
+    //
+    //  1. BORNER les champs. Sans limite, 60 req/min × 1 Mio de body — la
+    //     limite Fastify par défaut — représentaient ~86 Go/jour d'écritures
+    //     depuis une seule IP, dans une table purgée à 365 jours seulement.
+    //  2. NORMALISER le niveau sur une liste fermée, pour qu'il reste
+    //     exploitable en filtre.
+    //  3. MARQUER ces lignes `unauthenticated`. Le journal d'audit d'un RMM
+    //     est une pièce à conviction : une entrée dont l'auteur est un simple
+    //     champ de formulaire ne doit pas être indiscernable d'un ssh_open
+    //     authentifié. Le front les affiche distinctement.
+    const hostname = String(rawHostname).slice(0, SETUP_LOG_HOSTNAME_MAX)
+    const script   = rawScript ? String(rawScript).slice(0, SETUP_LOG_SCRIPT_MAX) : null
+    const level    = ['info', 'warn', 'error'].includes(rawLevel) ? rawLevel : 'info'
+    const logText  = String(rawLog)
+    const log      = logText.length > SETUP_LOG_MAX_CHARS
+      ? logText.slice(0, SETUP_LOG_MAX_CHARS) + `\n[serveur] … tronqué (${logText.length} caractères reçus)`
+      : logText
 
     // Ignorer les logs de checkin de routine (agents anciens qui loggent chaque run)
-    if (script === 'checkin' && (!level || level === 'info')) {
+    if (script === 'checkin' && level === 'info') {
       return reply.code(204).send()
     }
 
@@ -513,7 +563,7 @@ export default async function agentRoute(fastify) {
       action:  'setup_script',
       byUser:  hostname,
       target:  script || 'unknown',
-      details: { level, log },
+      details: { level, log, unauthenticated: true },
     })
     fastify.log.info({ hostname, script, level }, 'setup-log reçu')
     reply.code(204).send()
@@ -536,13 +586,17 @@ export default async function agentRoute(fastify) {
       system_perf,
     } = req.body || {}
 
-    // PowerShell 5 serialise les tableaux vides en null — normaliser ici
-    const disks              = Array.isArray(_disks)      ? _disks      : []
-    const network            = Array.isArray(_network)    ? _network    : []
-    const bandwidth          = Array.isArray(_bw)         ? _bw         : []
-    const ping               = Array.isArray(_ping)       ? _ping       : []
-    const deployment_results = Array.isArray(_depResults) ? _depResults : []
-    const detection_results  = Array.isArray(_detResults) ? _detResults : []
+    // PowerShell 5 serialise les tableaux vides en null — normaliser ici.
+    // Chaque tableau est BORNÉ : le traitement fait une requête SQL par
+    // élément, donc une longueur non contrôlée est un levier de déni de
+    // service sur le pool de connexions.
+    const bounds = { log: fastify.log, hostname }
+    const disks              = boundArray(_disks,      MAX_DISKS,      { ...bounds, what: 'disks' })
+    const network            = boundArray(_network,    MAX_INTERFACES, { ...bounds, what: 'network' })
+    const bandwidth          = boundArray(_bw,         MAX_BANDWIDTH,  { ...bounds, what: 'bandwidth' })
+    const ping               = boundArray(_ping,       MAX_PING,       { ...bounds, what: 'ping' })
+    const deployment_results = boundArray(_depResults, MAX_DEPLOY_RESULTS, { ...bounds, what: 'deployment_results' })
+    const detection_results  = boundArray(_detResults, MAX_DETECT_RESULTS, { ...bounds, what: 'detection_results' })
 
     if (!hostname) return reply.code(400).send({ error: 'hostname requis' })
 

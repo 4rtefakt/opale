@@ -101,3 +101,33 @@ await fastify.listen({ port, host: '0.0.0.0' })
 
 // Workers / timers des modules — démarrés après listen().
 startModuleWorkers(modules, fastify)
+
+// Arrêt propre. Sans ces handlers, un `docker compose restart` coupait net les
+// requêtes en vol, les sessions SSH et les WebSockets agent : les hooks
+// onClose (fin du pool Postgres, arrêt des timers de cleanup, flush des
+// buffers de session) n'étaient jamais exécutés.
+//
+// fastify.close() cesse d'accepter de nouvelles connexions, laisse les
+// requêtes en cours se terminer, puis déclenche les onClose. Le délai de
+// garde évite qu'une connexion longue durée (terminal SSH ouvert, WS agent)
+// ne bloque l'arrêt indéfiniment — au-delà, on sort quand même.
+const SHUTDOWN_GRACE_MS = parseInt(process.env.OPALE_SHUTDOWN_GRACE_MS || '15000', 10)
+let shuttingDown = false
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    if (shuttingDown) return   // un second Ctrl-C ne doit pas relancer la séquence
+    shuttingDown = true
+    fastify.log.info({ signal }, 'arrêt demandé — fermeture propre en cours')
+
+    const guard = setTimeout(() => {
+      fastify.log.warn({ grace_ms: SHUTDOWN_GRACE_MS }, 'arrêt : délai de garde dépassé, sortie forcée')
+      process.exit(1)
+    }, SHUTDOWN_GRACE_MS)
+    guard.unref()
+
+    fastify.close()
+      .then(() => { fastify.log.info('arrêt : terminé'); process.exit(0) })
+      .catch((err) => { fastify.log.error({ err: err.message }, 'arrêt : échec'); process.exit(1) })
+  })
+}

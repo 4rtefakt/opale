@@ -657,6 +657,7 @@ export default {
   'rapports.battery.critical':        'Replace (< 50 %)',
 
   'audit.filter.all_levels':       'All levels',
+  'audit.unauthenticated.title':   'Self-declared entry — open endpoint (setup script before enrolment): this author is not authenticated.',
   'audit.level.info':              'info',
   'audit.level.warn':              'warn',
   'audit.level.error':             'error',

@@ -74,10 +74,11 @@ async function downloadMsix(log) {
   try {
     const res = await fetch(MSIX_URL, {
       signal: ac.signal,
-      // Pas de redirection vers un autre host : on attend uniquement le
-      // CDN MS, donc si jamais un middlebox tentait de rediriger ailleurs
-      // on préfère échouer.
-      redirect: 'follow',
+      // On attend uniquement le CDN MS : si un middlebox ou un DNS détourné
+      // tentait de rediriger ailleurs, on préfère échouer plutôt que de
+      // suivre. (Le commentaire décrivait déjà cette intention, mais le code
+      // était en `follow` — donc exactement l'inverse.)
+      redirect: 'error',
       headers: { 'User-Agent': 'opale/1.0 (+winget-index-fetcher)' },
     })
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)

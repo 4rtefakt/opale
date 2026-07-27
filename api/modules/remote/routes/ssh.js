@@ -4,6 +4,7 @@ import { parseReason, formatReasonLine } from '../lib/remote-reason.js'
 import { attachSystemEventToOpenTicketsOfDevice } from '../../tickets/lib/ticket-events.js'
 import { logAudit } from '../../core/lib/audit.js'
 import { createGrantStore } from '../lib/one-shot-grant.js'
+import { makeHostVerifier, loadKnownHostKey } from '../lib/ssh-host-key.js'
 
 function sshKey() {
   const b64 = process.env.SSH_PRIVATE_KEY_B64
@@ -181,11 +182,23 @@ export default async function sshRoute(fastify) {
 
     socket.on('close', () => conn.end())
 
+    // L'empreinte connue est chargée AVANT connect() : le hostVerifier de
+    // ssh2 est synchrone, il ne peut pas interroger la base lui-même.
+    const knownFp = await loadKnownHostKey(fastify.db, device.id)
+
     conn.connect({
       host:       device.ip_netbird,
       port:       parseInt(process.env.SSH_PORT || '22', 10),
       username:   process.env.SSH_USER || 'opale',
       privateKey: sshKey(),
+      // Refuse la poignée de main AVANT authentification si la clé d'hôte a
+      // changé — sans quoi le contenu du terminal partirait chez qui répond
+      // à l'IP (cf. lib/ssh-host-key.js).
+      hostVerifier: makeHostVerifier(
+        { db: fastify.db, log: fastify.log },
+        device, knownFp,
+        { onReject: (msg) => send('error', msg) }
+      ),
       readyTimeout: 10_000
     })
   })

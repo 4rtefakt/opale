@@ -209,8 +209,15 @@ function _renderRows(rows, append) {
     const rowId     = `ar-${_offset}-${idx}`
     // Lien préfère entra_id (toujours présent dans users_cache) à email
     // (souvent vide tant que la sync Entra n'a pas tourné).
+    // POST /api/agent/setup-log est ouvert (le script Intune tourne en SYSTEM
+    // avant tout enrôlement) : son `by_user` est un champ de formulaire, pas
+    // une identité vérifiée. On le marque pour qu'une entrée déclarative ne
+    // soit pas lue comme une action authentifiée.
+    const unauth = r.details?.unauthenticated === true
     const byUserId = r.by_user_entra_id || r.by_user_email
-    const byUser = byUserId
+    const byUser = unauth
+      ? `<span style="color:var(--text-secondary)" title="${esc(t('audit.unauthenticated.title'))}">${esc(r.by_user || '—')} <i class="ti ti-alert-triangle" style="font-size:11px;color:var(--amber)"></i></span>`
+      : byUserId
       ? `<a href="#/users/${esc(byUserId)}" class="nav-link" onclick="event.stopPropagation()">${esc(r.by_user || '—')}</a>`
       : `<span style="color:var(--text-secondary)">${esc(r.by_user || '—')}</span>`
     let targetHtml = ''

@@ -51,7 +51,12 @@ function rowTitle(r) {
 function rowSub(r) {
   const d = r.details || {}
   const parts = []
-  if (r.by_user && r.by_user !== rowTitle(r)) parts.push(r.by_user)
+  // Les entrées issues de POST /api/agent/setup-log sont déclaratives (endpoint
+  // ouvert, `by_user` non vérifié) — on les marque pour ne pas les lire comme
+  // une action authentifiée.
+  if (r.by_user && r.by_user !== rowTitle(r)) {
+    parts.push(d.unauthenticated === true ? `⚠ ${r.by_user}` : r.by_user)
+  }
   switch (r.action) {
     case 'agent_checkin':
       if (d.ip_netbird)   parts.push(d.ip_netbird)

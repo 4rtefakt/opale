@@ -1,5 +1,7 @@
 import { Client } from 'ssh2'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
+import { makeHostVerifier, loadKnownHostKey } from '../../remote/lib/ssh-host-key.js'
+import { pMap } from '../../../lib/p-map.js'
 
 function sshKey() {
   const b64 = process.env.SSH_PRIVATE_KEY_B64
@@ -7,8 +9,43 @@ function sshKey() {
   return Buffer.from(b64, 'base64').toString('utf8')
 }
 
+// Nombre de connexions SSH sortantes simultanées. Sans borne, déployer sur un
+// groupe de 200 postes ouvrait 200 sockets d'un coup depuis le process API.
+const SSH_CONCURRENCY = parseInt(process.env.OPALE_SSH_CONCURRENCY || '10', 10)
+
+// Durée maximale d'exécution d'un script sur un poste. `readyTimeout` ne
+// couvre que l'établissement de la connexion : un script qui ne se termine
+// jamais laissait la promesse ET le flux SSE ouverts indéfiniment.
+const SCRIPT_EXEC_TIMEOUT_MS = parseInt(process.env.OPALE_SCRIPT_TIMEOUT_MS || '300000', 10)
+
+// Sortie conservée par exécution. La troncature ne se faisait qu'à l'écriture
+// en base, APRÈS avoir tout accumulé en mémoire : un script bavard pouvait
+// faire tomber l'API en OOM avant d'atteindre le slice().
+const SCRIPT_OUTPUT_MAX = 100_000
+
+// Accumulateur borné : au-delà de la limite on garde le début (là où se
+// trouvent les erreurs utiles) et on note ce qui a été coupé.
+function makeOutputBuffer(limit = SCRIPT_OUTPUT_MAX) {
+  const chunks = []
+  let size = 0, dropped = 0
+  return {
+    push(text) {
+      if (size >= limit) { dropped += text.length; return }
+      const room = limit - size
+      const kept = text.length <= room ? text : text.slice(0, room)
+      chunks.push(kept)
+      size += kept.length
+      dropped += text.length - kept.length
+    },
+    toString() {
+      return chunks.join('') +
+        (dropped ? `\n[serveur] … sortie tronquée (${dropped} caractères supprimés)` : '')
+    },
+  }
+}
+
 // Exécute un script sur un poste via SSH, stream la sortie via SSE
-async function execOnDevice(fastify, device, scriptCode, execId, reply) {
+async function execOnDevice(fastify, device, scriptCode, execId, reply, knownFp) {
   const send = (type, data) => {
     if (reply.raw.writableEnded) return
     reply.raw.write(`data: ${JSON.stringify({ execId, deviceId: device.id, hostname: device.hostname, type, data })}\n\n`)
@@ -16,8 +53,25 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
 
   return new Promise((resolve) => {
     const conn = new Client()
-    const output = []
+    const output = makeOutputBuffer()
     const t0 = Date.now()
+
+    let settled = false
+    const done = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(execTimer)
+      resolve(result)
+    }
+    const execTimer = setTimeout(() => {
+      send('error', `Timeout : le script dépasse ${Math.round(SCRIPT_EXEC_TIMEOUT_MS / 1000)} s, connexion coupée`)
+      conn.destroy()
+      done({
+        status: 'error',
+        output: output.toString() + '\n[serveur] Timeout d\'exécution — connexion coupée.',
+        duration: Date.now() - t0,
+      })
+    }, SCRIPT_EXEC_TIMEOUT_MS)
 
     conn.on('ready', () => {
       send('connected', `Connecté à ${device.hostname} (${device.ip_netbird})`)
@@ -25,7 +79,7 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
         if (err) {
           send('error', err.message)
           conn.end()
-          return resolve({ status: 'error', output: err.message, duration: Date.now() - t0 })
+          return done({ status: 'error', output: err.message, duration: Date.now() - t0 })
         }
         stream.on('data', (chunk) => {
           const text = chunk.toString()
@@ -42,14 +96,14 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
           const duration = Date.now() - t0
           const status = code === 0 ? 'success' : 'error'
           send('done', { exitCode: code, duration })
-          resolve({ status, output: output.join(''), duration })
+          done({ status, output: output.toString(), duration })
         })
       })
     })
 
     conn.on('error', (err) => {
       send('error', `Connexion SSH échouée : ${err.message}`)
-      resolve({ status: 'error', output: err.message, duration: Date.now() - t0 })
+      done({ status: 'error', output: err.message, duration: Date.now() - t0 })
     })
 
     conn.connect({
@@ -57,6 +111,13 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
       port:       parseInt(process.env.SSH_PORT || '22', 10),
       username:   process.env.SSH_USER || 'opale',
       privateKey: sshKey(),
+      // Le script poussé porte en pratique des identifiants d'installation :
+      // il ne doit partir que vers un hôte dont la clé est celle attendue.
+      hostVerifier: makeHostVerifier(
+        { db: fastify.db, log: fastify.log },
+        device, knownFp,
+        { onReject: (msg) => send('error', msg) }
+      ),
       readyTimeout: 10_000
     })
   })
@@ -181,16 +242,20 @@ export default async function scriptsRoute(fastify) {
       execIds[d.id] = rows[0].id
     }
 
-    // Exécution en parallèle sur tous les postes
-    await Promise.all(devices.map(async (device) => {
+    // Exécution concurrente BORNÉE (cf. lib/p-map.js) : tous les postes sont
+    // traités, mais SSH_CONCURRENCY connexions sortantes au maximum en même
+    // temps. Sans borne, un groupe de 200 machines ouvrait 200 sockets SSH
+    // d'un coup depuis le process API.
+    await pMap(devices, async (device) => {
       const execId = execIds[device.id]
-      const result = await execOnDevice(fastify, device, script.code, execId, reply)
+      const knownFp = await loadKnownHostKey(fastify.db, device.id)
+      const result = await execOnDevice(fastify, device, script.code, execId, reply, knownFp)
       await fastify.db.query(`
         UPDATE script_executions
         SET status=$1, output=$2, duration_ms=$3
         WHERE id=$4
-      `, [result.status, result.output.slice(0, 100000), result.duration, execId])
-    }))
+      `, [result.status, result.output.slice(0, SCRIPT_OUTPUT_MAX), result.duration, execId])
+    }, SSH_CONCURRENCY)
 
     if (!reply.raw.writableEnded) {
       reply.raw.write(`data: ${JSON.stringify({ type: 'end' })}\n\n`)

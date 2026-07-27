@@ -361,3 +361,110 @@ test('GET /version — token valide → 200 + latest_version (peut être null en
   // avec un champ latest_version".
   assert.ok('latest_version' in res.json())
 })
+
+// ─── Bornes sur les données remontées ─────────────────────────────────────────
+//
+// Le checkin fait UNE REQUÊTE SQL PAR ÉLÉMENT de `disks`, `network`,
+// `bandwidth` et `ping`. Sans borne, un agent compromis pouvait déclencher des
+// milliers d'INSERT séquentiels sur le pool de 10 connexions partagé par toute
+// l'application.
+
+test('POST /checkin — un tableau de disques démesuré est tronqué, pas exécuté en entier', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-BOUND' })
+  const { secret: token } = await seedAgentToken(db, { deviceId: device.id })
+  const disks = Array.from({ length: 500 }, (_, i) => ({
+    letter: `D${i}:`, label: `disk${i}`, size_gb: 100, used_pct: 10,
+  }))
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { hostname: 'PC-BOUND', disks },
+  })
+  assert.equal(res.statusCode, 200)
+
+  const { rows } = await db.query(
+    `SELECT count(*)::int AS n FROM disks WHERE device_id = (SELECT id FROM devices WHERE hostname = 'PC-BOUND')`
+  )
+  assert.ok(rows[0].n <= 64, `attendu ≤ 64 disques insérés, reçu ${rows[0].n}`)
+})
+
+test('POST /checkin — un nombre normal de disques passe intégralement', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-NORMAL' })
+  const { secret: token } = await seedAgentToken(db, { deviceId: device.id })
+  const disks = [
+    { letter: 'C:', label: 'Système', size_gb: 500, used_pct: 42 },
+    { letter: 'D:', label: 'Données', size_gb: 1000, used_pct: 10 },
+  ]
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { hostname: 'PC-NORMAL', disks },
+  })
+  assert.equal(res.statusCode, 200)
+
+  const { rows } = await db.query(
+    `SELECT count(*)::int AS n FROM disks WHERE device_id = (SELECT id FROM devices WHERE hostname = 'PC-NORMAL')`
+  )
+  assert.equal(rows[0].n, 2)
+})
+
+// ─── POST /setup-log — endpoint ouvert, donc borné et marqué ──────────────────
+
+test('POST /setup-log — log démesuré tronqué en base', { skip: SKIP }, async () => {
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/setup-log',
+    payload: { hostname: 'PC-FLOOD', script: 'install', level: 'error', log: 'A'.repeat(200_000) },
+  })
+  assert.equal(res.statusCode, 204)
+
+  const { rows } = await db.query(
+    `SELECT details FROM audit_logs WHERE action = 'setup_script' AND by_user = 'PC-FLOOD'`
+  )
+  assert.equal(rows.length, 1)
+  assert.ok(rows[0].details.log.length < 10_000, `log non tronqué : ${rows[0].details.log.length} caractères`)
+  assert.match(rows[0].details.log, /tronqué/)
+})
+
+test('POST /setup-log — les entrées sont marquées non authentifiées', { skip: SKIP }, async () => {
+  // L'endpoint est ouvert : `by_user` est un champ de formulaire, pas une
+  // identité vérifiée. Le marqueur permet à l'UI de ne pas les présenter
+  // comme des actions authentifiées.
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/setup-log',
+    payload: { hostname: 'DdeGaulle', script: 'install', level: 'error', log: 'échec' },
+  })
+  assert.equal(res.statusCode, 204)
+
+  const { rows } = await db.query(
+    `SELECT details FROM audit_logs WHERE action = 'setup_script' AND by_user = 'DdeGaulle'`
+  )
+  assert.equal(rows[0].details.unauthenticated, true)
+})
+
+test('POST /setup-log — niveau hors liste normalisé sur info', { skip: SKIP }, async () => {
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/setup-log',
+    payload: { hostname: 'PC-LVL', script: 'install', level: '<script>alert(1)</script>', log: 'x' },
+  })
+  assert.equal(res.statusCode, 204)
+
+  const { rows } = await db.query(
+    `SELECT details FROM audit_logs WHERE action = 'setup_script' AND by_user = 'PC-LVL'`
+  )
+  assert.equal(rows[0].details.level, 'info')
+})
+
+test('POST /setup-log — hostname démesuré tronqué', { skip: SKIP }, async () => {
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/setup-log',
+    payload: { hostname: 'H'.repeat(5000), script: 'install', level: 'error', log: 'x' },
+  })
+  assert.equal(res.statusCode, 204)
+
+  const { rows } = await db.query(
+    `SELECT by_user FROM audit_logs WHERE action = 'setup_script' AND by_user LIKE 'HHH%'`
+  )
+  assert.ok(rows[0].by_user.length <= 255, `hostname non borné : ${rows[0].by_user.length}`)
+})

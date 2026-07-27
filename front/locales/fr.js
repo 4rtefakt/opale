@@ -691,6 +691,7 @@ export default {
   'error.forbidden':  'Accès refusé',
 
   'audit.filter.all_levels':       'Tous niveaux',
+  'audit.unauthenticated.title':   'Entrée déclarative — endpoint ouvert (script d\'installation avant enrôlement) : cet auteur n\'est pas authentifié.',
   'audit.level.info':              'info',
   'audit.level.warn':              'warn',
   'audit.level.error':             'error',
