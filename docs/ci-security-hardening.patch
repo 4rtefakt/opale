@@ -1,0 +1,229 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 8d8cc7b..25ed68b 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -20,7 +20,7 @@ concurrency:
+ 
+ jobs:
+   # ─────────────────────────────────────────────────────────────────────────
+-  # 1) API : install des deps, syntax check de tous les .js, puis suite
++  # 1) API : install des deps, lint, puis suite
+   #    `node --test` (helpers + libs pures + smoke d'intégration DB).
+   #    Un service Postgres 16 est démarré pour les tests qui acquièrent
+   #    un schéma random via tests/helpers/db.js — cohérent avec le service
+@@ -58,25 +58,25 @@ jobs:
+ 
+       - uses: actions/setup-node@v4
+         with:
+-          node-version: '20'
++          node-version: '22'
+           cache: npm
+-          cache-dependency-path: api/package-lock.json
++          cache-dependency-path: |
++            package-lock.json
++            api/package-lock.json
+ 
+       - name: Install API dependencies
+         working-directory: api
+         run: npm ci
+ 
+-      - name: Syntax check (node --check) on all api/*.js
+-        run: |
+-          set -euo pipefail
+-          fail=0
+-          while IFS= read -r -d '' f; do
+-            if ! node --check "$f"; then
+-              echo "::error file=$f::node --check failed"
+-              fail=1
+-            fi
+-          done < <(find api -type f -name '*.js' -not -path 'api/node_modules/*' -print0)
+-          exit "$fail"
++      # ESLint sur TOUT le dépôt (api + front + scripts). Remplace l'ancien
++      # `node --check`, qui ne vérifiait que le parsing d'un fichier et ne
++      # détectait donc ni variable non déclarée, ni `await` oublié, ni import
++      # mort. Cf. eslint.config.js pour le jeu de règles retenu.
++      - name: Install lint toolchain
++        run: npm ci --no-audit --no-fund
++
++      - name: ESLint
++        run: npm run lint
+ 
+       - name: Run API test suite (node --test)
+         working-directory: api
+@@ -160,11 +160,14 @@ jobs:
+           sudo apt-get update -qq
+           sudo apt-get install -y --no-install-recommends postgresql-client
+ 
+-      - name: First pass — apply all migrations in order
++      # L'ordre doit être NUMÉRIQUE et couvrir tous les préfixes, exactement
++      # comme api/lib/migrate.js. L'ancien glob `0*.sql` trié
++      # alphabétiquement aurait ordonné `100_` avant `99_` — et surtout ne
++      # l'aurait pas matché du tout.
++      - name: First pass — apply all migrations in numeric order
+         run: |
+           set -euo pipefail
+-          shopt -s nullglob
+-          files=(api/migrations/0*.sql)
++          mapfile -t files < <(ls api/migrations/[0-9]*.sql | sort -V)
+           if [ "${#files[@]}" -eq 0 ]; then
+             echo "::error::no migrations found under api/migrations/"
+             exit 1
+@@ -174,11 +177,14 @@ jobs:
+             psql -v ON_ERROR_STOP=1 -f "$m"
+           done
+ 
++      # Double passe : c'est cette étape qui garantit l'idempotence, laquelle
++      # est l'invariant sur lequel repose l'adoption du runner de migrations
++      # par une instance déjà en production (cf. MIGRATIONS.md).
+       - name: Second pass — re-apply (idempotency check)
+         run: |
+           set -euo pipefail
+-          shopt -s nullglob
+-          for m in api/migrations/0*.sql; do
++          mapfile -t files < <(ls api/migrations/[0-9]*.sql | sort -V)
++          for m in "${files[@]}"; do
+             echo "→ $m (re-run)"
+             psql -v ON_ERROR_STOP=1 -f "$m"
+           done
+@@ -195,14 +201,14 @@ jobs:
+ 
+       - uses: actions/setup-node@v4
+         with:
+-          node-version: '20'
++          node-version: '22'
+ 
+       - name: Check locale key parity (fr.js ↔ en.js)
+         run: node --no-warnings scripts/check-locales-parity.mjs
+ 
+   # ─────────────────────────────────────────────────────────────────────────
+   # 5) Image Docker : build l'image complète, vérifie que l'entrypoint
+-  #    parse, et que les 5 vendors front sont présents (cf. setup.sh).
++  #    parse, et que les vendors front sont présents (cf. setup.sh).
+   # ─────────────────────────────────────────────────────────────────────────
+   validate-docker-build:
+     name: Validate Docker build
+@@ -241,3 +247,124 @@ jobs:
+               echo "OK: $f"
+             done
+           '
++
++  # ─────────────────────────────────────────────────────────────────────────
++  # 6) Sécurité — audit de dépendances, analyse statique, scan de secrets et
++  #    scan de l'image. Rien de tout cela n'existait : Dependabot ouvrait des
++  #    PR mais ne bloquait aucun merge, et un dépôt qui manipule des clés SSH,
++  #    une clé de signature de binaires et une clé LAPS n'avait ni SAST ni
++  #    détection de secrets.
++  # ─────────────────────────────────────────────────────────────────────────
++  audit-dependencies:
++    name: Audit des dépendances
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++
++      - uses: actions/setup-node@v4
++        with:
++          node-version: '22'
++
++      # `--omit=dev` : on bloque sur ce qui part en PRODUCTION. Une
++      # vulnérabilité dans une dépendance de développement ne se retrouve pas
++      # dans l'image publiée ; la signaler sans bloquer garde le signal sans
++      # bloquer les merges sur du bruit.
++      - name: npm audit — dépendances de production de l'API
++        working-directory: api
++        run: npm audit --omit=dev --audit-level=high
++
++      - name: npm audit — vendors front
++        working-directory: front
++        run: npm audit --omit=dev --audit-level=high
++
++      - name: npm audit — outillage (informatif)
++        run: npm audit --audit-level=critical || echo "::warning::vulnérabilités dans l'outillage de dev — à traiter, non bloquant"
++
++      - uses: actions/setup-go@v6
++        with:
++          go-version-file: agent-go/go.mod
++          cache-dependency-path: agent-go/go.sum
++
++      # L'agent tourne en SYSTEM sur tous les postes du parc : c'est le
++      # composant où une vulnérabilité de dépendance coûte le plus cher.
++      - name: govulncheck — agent Go
++        working-directory: agent-go
++        run: |
++          go install golang.org/x/vuln/cmd/govulncheck@latest
++          "$(go env GOPATH)/bin/govulncheck" ./...
++
++  codeql:
++    name: CodeQL (JavaScript, Go)
++    runs-on: ubuntu-latest
++    permissions:
++      security-events: write
++      contents: read
++    strategy:
++      fail-fast: false
++      matrix:
++        language: [javascript-typescript, go]
++    steps:
++      - uses: actions/checkout@v4
++
++      - uses: github/codeql-action/init@v3
++        with:
++          language: ${{ matrix.language }}
++          queries: security-extended
++
++      - uses: github/codeql-action/autobuild@v3
++
++      - uses: github/codeql-action/analyze@v3
++        with:
++          category: /language:${{ matrix.language }}
++
++  secret-scan:
++    name: Scan de secrets (gitleaks)
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          # Historique complet : un secret committé puis retiré reste
++          # exploitable tant qu'il n'a pas été révoqué. C'est exactement ce
++          # qu'on veut détecter.
++          fetch-depth: 0
++
++      - uses: gitleaks/gitleaks-action@v2
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++
++  image-scan:
++    name: Scan de l'image (Trivy)
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++
++      - uses: docker/setup-buildx-action@v3
++
++      - name: Build image
++        uses: docker/build-push-action@v5
++        with:
++          context: .
++          load: true
++          tags: opale:scan
++          cache-from: type=gha
++
++      # L'image publiée sur GHCR est installée par des tiers via le one-liner :
++      # elle ne doit pas embarquer de CVE haute ou critique connue.
++      - name: Trivy — vulnérabilités de l'image
++        uses: aquasecurity/trivy-action@0.28.0
++        with:
++          image-ref: opale:scan
++          severity: HIGH,CRITICAL
++          ignore-unfixed: true
++          exit-code: '1'
++          format: table
++
++      # Vérifie le durcissement du Dockerfile lui-même (USER non-root, etc.).
++      - name: Trivy — configuration Docker
++        uses: aquasecurity/trivy-action@0.28.0
++        with:
++          scan-type: config
++          scan-ref: .
++          severity: HIGH,CRITICAL
++          exit-code: '1'
++          format: table
