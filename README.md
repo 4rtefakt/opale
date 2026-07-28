@@ -71,7 +71,10 @@ escrowed RSA-OAEP encrypted; admins decrypt one-shot from the UI.
 with optional Microsoft Entra group assignment via Graph.
 
 **Mobile PWA** — dedicated interface, installable on iOS and Android,
-WebAuthn unlock, push notifications.
+push notifications, and a local biometric app-lock after inactivity.
+That lock is a convenience over the Entra session, not a second
+authentication factor: the check happens entirely on-device and the API
+does not depend on it.
 
 ---
 
@@ -132,7 +135,7 @@ mature; until then, pin to a commit if you deploy it.
 | Authentication | MSAL.js + Microsoft Entra ID (JWT verified server-side via JWKS) |
 | Remote shell | WebSocket + ssh2 + xterm.js |
 | Push notifications | Web Push (VAPID) via Service Worker |
-| Mobile | PWA installable, WebAuthn biometric unlock |
+| Mobile | Installable PWA, local biometric app-lock (convenience, not a second factor) |
 | Agent | Go (cross-compiled Windows amd64 + arm64), Windows Service, ed25519-signed auto-update |
 | CLI | Go · Cobra · PKCE auth · shell completion (zsh / bash / fish) |
 | Packaging | Docker Compose · single Dockerfile |

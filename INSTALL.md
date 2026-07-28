@@ -51,10 +51,17 @@ cd opale
 ./setup.sh
 ```
 
-`setup.sh` downloads MSAL Browser, Tabler Icons fonts, Chart.js and
-xterm.js into `front/`. These files are gitignored on purpose — the
-script runs in a few seconds and produces a self-contained `front/`
-directory. Re-run it after pulling updates if the script changes.
+`setup.sh` installs MSAL Browser, Tabler Icons fonts, Chart.js and
+xterm.js from npm — pinned to exact versions by `front/package-lock.json`,
+whose SHA-512 integrity hashes npm verifies on every install — then copies
+them into `front/`. Requires `npm`.
+
+The copied files are gitignored on purpose; the *versions* and their
+integrity hashes are committed, which is what makes builds reproducible
+and upstream tampering detectable. Re-run after pulling updates.
+
+To bump a library: edit `front/package.json`, run
+`npm install --package-lock-only` in `front/`, commit the lockfile.
 
 ---
 
@@ -145,20 +152,38 @@ docker compose -f docker-compose.example.yml up -d
 docker compose -f docker-compose.example.yml logs -f api
 ```
 
-The first start applies `api/migrations/001_init.sql` automatically.
-Migrations `002+` are not auto-applied — run them in order:
+**Migrations run automatically.** On every start, the API applies any
+pending `api/migrations/NNN_*.sql` — once, in order, each inside its own
+transaction — and records them in the `schema_migrations` table. You do
+not need to apply anything by hand.
+
+If a migration fails, the API refuses to start rather than serve traffic
+on a half-applied schema. The log names the offending file.
 
 ```bash
-for m in api/migrations/0[0-9][0-9]_*.sql; do
-  [[ "$m" == *001_init.sql ]] && continue
-  echo "→ $m"
-  docker compose -f docker-compose.example.yml exec -T db \
-    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$m"
-done
+# Which migrations are applied, which are pending
+docker compose -f docker-compose.example.yml exec -T api node scripts/migrate.js --status
+
+# Schema version currently live
+curl -s http://localhost:3010/health
+# → {"status":"ok","schema_version":"074","uptime_s":42}
 ```
 
-Wire your reverse proxy of choice to `localhost:3010` and serve the
-host on HTTPS. Example with Caddy:
+> **Upgrading an instance created before the migration runner existed?**
+> Migrations are idempotent — a CI job re-applies the whole chain twice on
+> every commit to guarantee it — so the runner simply replays them and
+> ends up with a correct `schema_migrations`. Nothing to do. If your
+> database is large enough that even a no-op replay is unwelcome, set
+> `OPALE_MIGRATIONS_BASELINE=<last version you applied by hand>` for one
+> start; the runner marks everything up to that version as applied
+> without executing it.
+>
+> To drive migrations from your orchestrator instead of at boot, set
+> `OPALE_MIGRATE_ON_BOOT=false` and run `node scripts/migrate.js` as a
+> pre-deploy step.
+
+The API listens on `127.0.0.1:3010` only — put your reverse proxy in
+front and serve the host over HTTPS. Example with Caddy:
 
 ```caddyfile
 rmm.example.com {
@@ -174,17 +199,30 @@ screen with the Microsoft button.
 ## 6. Bootstrap the first admin
 
 The login flow trusts the JWT but reads admin status from the
-`users_cache` table. After your first login, your row exists but has
-`is_admin = false`. Promote yourself manually:
+`users_cache` table. **The first account to sign in on an instance that
+has no administrator yet is promoted automatically**, and the promotion
+is recorded in the audit log (`admin_bootstrapped`).
+
+That "first one wins" rule has an obvious implication: sign in yourself
+before opening the URL to anyone else. If you cannot control that — the
+host is already reachable, or someone else may hit it first — name the
+account explicitly instead, and only that account can claim the role:
 
 ```bash
-docker compose -f docker-compose.example.yml exec -T db \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
-  "UPDATE users_cache SET is_admin = true WHERE email = 'you@example.com';"
+# in .env, before the first start
+OPALE_BOOTSTRAP_ADMIN_UPN=you@example.com
 ```
+
+Either way the API logs a warning on every start while no administrator
+exists, so an instance left in that state is not silent.
 
 Refresh the browser. The full sidebar (Devices, Settings, Stock, etc.)
 should now appear.
+
+Afterwards, promote colleagues from **Paramètres → Administrateurs**.
+Two safeguards apply there: you cannot revoke your own admin rights, and
+you cannot remove the last administrator — both would leave the instance
+unmanageable with no recovery path outside `psql`.
 
 ---
 
@@ -255,9 +293,15 @@ SYSTEM with the appropriate environment variables.
 **Updating the API**
 ```bash
 git pull
+./setup.sh                                              # if front deps changed
 docker compose -f docker-compose.example.yml build api
-docker compose -f docker-compose.example.yml up -d api
+docker compose -f docker-compose.example.yml up -d api  # migrations run at boot
 ```
+
+The API stops gracefully on `SIGTERM`: it stops accepting connections,
+lets in-flight requests finish, then closes the pool and flushes session
+buffers. `docker compose restart` is therefore safe with open SSH
+terminals.
 
 **Updating the frontend** (no rebuild needed — `front/` is volume-mounted)
 ```bash
@@ -265,12 +309,16 @@ git pull
 # edits visible immediately at the next page refresh
 ```
 
-**Applying a new migration**
+**Applying a new migration** — nothing to do. `docker compose up -d api`
+applies whatever is pending, in order, and records it. To check first:
+
 ```bash
-docker compose -f docker-compose.example.yml exec -T db \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  < api/migrations/0NN_description.sql
+docker compose -f docker-compose.example.yml exec -T api node scripts/migrate.js --status
 ```
+
+A migration already applied is **immutable**: the runner stores its
+SHA-256 and refuses to start if the file changed afterwards. To correct a
+migration, add a new `NNN+1` file rather than editing the old one.
 
 **One-off data migration scripts** (`api/scripts/`)
 

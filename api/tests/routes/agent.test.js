@@ -467,3 +467,97 @@ test('POST /setup-log — hostname démesuré tronqué', { skip: SKIP }, async (
   )
   assert.ok(rows[0].by_user.length <= 255, `hostname non borné : ${rows[0].by_user.length}`)
 })
+
+// ─── Enrôlement : un bootstrap ne doit pas pouvoir usurper un poste ───────────
+//
+// Un bootstrap token est embarqué EN CLAIR dans le script Intune poussé à N
+// postes : il est lisible par tout utilisateur local de l'un d'eux. Le device
+// étant retrouvé sur le seul hostname annoncé, ce porteur pouvait réclamer un
+// token personnel lié à n'importe quel poste existant.
+
+test('POST /exchange-token — hostname déjà enrôlé → 409', { skip: SKIP }, async () => {
+  const victim = await seedDevice(db, { hostname: 'PC-DIRECTION' })
+  await seedAgentToken(db, { deviceId: victim.id, label: 'token légitime' })
+  const { secret: bootstrap } = await seedAgentToken(db, { isBootstrap: true, label: 'intune' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/exchange-token',
+    headers: { authorization: `Bearer ${bootstrap}` },
+    payload: { hostname: 'PC-DIRECTION' },
+  })
+  assert.equal(res.statusCode, 409)
+  assert.equal(res.json().code, 'DEVICE_ALREADY_ENROLLED')
+
+  // Aucun token supplémentaire ne doit avoir été créé pour ce poste.
+  const { rows } = await db.query(
+    'SELECT count(*)::int AS n FROM agent_tokens WHERE device_id = $1', [victim.id]
+  )
+  assert.equal(rows[0].n, 1)
+})
+
+test('POST /exchange-token — le refus est tracé en audit', { skip: SKIP }, async () => {
+  const victim = await seedDevice(db, { hostname: 'PC-AUDIT-REFUS' })
+  await seedAgentToken(db, { deviceId: victim.id })
+  const { secret: bootstrap } = await seedAgentToken(db, { isBootstrap: true, label: 'intune2' })
+
+  await fastify.inject({
+    method: 'POST', url: '/api/agent/exchange-token',
+    headers: { authorization: `Bearer ${bootstrap}` },
+    payload: { hostname: 'PC-AUDIT-REFUS' },
+  })
+  const { rows } = await db.query(
+    `SELECT details FROM audit_logs WHERE action = 'agent_bootstrap_refused' AND target = $1`,
+    [victim.id]
+  )
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].details.reason, 'device_already_enrolled')
+})
+
+test('POST /exchange-token — un poste dont le token est révoqué peut être ré-enrôlé', { skip: SKIP }, async () => {
+  // Cas légitime : réinstallation. L'admin révoque, puis le poste se ré-enrôle.
+  const dev = await seedDevice(db, { hostname: 'PC-REINSTALL' })
+  await seedAgentToken(db, { deviceId: dev.id, revokedAt: new Date().toISOString() })
+  const { secret: bootstrap } = await seedAgentToken(db, { isBootstrap: true, label: 'intune3' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/exchange-token',
+    headers: { authorization: `Bearer ${bootstrap}` },
+    payload: { hostname: 'PC-REINSTALL' },
+  })
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.json().device_id, dev.id)
+})
+
+test('POST /exchange-token — un poste inconnu s\'enrôle normalement', { skip: SKIP }, async () => {
+  const { secret: bootstrap } = await seedAgentToken(db, { isBootstrap: true, label: 'intune4' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/exchange-token',
+    headers: { authorization: `Bearer ${bootstrap}` },
+    payload: { hostname: 'PC-TOUT-NEUF', serial: 'SN-123' },
+  })
+  assert.equal(res.statusCode, 201)
+  assert.ok(res.json().token)
+})
+
+test('POST /exchange-token — le token émis EXPIRE', { skip: SKIP }, async () => {
+  // Sans expiration, un token dérobé sur un poste restait exploitable
+  // indéfiniment tant qu'un admin ne le révoquait pas — ce qui suppose de
+  // savoir qu'il a fuité.
+  const { secret: bootstrap } = await seedAgentToken(db, { isBootstrap: true, label: 'intune5' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/exchange-token',
+    headers: { authorization: `Bearer ${bootstrap}` },
+    payload: { hostname: 'PC-EXPIRY' },
+  })
+  assert.equal(res.statusCode, 201)
+
+  const { rows } = await db.query(
+    `SELECT expires_at FROM agent_tokens
+     WHERE device_id = $1 AND is_bootstrap = FALSE`, [res.json().device_id]
+  )
+  assert.equal(rows.length, 1)
+  assert.notEqual(rows[0].expires_at, null, 'le token personnel doit avoir une expiration')
+  assert.ok(new Date(rows[0].expires_at) > new Date(), 'expiration dans le futur')
+})

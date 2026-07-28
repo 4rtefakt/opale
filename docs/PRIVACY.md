@@ -340,9 +340,15 @@ s'exercent par demande à l'administrateur ou au DPO.
 
 L'interface mobile peut être verrouillée par WebAuthn (Touch ID, Face
 ID, etc.). La biométrie est **traitée localement** par le système
-d'exploitation du terminal — Opale ne reçoit qu'une **assertion
-cryptographique** (signature challenge/response). Aucune donnée
-biométrique n'atteint le serveur.
+d'exploitation du terminal, et **aucune donnée biométrique n'atteint le
+serveur** — c'est le point qui compte du point de vue RGPD.
+
+Précision technique, pour ne pas surestimer ce contrôle : la vérification
+est entièrement côté appareil. Le challenge est généré par le navigateur,
+aucune clé publique n'est enregistrée côté serveur, et l'API ne consulte
+jamais l'état du verrou. Il s'agit d'un verrou d'écran applicatif après
+inactivité, pas d'un second facteur d'authentification : la session Entra
+reste la seule frontière d'authentification.
 
 ### 6.3 Mesures organisationnelles à mettre en place côté instance
 

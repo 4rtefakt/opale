@@ -2,19 +2,58 @@
 
 ## Fonctionnement
 
-- **`001_init.sql`** : monté sur `/docker-entrypoint-initdb.d/` du container
-  PostgreSQL via `docker-compose.yml`. Joué automatiquement la première
-  fois que la DB est initialisée (DB vide).
-- **`002+`** : appliquées **manuellement** par le maintainer après
-  rebuild/déploiement, dans l'ordre alphabétique du nom de fichier.
-- **CI** : le job `validate-sql-migrations` (cf.
-  [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)) joue tous
-  les fichiers `api/migrations/0*.sql` dans l'ordre alphabétique sur une
-  DB Postgres 16 fraîche, puis **les rejoue une seconde fois** pour
-  valider l'idempotence. Toute migration doit donc être idempotente.
+Les migrations sont appliquées **automatiquement par l'API au démarrage**
+(`api/lib/migrate.js`), une fois et une seule, dans l'ordre numérique du
+préfixe. Rien n'est à jouer à la main.
 
-Il n'existe **pas** de table `_migrations` ni de runner intégré. Le
-maintainer trace ce qu'il a appliqué via le `git log` et le déploiement.
+- **Journal** : table `schema_migrations` (`version`, `name`, `checksum`,
+  `applied_at`, `duration_ms`).
+- **Atomicité** : chaque migration et son inscription au journal sont dans la
+  MÊME transaction. Un échec en cours de route ne laisse ni schéma ni journal
+  à moitié appliqués, et l'API refuse de démarrer plutôt que de servir du
+  trafic sur un schéma incomplet.
+- **Concurrence** : `pg_advisory_lock` sérialise les instances. Deux
+  conteneurs qui démarrent ensemble ne se marchent pas dessus — le second
+  attend, puis constate qu'il n'y a rien à faire.
+- **Immuabilité** : le SHA-256 de chaque fichier appliqué est stocké. Éditer
+  une migration déjà appliquée bloque le démarrage avec un message explicite.
+  Pour corriger, on crée un fichier `NNN+1`, on ne réécrit jamais l'ancien.
+- **Ordre** : le tri est NUMÉRIQUE, pas alphabétique — `100_x.sql` passe bien
+  après `099_y.sql`. Un numéro en double est une erreur au démarrage, plus une
+  ambiguïté silencieuse.
+
+### Outillage
+
+```bash
+node scripts/migrate.js            # applique ce qui manque
+node scripts/migrate.js --status   # liste appliquées / en attente (exit 1 si en attente)
+curl -s localhost:3010/health      # version de schéma actuellement servie
+```
+
+### Variables
+
+| Variable | Effet |
+|---|---|
+| `OPALE_MIGRATE_ON_BOOT=false` | Ne migre pas au démarrage — à piloter depuis l'orchestrateur |
+| `OPALE_MIGRATIONS_BASELINE=NNN` | Marque tout ce qui est ≤ NNN comme appliqué **sans l'exécuter** |
+
+### Adoption sur une instance existante
+
+Une instance dont les migrations ont été appliquées à la main avant
+l'existence du runner n'a **rien à faire** : les migrations sont idempotentes
+(invariant vérifié en CI, cf. ci-dessous), le runner les rejoue en no-op et
+remplit `schema_migrations` correctement.
+
+`OPALE_MIGRATIONS_BASELINE` n'est utile que si la base est assez volumineuse
+pour que même un no-op coûte. À manier avec précaution : il affirme au runner
+qu'un état est déjà en place sans le vérifier.
+
+### CI
+
+Le job `validate-sql-migrations` joue tous les fichiers sur une base Postgres
+16 fraîche, puis **les rejoue une seconde fois**. C'est cette double passe qui
+garantit l'idempotence — et donc la fiabilité de l'adoption ci-dessus. Toute
+migration doit rester idempotente.
 
 ## Convention de nommage
 

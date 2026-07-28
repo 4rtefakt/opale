@@ -35,6 +35,37 @@ consumer; the frontend gets a curated subset via `GET /env.js`.
 | `POSTGRES_USER` | yes | `opale` | Role used by the API |
 | `POSTGRES_PASSWORD` | yes | — | No default — set a strong random secret |
 | `POSTGRES_HOST` | no | `db` | Resolves to the service name in the bundled compose |
+| `POSTGRES_PORT` | no | `5432` | |
+| `POSTGRES_SSLMODE` | no | `disable` | `disable` / `require` / `verify-full`. Use `verify-full` as soon as `POSTGRES_HOST` is a remote machine — otherwise credentials and data cross the network in clear |
+| `POSTGRES_SSLROOTCERT` | no | — | CA bundle for `verify-full` (defaults to the system store) |
+| `POSTGRES_POOL_MAX` | no | `10` | Connections in the pool |
+
+### 1.2.1 Schema migrations
+
+Migrations are applied by the API at boot — once each, in order, one
+transaction per file — and tracked in `schema_migrations`. A failure
+prevents startup rather than serving traffic on a half-applied schema.
+An already-applied migration is immutable: its SHA-256 is stored, and a
+later edit to that file blocks startup with an explicit message.
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `OPALE_MIGRATE_ON_BOOT` | no | `true` | `false` to drive migrations from your orchestrator instead (`node scripts/migrate.js`) |
+| `OPALE_MIGRATIONS_BASELINE` | no | — | Marks everything ≤ this version as applied **without executing it**. Only for adopting the runner on an instance whose schema is already current |
+
+`node scripts/migrate.js --status` lists applied vs pending;
+`GET /health` returns the live schema version.
+
+### 1.2.2 First administrator
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `OPALE_BOOTSTRAP_ADMIN_UPN` | no | — | Only this account may claim the admin role. Unset, the **first** account to sign in on an instance with no admin is promoted — convenient, but sign in before opening the URL to others |
+
+Either way, the promotion is written to the audit log
+(`admin_bootstrapped`) and a warning is logged on every start while no
+administrator exists. In the UI, you cannot revoke your own rights nor
+remove the last administrator.
 
 ### 1.3 Frontend
 
@@ -61,6 +92,38 @@ Only required if you want the in-browser terminal.
 | `SSH_PORT` | no | `22` | TCP port |
 | `SSH_PRIVATE_KEY_B64` | yes (if SSH used) | — | `base64 -i ~/.ssh/id_ed25519` |
 
+### 1.5.1 SSH host key verification
+
+`ssh2` accepts any host key unless told otherwise. Opale pins one per
+device instead: the fingerprint is learned on first contact and any
+different key aborts the handshake **before** authentication, so neither
+the script being pushed nor the terminal contents reach an impostor.
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `OPALE_SSH_HOST_KEY_POLICY` | no | `tofu` | `tofu` learns on first contact; `strict` refuses until a fingerprint exists (fleets that provision it out of band) |
+| `OPALE_SSH_CONCURRENCY` | no | `10` | Simultaneous outbound SSH connections (script execution, force-checkin) |
+| `OPALE_SCRIPT_TIMEOUT_MS` | no | `300000` | Hard cap on a single script run |
+
+A legitimate key change — a reinstalled endpoint — is cleared from the
+device page (`DELETE /api/devices/:id/ssh-host-key`, admin only, audited).
+Mismatches are logged as `ssh_host_key_mismatch`.
+
+### 1.5.2 Windows agent enrolment
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `OPALE_AGENT_TOKEN_TTL_DAYS` | no | `180` | Lifetime of a personal agent token. The agent renews it itself; the bound limits how long a token stolen from an endpoint stays usable |
+| `OPALE_LEGACY_AGENT_SERVICE_NAMES` | no | — | Extra Windows service names accepted on restart (CSV), after a branding change |
+| `OPALE_LEGACY_AGENT_UA_PATTERN` | no | — | Extra User-Agent slug for agents built under a previous brand |
+
+A bootstrap token is embedded in clear in the Intune script pushed to
+every endpoint, so it is readable by any local user of any of them. It
+therefore **cannot claim a hostname that is already enrolled** — that
+would hand its bearer a token bound to someone else's machine. Re-enrol
+a reinstalled endpoint by revoking its agent token from *Paramètres*
+first; refusals are logged as `agent_bootstrap_refused`.
+
 ### 1.6 Web Push (PWA notifications)
 
 Generate the key pair once with `npx web-push generate-vapid-keys`.
@@ -77,6 +140,36 @@ Generate the key pair once with `npx web-push generate-vapid-keys`.
 |---|---|---|---|
 | `ONBOARDING_BASE_GROUP_IDS` | no | — | Comma-separated Entra group object IDs added to every onboarded user |
 | `ONBOARDING_LICENSE_GROUP_ID` | no | — | Group whose membership grants a Microsoft 365 license |
+
+---
+
+### 1.8 AI providers
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `OPALE_ASK_API_KEY` | no | — | Key for Ask Opale. Lives **only** here, never in `settings` — otherwise it would be readable through `GET /api/settings` |
+| `OPALE_LLM_ALLOWED_HOSTS` | no | — | Extra hosts allowed as an LLM endpoint (CSV) |
+
+The three provider URLs (`ask.url`, `mail.classifier.url`,
+`tickets.assistant.url`) are runtime settings, but they are checked
+against a host allowlist **at call time**, not only when written — so the
+check holds however the value reached the database. Allowed by default:
+`api.anthropic.com`, `api.mistral.ai`, `ollama`, `localhost`.
+
+The allowlist is deliberately **not** editable from the UI: the API key
+travels in the request headers, so being able to redirect those requests
+is equivalent to being able to read the key. Widening it requires access
+to the server environment, not just an admin session.
+
+### 1.9 Optional subsystems
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `OPALE_WINGET_INDEX` | no | `false` | Winget package-name autocompletion. Off by default: ~50 MB of MSIX plus a SQLite index resident in the API process, for a typing convenience. Entering a winget ID directly works without it |
+| `WINGET_SOURCE_URL` | no | Microsoft CDN | Override the index source |
+| `ATTACHMENTS_DIR` | no | `/app/data/ticket-attachments` | Must be writable by uid 1000 (`node`) |
+| `OPALE_SHUTDOWN_GRACE_MS` | no | `15000` | Grace period on `SIGTERM` before forced exit |
+| `OPALE_DISABLE_HSTS` | no | `false` | Skip HSTS in production, e.g. when the reverse proxy already sets it |
 
 ---
 

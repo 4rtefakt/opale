@@ -52,6 +52,11 @@ const SETUP_LOG_MAX_CHARS = 8_000
 const SETUP_LOG_HOSTNAME_MAX = 255
 const SETUP_LOG_SCRIPT_MAX   = 100
 
+// Durée de vie d'un token agent personnel. L'agent le renouvelle seul à chaque
+// rotation (POST /rotate-token) ; cette borne limite la fenêtre d'exploitation
+// d'un token dérobé sur un poste qui ne tourne plus.
+const AGENT_TOKEN_TTL_DAYS = parseInt(process.env.OPALE_AGENT_TOKEN_TTL_DAYS || '180', 10)
+
 function agentBinPath(arch) {
   // Défense en profondeur : whitelist avant le glob. Le glob filesystem
   // empêche déjà un path traversal classique (il ne trouverait pas de
@@ -273,12 +278,49 @@ export default async function agentRoute(fastify) {
         return reply.code(401).send({ error: 'Bootstrap invalide, expiré, révoqué ou quota atteint' })
       }
 
-      // Trouver ou créer le device par hostname
+      // Trouver ou créer le device par hostname.
+      //
+      // Un bootstrap token est embarqué EN CLAIR dans le script Intune poussé
+      // à N postes : il est donc lisible par tout utilisateur local de l'un de
+      // ces postes. Comme le device était retrouvé sur le seul hostname
+      // annoncé, ce porteur pouvait réclamer un token personnel lié à
+      // N'IMPORTE QUEL poste existant — celui d'un dirigeant, par exemple — et
+      // hériter du droit de remonter des résultats d'exécution, d'escrow un
+      // credential LAPS et d'ouvrir une WebSocket agent pour ce poste. Le
+      // contrôle anti-cross-device du checkin ne rattrape pas ce cas : le
+      // token EST légitimement lié à ce device_id.
+      //
+      // On refuse donc de rattacher un hostname déjà couvert par un token
+      // agent actif. Le cas légitime — réinstallation d'un poste, qui
+      // réutilise le même hostname — passe par la révocation de l'ancien
+      // token depuis Paramètres, ce qui laisse une trace explicite.
       let deviceId
       const { rows: dev } = await client.query(
         'SELECT id FROM devices WHERE hostname = $1', [hostname]
       )
       if (dev[0]) {
+        const { rows: active } = await client.query(
+          `SELECT 1 FROM agent_tokens
+             WHERE device_id = $1
+               AND is_bootstrap = FALSE
+               AND revoked_at IS NULL
+               AND (expires_at IS NULL OR expires_at > now())
+             LIMIT 1`,
+          [dev[0].id]
+        )
+        if (active.length) {
+          await client.query('ROLLBACK')
+          await logAudit(fastify.db, fastify.log, {
+            action:  'agent_bootstrap_refused',
+            byUser:  hostname,
+            target:  dev[0].id,
+            details: { reason: 'device_already_enrolled', serial },
+          })
+          return reply.code(409).send({
+            error: 'Ce poste est déjà enrôlé. Révoquez son token agent depuis Paramètres avant de le ré-enrôler.',
+            code:  'DEVICE_ALREADY_ENROLLED',
+          })
+        }
         deviceId = dev[0].id
       } else {
         const { rows: nd } = await client.query(
@@ -290,15 +332,22 @@ export default async function agentRoute(fastify) {
         deviceId = nd[0].id
       }
 
-      // Token perso (sans expiration — survit à la révocation du bootstrap)
+      // Token perso : survit à la révocation du bootstrap, mais EXPIRE.
+      // Sans expiration, un token dérobé sur un poste restait valide
+      // indéfiniment tant qu'un admin ne le révoquait pas explicitement — ce
+      // qui suppose de savoir qu'il a fuité. L'agent renouvelle tout seul via
+      // POST /rotate-token (grâce de 24 h sur l'ancien), donc la durée de vie
+      // n'a pas besoin d'être longue : un agent qui ne tourne plus depuis
+      // AGENT_TOKEN_TTL_DAYS n'a de toute façon plus à être authentifié.
       const newToken = crypto.randomBytes(32).toString('hex')
       const newHash  = hashToken(newToken)
       const label    = `auto-${hostname}-${new Date().toISOString().slice(0, 10)}`
+      const expires  = new Date(Date.now() + AGENT_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000)
 
       await client.query(
-        `INSERT INTO agent_tokens (label, token_hash, device_id, created_by)
-         VALUES ($1, $2, $3, $4)`,
-        [label, newHash, deviceId, `bootstrap:${bs[0].label}`]
+        `INSERT INTO agent_tokens (label, token_hash, device_id, created_by, expires_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [label, newHash, deviceId, `bootstrap:${bs[0].label}`, expires]
       )
 
       await client.query(

@@ -1,5 +1,14 @@
-// Verrouillage biométrique local via WebAuthn (vérification côté appareil uniquement)
-// Ne remplace pas l'auth Azure AD — sert de verrou d'app après inactivité.
+// Verrou d'application local, via WebAuthn côté appareil UNIQUEMENT.
+//
+// Ce n'est PAS un facteur d'authentification et il ne faut pas le présenter
+// comme tel : le challenge est généré côté client, aucune clé publique n'est
+// enregistrée côté serveur, et l'API ne vérifie jamais l'état du verrou. Un
+// appel direct à l'API l'ignore, et vider le localStorage le désactive.
+//
+// Ce que ça apporte réellement : sur un téléphone déverrouillé laissé sans
+// surveillance, l'interface se re-verrouille après inactivité. C'est du
+// confort par-dessus la session Entra, laquelle reste la seule vraie
+// frontière d'authentification.
 
 const CRED_KEY     = 'rmm-bio-cred'
 const LAST_KEY     = 'rmm-bio-last'
