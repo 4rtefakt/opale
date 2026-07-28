@@ -221,3 +221,94 @@ test('DELETE /api/push/subscribe — supprime la row', { skip: SKIP }, async () 
   const { rows } = await db.query('SELECT * FROM push_subscriptions WHERE endpoint = $1', [endpoint])
   assert.equal(rows.length, 0)
 })
+
+// ─── Endpoint fourni par le client = surface SSRF ─────────────────────────────
+//
+// Le serveur POSTe vers `subscription.endpoint` à chaque notification. Sans
+// validation, tout compte authentifié pouvait faire émettre au serveur des
+// requêtes répétées vers l'hôte de son choix — y compris sur le réseau interne.
+
+test('POST /subscribe — endpoint sur IP interne → 400', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-push-ssrf-ip')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/push/subscribe',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { subscription: makePushSubscription('https://169.254.169.254/latest/meta-data/') },
+  })
+  assert.equal(res.statusCode, 400)
+
+  const { rows } = await db.query(
+    `SELECT count(*)::int AS n FROM push_subscriptions WHERE endpoint LIKE '%169.254%'`
+  )
+  assert.equal(rows[0].n, 0, 'l\'endpoint refusé ne doit pas être stocké')
+})
+
+test('POST /subscribe — endpoint http:// → 400', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-push-ssrf-http')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/push/subscribe',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { subscription: makePushSubscription('http://fcm.googleapis.com/fcm/send/x') },
+  })
+  assert.equal(res.statusCode, 400)
+})
+
+test('POST /subscribe — service Docker interne → 400', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-push-ssrf-docker')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/push/subscribe',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { subscription: makePushSubscription('https://ollama/x') },
+  })
+  assert.equal(res.statusCode, 400)
+})
+
+test('POST /subscribe — endpoint de push légitime → 201', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-push-legit')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/push/subscribe',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { subscription: makePushSubscription('https://fcm.googleapis.com/fcm/send/legit') },
+  })
+  assert.equal(res.statusCode, 201)
+})
+
+// ─── sendPushToAll ne doit toucher que les admins ─────────────────────────────
+//
+// La requête sélectionnait TOUTES les souscriptions. Or /subscribe n'exige que
+// `authenticate` : n'importe quel compte du tenant pouvait s'abonner et
+// recevoir ensuite les alertes destinées aux admins (conformité, altération de
+// binaire agent, saturation disque), avec le hostname du poste concerné — et
+// les déchiffrer, puisque ce sont ses propres clés de souscription.
+
+test('sendPushToAll — ne sélectionne que les souscriptions d\'admins', { skip: SKIP }, async () => {
+  await db.query('DELETE FROM push_subscriptions')
+  await seedAdmin(db,    { entraId: 'oid-push-adm-filter',  displayName: 'Admin F' })
+  await seedNonAdmin(db, { entraId: 'oid-push-user-filter', displayName: 'User F' })
+  await seedPushSubscription(db, { userEntraId: 'oid-push-adm-filter',  endpoint: 'https://fcm.googleapis.com/fcm/send/adm' })
+  await seedPushSubscription(db, { userEntraId: 'oid-push-user-filter', endpoint: 'https://fcm.googleapis.com/fcm/send/usr' })
+
+  // On rejoue la sélection exacte de sendPushToAll plutôt que d'appeler la
+  // fonction : elle émet de vraies requêtes HTTP via web-push, hors scope ici.
+  const { rows } = await db.query(`
+    SELECT ps.endpoint
+    FROM push_subscriptions ps
+    JOIN users_cache uc ON uc.entra_id = ps.user_entra_id
+    WHERE uc.is_admin
+  `)
+  assert.deepEqual(rows.map(r => r.endpoint), ['https://fcm.googleapis.com/fcm/send/adm'])
+})
+
+test('sendPushToAll — une souscription orpheline n\'est pas notifiée', { skip: SKIP }, async () => {
+  // user_entra_id sans ligne users_cache (compte supprimé du tenant) : le JOIN
+  // l'écarte, là où l'ancienne requête l'aurait notifiée.
+  await db.query('DELETE FROM push_subscriptions')
+  await seedPushSubscription(db, { userEntraId: 'oid-inexistant', endpoint: 'https://fcm.googleapis.com/fcm/send/orphan' })
+
+  const { rows } = await db.query(`
+    SELECT ps.endpoint FROM push_subscriptions ps
+    JOIN users_cache uc ON uc.entra_id = ps.user_entra_id
+    WHERE uc.is_admin
+  `)
+  assert.equal(rows.length, 0)
+})

@@ -9,9 +9,10 @@ export default async function packagesRoute(fastify) {
   // GET /api/packages/winget/search — autocomplétion sur l'index officiel
   // Microsoft (source2.msix mis en cache mémoire par fastify.winget).
   // Volontairement placée AVANT '/:id' pour ne pas être capturée par la
-  // route paramétrée. Auth normale (admin pas requis : c'est juste de la
-  // lecture sur un index public).
-  fastify.get('/winget/search', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // route paramétrée. requireAdmin comme le reste du module : l'index est
+  // public, mais l'interface l'est réservée aux admins et l'API ne doit pas
+  // être plus permissive que la politique qu'elle applique ailleurs.
+  fastify.get('/winget/search', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const q = String(req.query?.q || '').trim()
     const limit = parseInt(req.query?.limit, 10) || 20
     if (q.length < 2) return reply.send({ ready: true, results: [] })
@@ -26,7 +27,7 @@ export default async function packagesRoute(fastify) {
   })
 
   // GET /api/packages — liste avec stats de couverture
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     // Counts par DEVICE UNIQUE (pas par row de deployment) : un PC qui a
     // 2 deployments réussis = 1 device "success", pas 2. Évite les écarts
     // entre nombre affiché et nombre de PCs réellement touchés. Un même
@@ -78,7 +79,7 @@ export default async function packagesRoute(fastify) {
   })
 
   // GET /api/packages/:id — détail + historique déploiements
-  fastify.get('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: [pkg] } = await fastify.db.query(`
       SELECT p.*, u.display_name AS approved_by_name, c.display_name AS created_by_name
       FROM packages p

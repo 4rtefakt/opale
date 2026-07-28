@@ -105,11 +105,28 @@ Out of scope:
   `govulncheck`, CodeQL, gitleaks over the full history, and Trivy on the
   published image and the Docker configuration.
 
+**Authorization model**
+
+Opale is an **administrators-only** tool: the SPA refuses any account
+without `is_admin` and does not load. Every route that exposes fleet data
+enforces that server-side too — the client-side check is a convenience,
+never the boundary.
+
+The exceptions are deliberate and narrower, not wider: ticket routes
+carry their own ACL (admin **or** requester **or** assignee), and
+`/api/me/prefs` and `/api/push/subscribe` are scoped to the caller's own
+identity by the token, never by a parameter.
+
+Push notifications go only to subscriptions belonging to administrators,
+and a subscription endpoint must be an https URL on a public hostname —
+the server issues a request to that URL on every alert.
+
 **Known limitations** — stated plainly, since knowing them is what makes
 the rest usable:
 
-- Authorization has a single level (`is_admin`). Any authenticated tenant
-  user can read the inventory and the directory; there are no roles.
+- Authorization has a single level (`is_admin`). There are no roles, so
+  "can view the inventory" and "can run a script on every endpoint" are
+  the same privilege.
 - The API container holds the agent signing key, the LAPS key, the SSH
   key and the Entra secret at once. Code execution there compromises the
   whole fleet; separating signing is the next structural improvement.

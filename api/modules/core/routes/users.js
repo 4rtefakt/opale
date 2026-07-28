@@ -14,7 +14,7 @@ function setCachedPhoto(id, data) {
 
 export default async function usersRoute(fastify) {
   // GET /api/users — annuaire complet des salariés AAD
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     let users
     try {
       users = await getAllAADUsers(fastify.db)
@@ -60,7 +60,7 @@ export default async function usersRoute(fastify) {
   })
 
   // GET /api/users/:id/photo — proxy photo Graph avec cache 1h
-  fastify.get('/:id/photo', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/:id/photo', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { id } = req.params
     let photo = getCachedPhoto(id)
     if (!photo) {
@@ -196,7 +196,7 @@ export default async function usersRoute(fastify) {
   })
 
   // Recherche dans users_cache (personnes connectées au RMM)
-  fastify.get('/search', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/search', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { q } = req.query
     if (!q || q.length < 2) return []
     const res = await fastify.db.query(
@@ -210,7 +210,7 @@ export default async function usersRoute(fastify) {
   })
 
   // Recherche dans Entra ID (tous les utilisateurs AAD)
-  fastify.get('/search-aad', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/search-aad', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { q } = req.query
     if (!q || q.length < 2) return []
     try {

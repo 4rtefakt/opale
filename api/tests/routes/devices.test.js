@@ -82,8 +82,8 @@ test('GET / — sans Bearer → 401', { skip: SKIP }, async () => {
 })
 
 test('GET /:id — non-admin → 403', { skip: SKIP }, async () => {
-  // GET /:id est admin-only (retourne des données détaillées sensibles).
-  // GET /  (liste) est ouvert aux non-admins, mais filtré côté query.
+  // GET /:id comme GET / sont admin-only : l'outil entier l'est (le SPA
+  // refuse les non-admins), l'API applique la même politique.
   const u = await seedNonAdmin(db, { entraId: 'oid-dev-na' })
   const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
   const deviceId = await insertDevice({ hostname: 'PC-X' })
@@ -308,4 +308,23 @@ test('DELETE /:id — admin happy path : supprime + audit_logs device_deleted', 
   )
   assert.ok(audits.length >= 1)
   assert.equal(audits[0].by_user, user.displayName)
+})
+
+// ─── L'inventaire n'est plus lisible par tout compte du tenant ────────────────
+//
+// Le SPA refuse déjà les non-admins (front/app.js et mobile-app.js affichent
+// « Accès non autorisé » et n'initialisent pas l'application). Cette politique
+// n'était appliquée QUE côté client : un compte du tenant qui contournait
+// l'interface et interrogeait l'API directement obtenait l'inventaire complet
+// du parc — hostnames, serials, OS, taux de remplissage disque, IP Netbird et
+// utilisateur assigné. L'API applique désormais la même règle.
+
+test('GET / — non-admin → 403', { skip: SKIP }, async () => {
+  const u = await seedNonAdmin(db, { entraId: 'oid-dev-list-nonadmin' })
+  const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const res = await fastify.inject({
+    method: 'GET', url: '/api/devices/',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
 })

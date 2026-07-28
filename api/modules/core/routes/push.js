@@ -1,4 +1,5 @@
 import webpush from 'web-push'
+import { checkPushEndpoint } from '../../../lib/push-endpoint.js'
 
 let _vapidConfigured = false
 
@@ -19,12 +20,25 @@ function initVapid() {
   _vapidConfigured = true
 }
 
-// Envoi d'une notification push à tous les admins abonnés
+// Envoi d'une notification push à tous les admins abonnés.
+//
+// Le JOIN sur users_cache est la partie qui compte : la requête sélectionnait
+// TOUTES les souscriptions, sans filtrer sur is_admin. Or /subscribe n'exige
+// que `authenticate` — donc n'importe quel compte du tenant pouvait s'abonner
+// et recevoir ensuite l'intégralité des alertes destinées aux admins :
+// conformité, altération de binaire agent, saturation disque, avec le hostname
+// du poste concerné. Le contenu est chiffré avec les clés de la souscription,
+// c'est-à-dire celles de l'abonné : il le déchiffre donc parfaitement.
 export async function sendPushToAll(fastify, payload) {
   initVapid()
   if (!_vapidConfigured) return
 
-  const { rows } = await fastify.db.query(`SELECT subscription FROM push_subscriptions`)
+  const { rows } = await fastify.db.query(`
+    SELECT ps.subscription
+    FROM push_subscriptions ps
+    JOIN users_cache uc ON uc.entra_id = ps.user_entra_id
+    WHERE uc.is_admin
+  `)
   for (const row of rows) {
     try {
       await webpush.sendNotification(row.subscription, JSON.stringify(payload))
@@ -57,6 +71,12 @@ export default async function pushRoute(fastify) {
     const { entraId } = fastify.getUserIdentity(req)
     const { subscription } = req.body || {}
     if (!subscription?.endpoint) return reply.code(400).send({ error: 'subscription invalide' })
+
+    // L'endpoint est une URL fournie par le client vers laquelle le serveur
+    // POSTera à chaque notification : sans validation, c'est une primitive
+    // SSRF offerte à tout compte authentifié (cf. lib/push-endpoint.js).
+    const checked = checkPushEndpoint(subscription.endpoint)
+    if (!checked.ok) return reply.code(400).send({ error: checked.error })
 
     await fastify.db.query(`
       INSERT INTO push_subscriptions (user_entra_id, endpoint, subscription)

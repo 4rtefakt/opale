@@ -220,7 +220,10 @@ test('GET /:id — retourne onboarding + checks', { skip: SKIP }, async () => {
   assert.equal(first.done, false)
 })
 
-test('GET /:id — non-admin peut lire (route ouverte aux authentifiés)', { skip: SKIP }, async () => {
+// Un dossier d'onboarding porte le nom, le poste et le manager d'un arrivant :
+// il n'a pas à être lisible par tout compte du tenant. Le SPA refuse déjà les
+// non-admins ; l'API applique désormais la même politique.
+test('GET /:id — non-admin → 403', { skip: SKIP }, async () => {
   const adminTok = await adminToken('oid-ob-get-nonadmin-setup')
   const created = (await createOnboarding(adminTok, { person_name: 'Readable' })).json()
   const token = await userToken('oid-ob-get-nonadmin')
@@ -228,7 +231,7 @@ test('GET /:id — non-admin peut lire (route ouverte aux authentifiés)', { ski
     method: 'GET', url: `/api/onboarding/${created.id}`,
     headers: { authorization: `Bearer ${token}` },
   })
-  assert.equal(res.statusCode, 200)
+  assert.equal(res.statusCode, 403)
 })
 
 // ─── PATCH /:id — update ─────────────────────────────────────────────────────

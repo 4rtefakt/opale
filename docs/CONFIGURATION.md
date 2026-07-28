@@ -173,6 +173,29 @@ to the server environment, not just an admin session.
 
 ---
 
+### 1.10 Authorization model
+
+Opale is administrators-only. The SPA refuses a non-admin account outright,
+and the API enforces the same rule rather than trusting the client: every
+route serving fleet data requires `is_admin`.
+
+Three deliberate exceptions, all narrower than the default:
+
+| Route | Rule |
+|---|---|
+| `/api/tickets/*` | Admin **or** requester **or** assignee, per ticket |
+| `/api/me/prefs` | Scoped to the caller's own identity, from the token |
+| `/api/push/subscribe` | Same — and the endpoint URL is validated (see below) |
+| `POST /api/users/sync-me` | Authenticated only: this is the call that *determines* `is_admin` |
+
+Push notifications are delivered only to subscriptions owned by
+administrators. A subscription endpoint must be an https URL on a public
+hostname: the server issues an HTTP request to it on every alert, so an
+unvalidated endpoint is a server-side request forgery primitive available
+to any authenticated account.
+
+---
+
 ## 2. Runtime settings
 
 Persisted as `(key TEXT, value TEXT)` rows in the `settings` table.

@@ -168,8 +168,20 @@ test('GET /search — sans Bearer → 401', { skip: SKIP }, async () => {
   assert.equal(res.statusCode, 401)
 })
 
+// L'annuaire du tenant n'a pas à être interrogeable par un compte qui n'a pas
+// accès à l'outil : le SPA refuse déjà les non-admins, l'API doit appliquer la
+// même politique plutôt que de s'en remettre au client.
+test('GET /search — non-admin → 403', { skip: SKIP }, async () => {
+  const { token } = await makeUserToken('oid-search-nonadmin')
+  const res = await fastify.inject({
+    method: 'GET', url: '/api/users/search?q=foo',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
 test('GET /search — q trop court (1 char) → retourne tableau vide', { skip: SKIP }, async () => {
-  const { token } = await makeUserToken('oid-search-short')
+  const { token } = await makeAdminToken('oid-search-short')
   const res = await fastify.inject({
     method: 'GET', url: '/api/users/search?q=a',
     headers: { authorization: `Bearer ${token}` },
@@ -183,7 +195,7 @@ test('GET /search — matche par display_name ILIKE', { skip: SKIP }, async () =
   await db.query(
     `INSERT INTO users_cache (entra_id, display_name, email) VALUES ('oid-search-name', 'AliceSearch', 'alice@x') ON CONFLICT DO NOTHING`
   )
-  const { token } = await makeUserToken('oid-search-caller-name')
+  const { token } = await makeAdminToken('oid-search-caller-name')
   const res = await fastify.inject({
     method: 'GET', url: '/api/users/search?q=AliceSea',
     headers: { authorization: `Bearer ${token}` },
@@ -198,7 +210,7 @@ test('GET /search — matche par email ILIKE', { skip: SKIP }, async () => {
   await db.query(
     `INSERT INTO users_cache (entra_id, display_name, email) VALUES ('oid-search-email', 'Bob Unique', 'bob-unique@example.com') ON CONFLICT DO NOTHING`
   )
-  const { token } = await makeUserToken('oid-search-caller-email')
+  const { token } = await makeAdminToken('oid-search-caller-email')
   const res = await fastify.inject({
     method: 'GET', url: '/api/users/search?q=bob-unique',
     headers: { authorization: `Bearer ${token}` },

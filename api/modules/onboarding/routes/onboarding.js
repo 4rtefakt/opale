@@ -7,7 +7,7 @@ import {
 export default async function onboardingRoute(fastify) {
 
   // GET /api/onboarding?kind=&status=
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { kind, status } = req.query
     const conds = []; const params = []; let i = 1
     if (kind)   { conds.push(`kind = $${i++}`);   params.push(kind) }
@@ -66,7 +66,7 @@ export default async function onboardingRoute(fastify) {
   })
 
   // GET /api/onboarding/:id
-  fastify.get('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows } = await fastify.db.query(
       'SELECT * FROM onboardings WHERE id = $1', [req.params.id]
     )

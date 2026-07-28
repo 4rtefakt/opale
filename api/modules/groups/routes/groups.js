@@ -5,7 +5,7 @@ import { syncGroupMemberships } from '../lib/group-sync.js'
 export default async function groupsRoute(fastify) {
 
   // GET /api/groups/search?q=... — autocomplete groupes Entra
-  fastify.get('/search', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/search', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const q = (req.query.q || '').trim()
     if (!q) return reply.send([])
     try {

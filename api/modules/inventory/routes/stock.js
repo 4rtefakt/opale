@@ -2,7 +2,7 @@ export default async function stockRoute(fastify) {
 
   // GET /api/stock?q=&category=
   fastify.get('/', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       querystring: {
         type: 'object',
@@ -179,7 +179,7 @@ export default async function stockRoute(fastify) {
 
   // GET /api/stock/:id/movements
   fastify.get('/:id/movements', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       params: {
         type: 'object',

@@ -20,7 +20,7 @@ async function getThresholds(fastify) {
 
 export default async function devicesRoute(fastify) {
   // Liste des postes
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { status, search, limit = 100, offset = 0 } = req.query
     const thr = await getThresholds(fastify)
 
