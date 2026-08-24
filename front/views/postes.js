@@ -43,21 +43,21 @@ export async function renderPostes(container) {
         <span id="postes-count" style="font-size:12px;color:var(--text-tertiary)">—</span>
       </div>
       <div class="topbar-right">
-        <button class="btn" onclick="exportCSV()"><i class="ti ti-download"></i> Exporter CSV</button>
-        <button class="btn" id="btn-sync-inv" onclick="postesSyncIntune()" title="Importer les postes depuis Intune MDM"><i class="ti ti-refresh"></i> Sync Intune</button>
-        <button class="btn btn-primary" onclick="navigateTo('/onboarding')"><i class="ti ti-plus"></i> Ajouter</button>
+        <button class="btn" onclick="exportCSV()"><i class="ti ti-download"></i> ${t('postes.export_csv')}</button>
+        <button class="btn" id="btn-sync-inv" onclick="postesSyncIntune()" title="${t('postes.sync_intune_title')}"><i class="ti ti-refresh"></i> ${t('postes.sync_intune')}</button>
+        <button class="btn btn-primary" onclick="navigateTo('/onboarding')"><i class="ti ti-plus"></i> ${t('postes.add')}</button>
       </div>
     </div>
 
     <!-- BULK BAR -->
     <div class="bulk-bar" id="bulk-bar">
       <i class="ti ti-checkbox" style="font-size:16px;color:var(--blue-text)"></i>
-      <span class="bulk-count" id="bulk-count">0 postes sélectionnés</span>
+      <span class="bulk-count" id="bulk-count">${t('postes.bulk.selected_plural', { n: 0 })}</span>
       <div class="bulk-actions">
-        <button class="btn" onclick="bulkRunScript()"><i class="ti ti-player-play"></i> Lancer script</button>
-        <button class="btn" onclick="bulkForceCheckin()"><i class="ti ti-refresh"></i> Forcer sync</button>
-        <button class="btn" onclick="bulkForceSync()"><i class="ti ti-brand-azure"></i> Sync Intune</button>
-        <button class="btn btn-danger" onclick="clearSelection()"><i class="ti ti-x"></i> Désélectionner</button>
+        <button class="btn" onclick="bulkRunScript()"><i class="ti ti-player-play"></i> ${t('postes.bulk.run_script')}</button>
+        <button class="btn" onclick="bulkForceCheckin()"><i class="ti ti-refresh"></i> ${t('postes.force_checkin')}</button>
+        <button class="btn" onclick="bulkForceSync()"><i class="ti ti-brand-azure"></i> ${t('postes.sync_intune')}</button>
+        <button class="btn btn-danger" onclick="clearSelection()"><i class="ti ti-x"></i> ${t('postes.bulk.clear')}</button>
       </div>
     </div>
 
@@ -68,28 +68,28 @@ export async function renderPostes(container) {
         <input type="text" placeholder="${t('postes.search')}" id="postes-search" oninput="postesFilter()">
       </div>
       <div class="filter-group" id="filter-group">
-        <button class="filter-btn ${_filter==='all'       ?'active':''}" data-filter="all"        onclick="postesSetFilter('all',this)">Tous <span id="count-all">—</span></button>
-        <button class="filter-btn ${_filter==='online'    ?'active':''}" data-filter="online"     onclick="postesSetFilter('online',this)">En ligne <span id="count-online">—</span></button>
-        <button class="filter-btn ${_filter==='offline'   ?'active':''}" data-filter="offline"    onclick="postesSetFilter('offline',this)">Hors ligne <span id="count-offline">—</span></button>
-        <button class="filter-btn ${_filter==='critical'  ?'active':''}" data-filter="critical"   onclick="postesSetFilter('critical',this)">⚠ Critique <span id="count-critical">—</span></button>
-        <button class="filter-btn ${_filter==='unassigned'?'active':''}" data-filter="unassigned" onclick="postesSetFilter('unassigned',this)">Non assignés <span id="count-unassigned">—</span></button>
+        <button class="filter-btn ${_filter==='all'       ?'active':''}" data-filter="all"        onclick="postesSetFilter('all',this)">${t('postes.filter.all')} <span id="count-all">—</span></button>
+        <button class="filter-btn ${_filter==='online'    ?'active':''}" data-filter="online"     onclick="postesSetFilter('online',this)">${t('status.online')} <span id="count-online">—</span></button>
+        <button class="filter-btn ${_filter==='offline'   ?'active':''}" data-filter="offline"    onclick="postesSetFilter('offline',this)">${t('status.offline')} <span id="count-offline">—</span></button>
+        <button class="filter-btn ${_filter==='critical'  ?'active':''}" data-filter="critical"   onclick="postesSetFilter('critical',this)">⚠ ${t('status.critical')} <span id="count-critical">—</span></button>
+        <button class="filter-btn ${_filter==='unassigned'?'active':''}" data-filter="unassigned" onclick="postesSetFilter('unassigned',this)">${t('postes.filter.unassigned')} <span id="count-unassigned">—</span></button>
       </div>
       <div class="toolbar-right">
         <select class="sort-select" onchange="postesSort(this.value)">
-          <option value="name"   ${_sortBy==='name'   ?'selected':''}>Trier : Nom</option>
-          <option value="disk"   ${_sortBy==='disk'   ?'selected':''}>Trier : Disque</option>
-          <option value="user"   ${_sortBy==='user'   ?'selected':''}>Trier : Utilisateur</option>
-          <option value="last"   ${_sortBy==='last'   ?'selected':''}>Trier : Dernière activité</option>
-          <option value="status" ${_sortBy==='status' ?'selected':''}>Trier : Statut</option>
+          <option value="name"   ${_sortBy==='name'   ?'selected':''}>${t('postes.sort.name')}</option>
+          <option value="disk"   ${_sortBy==='disk'   ?'selected':''}>${t('postes.sort.disk')}</option>
+          <option value="user"   ${_sortBy==='user'   ?'selected':''}>${t('postes.sort.user')}</option>
+          <option value="last"   ${_sortBy==='last'   ?'selected':''}>${t('postes.sort.last')}</option>
+          <option value="status" ${_sortBy==='status' ?'selected':''}>${t('postes.sort.status')}</option>
         </select>
       </div>
     </div>
 
     <!-- SUMMARY -->
     <div class="summary-bar" id="summary-bar">
-      <div class="summary-item"><div class="summary-dot" style="background:var(--green)"></div><span class="summary-count" id="s-online">—</span> en ligne</div>
-      <div class="summary-item"><div class="summary-dot" style="background:var(--gray)"></div><span class="summary-count" id="s-offline">—</span> hors ligne</div>
-      <div class="summary-item"><div class="summary-dot" style="background:var(--red)"></div><span class="summary-count" id="s-critical">—</span> disque critique <span id="s-critical-thr" style="color:var(--text-tertiary)"></span></div>
+      <div class="summary-item"><div class="summary-dot" style="background:var(--green)"></div><span class="summary-count" id="s-online">—</span> ${t('postes.summary.online')}</div>
+      <div class="summary-item"><div class="summary-dot" style="background:var(--gray)"></div><span class="summary-count" id="s-offline">—</span> ${t('postes.summary.offline')}</div>
+      <div class="summary-item"><div class="summary-dot" style="background:var(--red)"></div><span class="summary-count" id="s-critical">—</span> ${t('postes.summary.disk_critical')} <span id="s-critical-thr" style="color:var(--text-tertiary)"></span></div>
       <div class="summary-item" style="margin-left:auto;font-size:11px;color:var(--text-tertiary)" id="s-sync"></div>
     </div>
 
@@ -99,15 +99,15 @@ export async function renderPostes(container) {
         <thead>
           <tr>
             <th class="td-check"><input type="checkbox" id="check-all" onchange="postesToggleAll(this)"></th>
-            <th onclick="postesSort('name')">Nom <i class="ti ti-selector sort-icon"></i></th>
-            <th onclick="postesSort('user')">Utilisateur <i class="ti ti-selector sort-icon"></i></th>
-            <th>Modèle</th>
+            <th onclick="postesSort('name')">${t('postes.th.name')} <i class="ti ti-selector sort-icon"></i></th>
+            <th onclick="postesSort('user')">${t('postes.th.user')} <i class="ti ti-selector sort-icon"></i></th>
+            <th>${t('postes.th.model')}</th>
             <th>OS</th>
             <th>Agent</th>
-            <th onclick="postesSort('disk')">Disque C: <i class="ti ti-selector sort-icon"></i></th>
+            <th onclick="postesSort('disk')">${t('postes.th.disk')} <i class="ti ti-selector sort-icon"></i></th>
             <th>RAM</th>
-            <th onclick="postesSort('last')">Dernier push <i class="ti ti-selector sort-icon"></i></th>
-            <th onclick="postesSort('status')">Statut <i class="ti ti-selector sort-icon"></i></th>
+            <th onclick="postesSort('last')">${t('postes.th.last_push')} <i class="ti ti-selector sort-icon"></i></th>
+            <th onclick="postesSort('status')">${t('postes.th.status')} <i class="ti ti-selector sort-icon"></i></th>
             <th style="width:80px"></th>
           </tr>
         </thead>
@@ -117,7 +117,7 @@ export async function renderPostes(container) {
 
     <!-- Compteur de résultats (la liste complète est chargée, filtres côté client) -->
     <div class="pagination">
-      <span id="paginfo" style="color:var(--text-tertiary)">Chargement…</span>
+      <span id="paginfo" style="color:var(--text-tertiary)">${t('common.loading')}…</span>
     </div>`
 
   // Exposer les handlers globalement pour les handlers inline
@@ -180,11 +180,11 @@ function updateSummary() {
   document.getElementById('count-unassigned')&& (document.getElementById('count-unassigned').textContent = _devices.filter(d => !d.user).length)
 
   document.getElementById('postes-count') &&
-    (document.getElementById('postes-count').textContent = `${_devices.length} appareils`)
+    (document.getElementById('postes-count').textContent = t('postes.count_devices', { n: _devices.length }))
 
   const lastSeen = _devices.map(d => d.last_seen).filter(Boolean).sort().pop()
   if (lastSeen && document.getElementById('s-sync')) {
-    document.getElementById('s-sync').textContent = `Dernier sync ${formatRelative(lastSeen)}`
+    document.getElementById('s-sync').textContent = t('postes.last_sync', { when: formatRelative(lastSeen) })
   }
 }
 
@@ -216,11 +216,11 @@ function renderTable() {
   const devices = sortDevices(getFiltered())
   document.getElementById('paginfo').textContent =
     devices.length === _devices.length
-      ? `${_devices.length} postes`
-      : `${devices.length} postes filtrés sur ${_devices.length}`
+      ? t('postes.paginfo.total', { n: _devices.length })
+      : t('postes.paginfo.filtered', { n: devices.length, total: _devices.length })
 
   if (devices.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="11"><div class="empty-state" style="padding:2rem"><i class="ti ti-device-laptop"></i><p>Aucun poste trouvé</p></div></td></tr>`
+    tbody.innerHTML = `<tr><td colspan="11"><div class="empty-state" style="padding:2rem"><i class="ti ti-device-laptop"></i><p>${t('postes.empty')}</p></div></td></tr>`
     return
   }
 
@@ -258,7 +258,7 @@ function deviceRow(d) {
   const pctCls = pct >= _thresholds.critical ? 'style="color:var(--red)"' : pct >= _thresholds.warn ? 'style="color:var(--amber)"' : ''
   const sel    = _selected.has(d.id) ? 'selected' : ''
 
-  const ram = d.ram_gb ? `${parseFloat(d.ram_gb).toFixed(0)} Go` : '—'
+  const ram = d.ram_gb ? `${parseFloat(d.ram_gb).toFixed(0)} ${t('common.unit.gb')}` : '—'
 
   return `
     <tr class="${sel}" onclick="postesRowClick(event,'${d.id}')" data-id="${esc(d.id)}">
@@ -279,7 +279,7 @@ function deviceRow(d) {
                  <div class="user-email">${esc(d.user.email)}</div>
                </div>
              </div>`
-          : `<span style="color:var(--text-tertiary);font-size:11px">Non assigné</span>`
+          : `<span style="color:var(--text-tertiary);font-size:11px">${t('postes.unassigned')}</span>`
         }
       </td>
       <td style="color:var(--text-secondary);white-space:nowrap">${esc(d.model || '—')}</td>
@@ -302,14 +302,14 @@ function deviceRow(d) {
 
 function statusPill(d) {
   const connPill = _isOnline(d)
-    ? `<span class="status-pill pill-on"><span class="pill-dot"></span>En ligne</span>`
-    : `<span class="status-pill pill-off"><span class="pill-dot"></span>Hors ligne</span>`
+    ? `<span class="status-pill pill-on"><span class="pill-dot"></span>${t('status.online')}</span>`
+    : `<span class="status-pill pill-off"><span class="pill-dot"></span>${t('status.offline')}</span>`
 
   const pct = parseFloat(d.disk_used_pct) || 0
   let healthPill = ''
-  if (pct >= _thresholds.critical)     healthPill = `<span class="status-pill pill-crit"><span class="pill-dot"></span>Critique</span>`
-  else if (pct >= _thresholds.warn)    healthPill = `<span class="status-pill pill-warn"><span class="pill-dot"></span>Alerte</span>`
-  else if (!d.user)    healthPill = `<span class="status-pill pill-off"><span class="pill-dot"></span>Non assigné</span>`
+  if (pct >= _thresholds.critical)     healthPill = `<span class="status-pill pill-crit"><span class="pill-dot"></span>${t('status.critical')}</span>`
+  else if (pct >= _thresholds.warn)    healthPill = `<span class="status-pill pill-warn"><span class="pill-dot"></span>${t('status.warn')}</span>`
+  else if (!d.user)    healthPill = `<span class="status-pill pill-off"><span class="pill-dot"></span>${t('postes.unassigned')}</span>`
 
   return healthPill
     ? `<div style="display:flex;flex-direction:column;gap:3px">${connPill}${healthPill}</div>`
@@ -383,12 +383,12 @@ function updateBulkBar() {
   const bar = document.getElementById('bulk-bar')
   if (bar) bar.className = 'bulk-bar' + (n > 0 ? ' show' : '')
   const cnt = document.getElementById('bulk-count')
-  if (cnt) cnt.textContent = `${n} poste${n > 1 ? 's' : ''} sélectionné${n > 1 ? 's' : ''}`
+  if (cnt) cnt.textContent = t(n > 1 ? 'postes.bulk.selected_plural' : 'postes.bulk.selected', { n })
 }
 
 function exportCSV() {
   const devices = sortDevices(getFiltered())
-  const header = ['Nom', 'Modèle', 'Fabricant', 'OS', 'RAM (Go)', 'Disque C: (%)', 'Utilisateur', 'Email', 'IP Netbird', 'Statut', 'Dernier push']
+  const header = [t('postes.th.name'), t('postes.th.model'), t('poste.hw.manufacturer'), 'OS', t('postes.csv.ram'), t('postes.csv.disk'), t('postes.th.user'), 'Email', 'IP Netbird', t('postes.th.status'), t('postes.th.last_push')]
   const rows = devices.map(d => [
     d.hostname,
     d.model        || '',
@@ -415,15 +415,15 @@ function exportCSV() {
 
 async function postesSyncIntune() {
   const btn = document.getElementById('btn-sync-inv')
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i> Sync…' }
+  if (btn) { btn.disabled = true; btn.innerHTML = `<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i> ${t('postes.syncing')}` }
   try {
     const res = await window.api.syncIntune()
-    showToast(`Sync terminée — ${res.upserted} postes mis à jour${res.errors ? `, ${res.errors} erreurs` : ''}`, 'success')
+    showToast(t('postes.toast.sync_done', { n: res.upserted }) + (res.errors ? t('postes.toast.sync_done_errors', { n: res.errors }) : ''), 'success')
     await loadDevices()
   } catch (err) {
-    showToast(err.message || 'Erreur lors de la sync', 'error')
+    showToast(err.message || t('postes.toast.sync_error'), 'error')
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-refresh"></i> Sync Intune' }
+    if (btn) { btn.disabled = false; btn.innerHTML = `<i class="ti ti-refresh"></i> ${t('postes.sync_intune')}` }
   }
 }
 
@@ -433,7 +433,7 @@ async function postesSyncIntune() {
 const _actionLocks = new Set()
 function withActionLock(key, fn) {
   if (_actionLocks.has(key)) {
-    showToast('Action déjà en cours…', 'info')
+    showToast(t('postes.toast.action_in_progress'), 'info')
     return Promise.resolve()
   }
   _actionLocks.add(key)
@@ -447,12 +447,12 @@ async function bulkForceCheckin() {
     try {
       const res = await window.api.forceCheckinDevices(ids)
       const parts = []
-      if (res.ok > 0)      parts.push(`${res.ok} checkin déclenché${res.ok > 1 ? 's' : ''}`)
-      if (res.skipped > 0) parts.push(`${res.skipped} sans IP Netbird ignoré${res.skipped > 1 ? 's' : ''}`)
-      if (res.errors?.length) parts.push(`${res.errors.length} erreur${res.errors.length > 1 ? 's' : ''}`)
+      if (res.ok > 0)      parts.push(t(res.ok > 1 ? 'postes.toast.checkin_ok_plural' : 'postes.toast.checkin_ok', { n: res.ok }))
+      if (res.skipped > 0) parts.push(t(res.skipped > 1 ? 'postes.toast.checkin_skipped_plural' : 'postes.toast.checkin_skipped', { n: res.skipped }))
+      if (res.errors?.length) parts.push(t(res.errors.length > 1 ? 'postes.toast.errors_plural' : 'postes.toast.errors', { n: res.errors.length }))
       showToast(parts.join(', '), res.errors?.length ? 'error' : 'success')
     } catch (err) {
-      showToast(err.message || 'Erreur checkin', 'error')
+      showToast(err.message || t('postes.toast.checkin_error'), 'error')
     }
   })
 }
@@ -464,12 +464,12 @@ async function bulkForceSync() {
     try {
       const res = await window.api.forceSyncDevices(ids)
       const parts = []
-      if (res.ok > 0)      parts.push(`${res.ok} sync Intune envoyée${res.ok > 1 ? 's' : ''}`)
-      if (res.skipped > 0) parts.push(`${res.skipped} sans Intune ignoré${res.skipped > 1 ? 's' : ''}`)
-      if (res.errors?.length) parts.push(`${res.errors.length} erreur${res.errors.length > 1 ? 's' : ''}`)
+      if (res.ok > 0)      parts.push(t(res.ok > 1 ? 'postes.toast.sync_sent_plural' : 'postes.toast.sync_sent', { n: res.ok }))
+      if (res.skipped > 0) parts.push(t(res.skipped > 1 ? 'postes.toast.sync_skipped_plural' : 'postes.toast.sync_skipped', { n: res.skipped }))
+      if (res.errors?.length) parts.push(t(res.errors.length > 1 ? 'postes.toast.errors_plural' : 'postes.toast.errors', { n: res.errors.length }))
       showToast(parts.join(', '), res.errors?.length ? 'error' : 'success')
     } catch (err) {
-      showToast(err.message || 'Erreur sync', 'error')
+      showToast(err.message || t('postes.toast.bulk_sync_error'), 'error')
     }
   })
 }
@@ -482,12 +482,12 @@ async function bulkRunScript() {
   try {
     scripts = await window.api.getScripts()
   } catch (err) {
-    showToast(err.message || 'Erreur chargement scripts', 'error')
+    showToast(err.message || t('postes.toast.scripts_load_error'), 'error')
     return
   }
 
   if (scripts.length === 0) {
-    showToast('Aucun script dans la bibliothèque', 'error')
+    showToast(t('postes.toast.no_scripts'), 'error')
     return
   }
 
@@ -497,21 +497,21 @@ async function bulkRunScript() {
 
   showModal(`
     <div style="padding:1.5rem;min-width:400px">
-      <h2 style="margin:0 0 0.25rem"><i class="ti ti-player-play"></i> Lancer un script</h2>
+      <h2 style="margin:0 0 0.25rem"><i class="ti ti-player-play"></i> ${t('postes.run_modal.title')}</h2>
       <p style="margin:0 0 1.25rem;color:var(--text-secondary);font-size:13px">
-        Sur <strong>${count} poste${count > 1 ? 's' : ''}</strong> sélectionné${count > 1 ? 's' : ''}
+        ${t(count > 1 ? 'postes.run_modal.target_plural' : 'postes.run_modal.target', { n: count })}
       </p>
       <div style="margin-bottom:1rem">
-        <label class="form-label">Script à exécuter</label>
+        <label class="form-label">${t('postes.run_modal.script_label')}</label>
         <select class="form-input" id="bulk-script-select">${options}</select>
       </div>
       <p style="font-size:12px;color:var(--amber);margin:0 0 1.25rem">
-        <i class="ti ti-clock"></i> L'exécution se fera au prochain checkin agent (max 15 min)
+        <i class="ti ti-clock"></i> ${t('postes.run_modal.hint')}
       </p>
       <div style="display:flex;gap:0.5rem;justify-content:flex-end">
-        <button class="btn" onclick="closeModal()">Annuler</button>
+        <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
         <button class="btn btn-primary" onclick="bulkRunScriptConfirm()">
-          <i class="ti ti-player-play"></i> Lancer
+          <i class="ti ti-player-play"></i> ${t('btn.run')}
         </button>
       </div>
     </div>`)
@@ -537,9 +537,9 @@ async function bulkRunScriptConfirm() {
   }))
 
   if (fail === 0) {
-    showToast(`Script mis en file sur ${ok} poste${ok > 1 ? 's' : ''}`, 'success')
+    showToast(t(ok > 1 ? 'postes.toast.script_queued_plural' : 'postes.toast.script_queued', { n: ok }), 'success')
   } else {
-    showToast(`${ok} OK, ${fail} erreur${fail > 1 ? 's' : ''}`, fail === ids.length ? 'error' : 'info')
+    showToast(t(fail > 1 ? 'postes.toast.script_partial_plural' : 'postes.toast.script_partial', { ok, fail }), fail === ids.length ? 'error' : 'info')
   }
 
   clearSelection()

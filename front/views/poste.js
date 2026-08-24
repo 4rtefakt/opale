@@ -17,11 +17,11 @@ export async function renderPosteDetail(container, id) {
         <button class="btn btn-sm" style="color:var(--red)" onclick="deleteDevice()">
           <i class="ti ti-trash"></i>
         </button>` : ''}
-        <button class="btn btn-sm" id="btn-force-checkin" onclick="forceCheckin()" title="Forcer un checkin immédiat">
-          <i class="ti ti-refresh"></i> Forcer sync
+        <button class="btn btn-sm" id="btn-force-checkin" onclick="forceCheckin()" title="${t('poste.force_checkin_title')}">
+          <i class="ti ti-refresh"></i> ${t('poste.force_checkin')}
         </button>
-        <button class="btn btn-sm" id="btn-sync-intune" onclick="posteSyncIntune()" title="Déclencher une sync Intune">
-          <i class="ti ti-cloud-download"></i> Sync Intune
+        <button class="btn btn-sm" id="btn-sync-intune" onclick="posteSyncIntune()" title="${t('poste.sync_intune_title')}">
+          <i class="ti ti-cloud-download"></i> ${t('poste.sync_intune')}
         </button>
         ${window.OPALE.moduleEnabled('tickets') ? `
         <button class="btn btn-sm" onclick="openNewTicketFromDevice()">
@@ -29,7 +29,7 @@ export async function renderPosteDetail(container, id) {
         </button>` : ''}
         ${window.OPALE.moduleEnabled('remote') ? `
         <button class="btn btn-primary btn-sm" id="btn-ssh" onclick="openSSHMenu(event)">
-          <i class="ti ti-terminal"></i> Terminal <i class="ti ti-chevron-down" style="font-size:10px;opacity:.7"></i>
+          <i class="ti ti-terminal"></i> ${t('poste.terminal')} <i class="ti ti-chevron-down" style="font-size:10px;opacity:.7"></i>
         </button>` : ''}
       </div>
     </div>
@@ -40,9 +40,9 @@ export async function renderPosteDetail(container, id) {
     <div id="ssh-panel" class="ssh-panel">
       <div id="ssh-resize-handle" class="ssh-resize-handle"></div>
       <div class="ssh-panel-bar">
-        <span id="ssh-status" class="ssh-status">Déconnecté</span>
+        <span id="ssh-status" class="ssh-status">${t('poste.ssh.disconnected')}</span>
         <div style="display:flex;gap:4px">
-          <button class="btn btn-sm" id="btn-ssh-popout" onclick="sshTogglePopout()" title="Agrandir"><i class="ti ti-arrows-maximize"></i></button>
+          <button class="btn btn-sm" id="btn-ssh-popout" onclick="sshTogglePopout()" title="${t('poste.ssh.expand')}"><i class="ti ti-arrows-maximize"></i></button>
           <button class="btn btn-sm" onclick="toggleTerminal()"><i class="ti ti-x"></i></button>
         </div>
       </div>
@@ -99,15 +99,15 @@ function renderBody() {
             ${hwRow('ti-building-factory-2', t('poste.hw.manufacturer'), d.manufacturer)}
             ${hwRow('ti-device-laptop',      t('poste.hw.model'),        d.model)}
             ${hwRow('ti-cpu',                t('poste.hw.cpu'),          d.cpu)}
-            ${d.system_info?.cores ? hwRow('ti-cpu', 'Cœurs / threads', `${d.system_info.cores}c / ${d.system_info.threads}t${d.system_info.cpu_mhz ? ' · ' + (d.system_info.cpu_mhz / 1000).toFixed(1) + ' GHz' : ''}`) : ''}
-            ${hwRow('ti-layers-intersect',   t('poste.hw.ram'),          d.ram_gb ? d.ram_gb + ' Go' : '—')}
+            ${d.system_info?.cores ? hwRow('ti-cpu', t('poste.hw.cores'), `${d.system_info.cores}c / ${d.system_info.threads}t${d.system_info.cpu_mhz ? ' · ' + (d.system_info.cpu_mhz / 1000).toFixed(1) + ' GHz' : ''}`) : ''}
+            ${hwRow('ti-layers-intersect',   t('poste.hw.ram'),          d.ram_gb ? d.ram_gb + ' ' + t('common.unit.gb') : '—')}
             ${hwRow('ti-brand-windows',      t('poste.hw.os'),           d.os)}
             ${hwRow('ti-hash',               t('poste.hw.os_build'),     d.os_build)}
             ${hwRow('ti-fingerprint',        t('poste.hw.serial'),       d.serial)}
             ${hwRow('ti-settings',           t('poste.hw.bios'),         d.bios_version)}
-            ${d.system_info?.mainboard ? hwRow('ti-cpu-2', 'Carte mère', [d.system_info.mainboard.manufacturer, d.system_info.mainboard.product].filter(Boolean).join(' ')) : ''}
+            ${d.system_info?.mainboard ? hwRow('ti-cpu-2', t('poste.hw.mainboard'), [d.system_info.mainboard.manufacturer, d.system_info.mainboard.product].filter(Boolean).join(' ')) : ''}
             ${d.system_info?.gpus?.length ? d.system_info.gpus.map(g => hwRow('ti-device-desktop', 'GPU', g.name + (g.driver_version ? ' · ' + g.driver_version : ''))).join('') : ''}
-            ${d.system_info?.monitors_count != null ? hwRow('ti-device-tv', 'Moniteurs', String(d.system_info.monitors_count)) : ''}
+            ${d.system_info?.monitors_count != null ? hwRow('ti-device-tv', t('poste.hw.monitors'), String(d.system_info.monitors_count)) : ''}
             ${d.agent_version ? hwRow('ti-broadcast', 'Agent RMM', 'v' + esc(d.agent_version)) : ''}
             ${hwRow('ti-clock',              t('poste.hw.last_seen'),    formatRelative(d.last_seen))}
             ${d.ip_netbird ? hwRow('ti-network', 'Netbird IP', d.ip_netbird) : ''}
@@ -170,8 +170,8 @@ function renderBody() {
         <!-- Conformité (chargé async via /api/devices/:id/compliance) -->
         <div class="panel" id="panel-conformite">
           <div class="panel-header">
-            <i class="ti ti-shield-check"></i> Conformité
-            <a href="#/conformite" style="font-size:11px;color:var(--blue);margin-left:auto">Toutes les règles</a>
+            <i class="ti ti-shield-check"></i> ${t('nav.conformite')}
+            <a href="#/conformite" style="font-size:11px;color:var(--blue);margin-left:auto">${t('poste.compliance.all_rules')}</a>
           </div>
           <div id="conformite-content">
             <div class="empty-state" style="padding:1rem"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
@@ -196,9 +196,9 @@ function renderBody() {
         <!-- Scripts à distance -->
         <div class="panel" id="panel-scripts">
           <div class="panel-header">
-            <i class="ti ti-terminal-2"></i> Scripts à distance
+            <i class="ti ti-terminal-2"></i> ${t('poste.scripts.title')}
             <button class="btn btn-sm btn-primary" onclick="openRunScriptModal()">
-              <i class="ti ti-player-play"></i> Exécuter
+              <i class="ti ti-player-play"></i> ${t('scripts.btn.run')}
             </button>
           </div>
           <div id="exec-history">
@@ -209,7 +209,7 @@ function renderBody() {
         <!-- Historique des accès distants (SSH + console-via-agent) — admin only -->
         <div class="panel" id="panel-remote-sessions">
           <div class="panel-header">
-            <i class="ti ti-shield-lock"></i> Accès distants
+            <i class="ti ti-shield-lock"></i> ${t('poste.remote.title')}
           </div>
           <div id="remote-sessions-history">
             <div class="empty-state" style="padding:1rem"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
@@ -250,14 +250,14 @@ function securityPanel(d) {
   const blRow = bl.enabled !== undefined ? hwRowRaw(
     bl.enabled ? 'ti-lock' : 'ti-lock-open', 'BitLocker C:',
     bl.enabled
-      ? `<span class="badge badge-green">Activé${bl.encryption_method ? ' · ' + esc(bl.encryption_method) : ''}</span>`
-      : `<span class="badge badge-red">Désactivé</span>`
+      ? `<span class="badge badge-green">${t('poste.sec.enabled')}${bl.encryption_method ? ' · ' + esc(bl.encryption_method) : ''}</span>`
+      : `<span class="badge badge-red">${t('poste.sec.disabled')}</span>`
   ) : ''
 
   // Defender — 3 checks indépendants, critique si l'un est false
   const defItems = [
     { label: 'AV',         val: def.antivirus_enabled },
-    { label: 'Temps réel', val: def.realtime_protection },
+    { label: t('poste.sec.realtime'), val: def.realtime_protection },
     { label: 'Spyware',    val: def.antispyware_enabled },
   ].filter(i => i.val !== undefined)
   const defRow = defItems.length ? hwRowRaw('ti-shield', 'Defender',
@@ -267,23 +267,23 @@ function securityPanel(d) {
   // Signature AV — ok < 3j, warning 3-7j, critique > 7j
   const sigAge = def.signature_age_days ?? null
   const sigBadge = sigAge !== null
-    ? sigAge > 7  ? `<span class="badge badge-red"    style="margin-left:4px">Ancienne (${sigAge}j)</span>`
-    : sigAge > 3  ? `<span class="badge badge-orange" style="margin-left:4px">${sigAge}j</span>`
-    :               `<span class="badge badge-green"  style="margin-left:4px">À jour</span>`
+    ? sigAge > 7  ? `<span class="badge badge-red"    style="margin-left:4px">${t('poste.sec.outdated', { n: sigAge })}</span>`
+    : sigAge > 3  ? `<span class="badge badge-orange" style="margin-left:4px">${t('poste.sec.age_days', { n: sigAge })}</span>`
+    :               `<span class="badge badge-green"  style="margin-left:4px">${t('poste.sec.up_to_date')}</span>`
     : ''
   const sigRow = def.signature_last_update
-    ? hwRowRaw('ti-calendar-event', 'Signature AV', esc(def.signature_last_update) + sigBadge)
+    ? hwRowRaw('ti-calendar-event', t('poste.sec.av_signature'), esc(def.signature_last_update) + sigBadge)
     : ''
 
   // Menaces Defender 30j — ok=0, warning 1-4, critique ≥5
   let threatRow = ''
   if (def.threats_last_30d != null) {
     const tc = def.threats_last_30d
-    const tb = tc >= 5  ? `<span class="badge badge-red">${tc} menace${tc > 1 ? 's' : ''} détectée${tc > 1 ? 's' : ''}</span>`
-             : tc > 0   ? `<span class="badge badge-orange">${tc} menace${tc > 1 ? 's' : ''}</span>`
-             :            `<span class="badge badge-green">Aucune</span>`
-    const lastThreat = def.last_threat_at ? ` <span style="font-size:10px;color:var(--text-tertiary)">· dernière ${esc(def.last_threat_at)}</span>` : ''
-    threatRow = hwRowRaw('ti-virus', 'Menaces 30j', tb + lastThreat)
+    const tb = tc >= 5  ? `<span class="badge badge-red">${t(tc > 1 ? 'poste.sec.threats_detected_plural' : 'poste.sec.threats_detected', { n: tc })}</span>`
+             : tc > 0   ? `<span class="badge badge-orange">${t(tc > 1 ? 'poste.sec.threats_plural' : 'poste.sec.threats', { n: tc })}</span>`
+             :            `<span class="badge badge-green">${t('poste.sec.none')}</span>`
+    const lastThreat = def.last_threat_at ? ` <span style="font-size:10px;color:var(--text-tertiary)">${t('poste.sec.last_threat', { when: esc(def.last_threat_at) })}</span>` : ''
+    threatRow = hwRowRaw('ti-virus', t('poste.sec.threats_30d'), tb + lastThreat)
   }
 
   // Pare-feu — ok=tous à true, warning=1 désactivé, critique=2+
@@ -293,40 +293,40 @@ function securityPanel(d) {
     { label: 'Pub',  val: fw.public_enabled  },
   ].filter(i => i.val !== undefined)
   const fwDisabled = fwItems.filter(i => !i.val).length
-  const fwRow = fwItems.length ? hwRowRaw('ti-wall', 'Pare-feu', (() => {
+  const fwRow = fwItems.length ? hwRowRaw('ti-wall', t('poste.sec.firewall'), (() => {
     const badges = fwDisabled >= 2
-      ? `<span class="badge badge-red" style="margin-right:6px">${fwDisabled} désactivés</span>`
+      ? `<span class="badge badge-red" style="margin-right:6px">${t('poste.sec.fw_disabled_n', { n: fwDisabled })}</span>`
       : fwDisabled === 1
-      ? `<span class="badge badge-orange" style="margin-right:6px">1 désactivé</span>`
+      ? `<span class="badge badge-orange" style="margin-right:6px">${t('poste.sec.fw_disabled_1')}</span>`
       : ''
     const checks = fwItems.map(i => `<span style="color:var(--${i.val ? 'green' : 'red'})">${i.val ? '✓' : '✗'} ${i.label}</span>`).join(' &nbsp; ')
     return badges + checks
   })()) : ''
 
   // TPM
-  const tpmRow = hs.tpm_present !== undefined ? hwRow('ti-poker-chip', 'TPM', hs.tpm_present ? 'Présent' : 'Absent') : ''
+  const tpmRow = hs.tpm_present !== undefined ? hwRow('ti-poker-chip', 'TPM', hs.tpm_present ? t('poste.sec.present') : t('poste.sec.absent')) : ''
 
   // Redémarrage en attente — warning (info, pas bloquant)
   const rebootRow = hs.pending_reboot
-    ? hwRowRaw('ti-refresh-alert', 'Redémarrage', '<span class="badge badge-orange">En attente</span>')
+    ? hwRowRaw('ti-refresh-alert', t('poste.sec.reboot'), `<span class="badge badge-orange">${t('poste.sec.pending')}</span>`)
     : ''
 
   // Dernière MAJ Windows — ok < 30j, warning 30-90j, critique > 90j
   const lastUpdate = hs.last_windows_update
   const updateAge  = lastUpdate ? Math.floor((Date.now() - new Date(lastUpdate).getTime()) / 86400000) : null
   const updateBadge = updateAge !== null
-    ? updateAge > 90 ? `<span class="badge badge-red"    style="margin-left:4px">Ancienne (${updateAge}j)</span>`
-    : updateAge > 30 ? `<span class="badge badge-orange" style="margin-left:4px">${updateAge} jours</span>`
-    :                  `<span class="badge badge-green"  style="margin-left:4px">Récente</span>`
+    ? updateAge > 90 ? `<span class="badge badge-red"    style="margin-left:4px">${t('poste.sec.outdated', { n: updateAge })}</span>`
+    : updateAge > 30 ? `<span class="badge badge-orange" style="margin-left:4px">${t('poste.sec.days', { n: updateAge })}</span>`
+    :                  `<span class="badge badge-green"  style="margin-left:4px">${t('poste.sec.recent')}</span>`
     : ''
-  const updateRow = lastUpdate ? hwRowRaw('ti-calendar-check', 'Dernière MAJ', esc(lastUpdate) + updateBadge) : ''
+  const updateRow = lastUpdate ? hwRowRaw('ti-calendar-check', t('poste.sec.last_update'), esc(lastUpdate) + updateBadge) : ''
 
   const content = blRow + defRow + sigRow + threatRow + fwRow + tpmRow + rebootRow + updateRow
   if (!content.trim()) return ''
 
   return `
     <div class="panel">
-      <div class="panel-header">Sécurité &amp; Santé</div>
+      <div class="panel-header">${t('poste.sec.title')}</div>
       <div class="hw-grid">${content}</div>
     </div>`
 }
@@ -344,7 +344,7 @@ function perfPanel(d) {
       const cls  = pct >= 90 ? 'danger' : pct >= 80 ? 'warn' : ''
       const col  = pct >= 90 ? 'var(--red)' : pct >= 80 ? 'var(--orange)' : 'var(--green)'
       rows.push(hwRowRaw('ti-layers-intersect', 'RAM',
-        `${esc(String(sp.ram_used_gb))} / ${esc(String(sp.ram_total_gb))} Go &nbsp; <span style="font-weight:600;color:${col}">${pct}%</span>
+        `${esc(String(sp.ram_used_gb))} / ${esc(String(sp.ram_total_gb))} ${t('common.unit.gb')} &nbsp; <span style="font-weight:600;color:${col}">${pct}%</span>
         <div class="qty-bar" style="height:4px;margin-top:3px"><div class="qb ${cls}" style="width:${pct}%"></div></div>`
       ))
     }
@@ -353,14 +353,14 @@ function perfPanel(d) {
       const cls = pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : ''
       const col = pct >= 90 ? 'var(--red)' : pct >= 70 ? 'var(--orange)' : 'var(--green)'
       rows.push(hwRowRaw('ti-activity', 'CPU',
-        `<span style="font-weight:600;color:${col}">${pct}%</span> moy${sp.cpu_max_pct != null ? ` &nbsp;·&nbsp; max <span style="color:var(--text-secondary)">${Math.round(sp.cpu_max_pct)}%</span>` : ''}
+        `<span style="font-weight:600;color:${col}">${pct}%</span> ${t('poste.perf.avg')}${sp.cpu_max_pct != null ? ` &nbsp;·&nbsp; max <span style="color:var(--text-secondary)">${Math.round(sp.cpu_max_pct)}%</span>` : ''}
         <div class="qty-bar" style="height:4px;margin-top:3px"><div class="qb ${cls}" style="width:${pct}%"></div></div>`
       ))
     }
     if (sp.uptime_seconds != null) {
       const days  = Math.floor(sp.uptime_seconds / 86400)
       const hours = Math.floor((sp.uptime_seconds % 86400) / 3600)
-      rows.push(hwRow('ti-clock-hour-3', 'Uptime', days > 0 ? `${days}j ${hours}h` : `${hours}h`))
+      rows.push(hwRow('ti-clock-hour-3', 'Uptime', days > 0 ? t('poste.duration.d_h', { d: days, h: hours }) : `${hours}h`))
     }
     if (sp.battery_pct != null) {
       const stat = sp.battery_status || ''
@@ -368,7 +368,7 @@ function perfPanel(d) {
                    stat === 'charging' ? 'ti-battery-charging' :
                    sp.battery_pct < 20 ? 'ti-battery-1' : 'ti-battery'
       const cls  = sp.battery_pct < 20 ? 'badge-red' : sp.battery_pct < 40 ? 'badge-orange' : 'badge-green'
-      rows.push(hwRowRaw(icon, 'Batterie',
+      rows.push(hwRowRaw(icon, t('poste.perf.battery'),
         `<span class="badge ${cls}">${sp.battery_pct}%</span>${stat ? ' &nbsp; ' + esc(stat) : ''}`
       ))
     }
@@ -377,7 +377,7 @@ function perfPanel(d) {
   // Graphe historique 24h
   const graphHtml = series?.length >= 2 ? `
     <div style="border-top:1px solid var(--border);margin-top:8px;padding:10px 16px 14px">
-      <div style="font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Historique 24h</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">${t('poste.perf.history_24h')}</div>
       ${renderPerfSvg(series)}
     </div>` : ''
 
@@ -385,7 +385,7 @@ function perfPanel(d) {
 
   return `
     <div class="panel">
-      <div class="panel-header">Performances</div>
+      <div class="panel-header">${t('poste.perf.title')}</div>
       <div class="hw-grid">${rows.join('')}</div>
       ${graphHtml}
     </div>`
@@ -459,22 +459,22 @@ function batteryHealthPanel(d) {
   const col    = health < 70 ? 'var(--red)' : health < 80 ? 'var(--orange)' : 'var(--green)'
   const cycles = bh.cycle_count && bh.cycle_count > 0 ? bh.cycle_count : null
   const cycleNote = cycles != null
-    ? cycles > 1000 ? ' <span class="badge badge-red">Élevé</span>'
-    : cycles > 500  ? ' <span class="badge badge-orange">Modéré</span>'
+    ? cycles > 1000 ? ` <span class="badge badge-red">${t('poste.battery.high')}</span>`
+    : cycles > 500  ? ` <span class="badge badge-orange">${t('poste.battery.moderate')}</span>`
     : ''
     : ''
 
   return `
     <div class="panel">
-      <div class="panel-header"><i class="ti ti-battery-eco" style="margin-right:6px"></i>Santé batterie</div>
+      <div class="panel-header"><i class="ti ti-battery-eco" style="margin-right:6px"></i>${t('poste.battery.title')}</div>
       <div class="hw-grid">
-        ${hwRowRaw('ti-heart-rate-monitor', 'Santé',
+        ${hwRowRaw('ti-heart-rate-monitor', t('poste.battery.health'),
           `<span style="font-weight:700;font-size:14px;color:${col}">${health.toFixed(0)}%</span>
           <div class="qty-bar" style="height:5px;margin-top:4px"><div class="qb ${cls}" style="width:${health}%"></div></div>`
         )}
-        ${cycles != null ? hwRowRaw('ti-refresh', 'Cycles', `${cycles}${cycleNote}`) : ''}
-        ${bh.chemistry ? hwRow('ti-flask', 'Chimie', bh.chemistry) : ''}
-        ${bh.designed_mwh && bh.full_charge_mwh ? hwRow('ti-bolt', 'Capacité', `${+(bh.full_charge_mwh / 1000).toFixed(1)} / ${+(bh.designed_mwh / 1000).toFixed(1)} Wh`) : ''}
+        ${cycles != null ? hwRowRaw('ti-refresh', t('poste.battery.cycles'), `${cycles}${cycleNote}`) : ''}
+        ${bh.chemistry ? hwRow('ti-flask', t('poste.battery.chemistry'), bh.chemistry) : ''}
+        ${bh.designed_mwh && bh.full_charge_mwh ? hwRow('ti-bolt', t('poste.battery.capacity'), `${+(bh.full_charge_mwh / 1000).toFixed(1)} / ${+(bh.designed_mwh / 1000).toFixed(1)} Wh`) : ''}
       </div>
     </div>`
 }
@@ -487,14 +487,14 @@ function threatsPanel(d) {
   return `
     <div class="panel" style="border-left:3px solid var(--red)">
       <div class="panel-header" style="color:var(--red)">
-        <i class="ti ti-virus" style="margin-right:6px"></i>Menaces Defender — 30 derniers jours
+        <i class="ti ti-virus" style="margin-right:6px"></i>${t('poste.threats.title')}
       </div>
       <div style="padding:12px 16px">
         <div style="font-size:28px;font-weight:700;color:var(--red);line-height:1">${tc}</div>
-        <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">menace${tc > 1 ? 's' : ''} détectée${tc > 1 ? 's' : ''}</div>
-        ${def.last_threat_at ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:8px">Dernière détection : ${esc(def.last_threat_at)}</div>` : ''}
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${t(tc > 1 ? 'poste.threats.detected_plural' : 'poste.threats.detected')}</div>
+        ${def.last_threat_at ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:8px">${t('poste.threats.last_detection', { when: esc(def.last_threat_at) })}</div>` : ''}
         <div style="font-size:11px;color:var(--text-tertiary);margin-top:6px">
-          <i class="ti ti-info-circle"></i> Détails dans le journal Defender local (Get-MpThreatDetection)
+          <i class="ti ti-info-circle"></i> ${t('poste.threats.details_hint')}
         </div>
       </div>
     </div>`
@@ -511,21 +511,21 @@ function lapsPanel(d) {
   return `
     <div class="panel">
       <div class="panel-header">
-        <i class="ti ti-key" style="margin-right:6px"></i>Compte de récupération
+        <i class="ti ti-key" style="margin-right:6px"></i>${t('poste.laps.title')}
         <span class="badge" style="margin-left:auto;font-size:10px">Admin</span>
       </div>
       <div style="padding:4px 16px 0">
-        ${lapsRow('ti-user-shield', 'Utilisateur', esc(l.username))}
-        ${l.password_changed_at ? lapsRow('ti-calendar-time', 'Dernière rotation', esc(formatRelative(l.password_changed_at))) : ''}
-        ${l.last_viewed_at ? lapsRow('ti-eye', 'Dernier accès', esc(formatRelative(l.last_viewed_at)) + (l.last_viewed_by_name ? ` <span style="color:var(--text-tertiary)">par ${esc(l.last_viewed_by_name)}</span>` : '')) : ''}
-        ${l.rotation_requested_at ? lapsRow('ti-refresh', 'Rotation demandée', `<span class="badge badge-orange">${esc(formatRelative(l.rotation_requested_at))}</span>`) : ''}
+        ${lapsRow('ti-user-shield', t('poste.laps.user'), esc(l.username))}
+        ${l.password_changed_at ? lapsRow('ti-calendar-time', t('poste.laps.last_rotation'), esc(formatRelative(l.password_changed_at))) : ''}
+        ${l.last_viewed_at ? lapsRow('ti-eye', t('poste.laps.last_access'), esc(formatRelative(l.last_viewed_at)) + (l.last_viewed_by_name ? ` <span style="color:var(--text-tertiary)">${t('poste.laps.by', { name: esc(l.last_viewed_by_name) })}</span>` : '')) : ''}
+        ${l.rotation_requested_at ? lapsRow('ti-refresh', t('poste.laps.rotation_requested'), `<span class="badge badge-orange">${esc(formatRelative(l.rotation_requested_at))}</span>`) : ''}
       </div>
       <div style="display:flex;gap:8px;padding:10px 16px 12px;flex-wrap:wrap">
         <button class="btn btn-sm" onclick="lapsViewPassword()">
-          <i class="ti ti-eye"></i> Voir le mot de passe
+          <i class="ti ti-eye"></i> ${t('poste.laps.view_password')}
         </button>
         <button class="btn btn-sm" style="color:var(--orange)" onclick="lapsRequestRotation()">
-          <i class="ti ti-refresh"></i> Demander rotation
+          <i class="ti ti-refresh"></i> ${t('poste.laps.request_rotation')}
         </button>
       </div>
     </div>`
@@ -537,20 +537,20 @@ function currentUserPanel(d) {
   if (!cu) return ''
   const userLink = d.user?.entraId
     ? `<a href="#/users/${esc(d.user.entraId)}" style="font-size:11px;color:var(--blue);text-decoration:none;margin-top:5px;display:inline-flex;align-items:center;gap:4px">
-        <i class="ti ti-arrow-right" style="font-size:10px"></i> Voir la fiche de ${esc(d.user.name || d.user.email)}
+        <i class="ti ti-arrow-right" style="font-size:10px"></i> ${t('poste.local_session.view_profile', { name: esc(d.user.name || d.user.email) })}
        </a>`
     : ''
   return `
     <div class="panel">
       <div class="panel-header">
-        <i class="ti ti-user-screen" style="margin-right:6px"></i>Session locale
+        <i class="ti ti-user-screen" style="margin-right:6px"></i>${t('poste.local_session.title')}
         <span class="badge" style="margin-left:auto;font-size:10px">Admin</span>
       </div>
       <div style="padding:10px 16px 12px">
         <div style="font-size:13px;font-weight:500">${esc(cu)}</div>
         ${userLink}
         <div style="font-size:11px;color:var(--text-tertiary);margin-top:5px">
-          <i class="ti ti-lock" style="font-size:10px"></i> Donnée nominative RGPD — usage COGES uniquement
+          <i class="ti ti-lock" style="font-size:10px"></i> ${t('poste.local_session.gdpr_note')}
         </div>
       </div>
     </div>`
@@ -562,26 +562,26 @@ async function lapsViewPassword() {
     const cred = await window.api.getAdminCredential(_device.id)
     let remaining = 30
     showModal(`
-      <div class="modal-title"><i class="ti ti-key"></i> Compte de récupération</div>
+      <div class="modal-title"><i class="ti ti-key"></i> ${t('poste.laps.title')}</div>
       <div style="display:flex;flex-direction:column;gap:12px">
         <div class="form-row">
-          <label class="form-label">Utilisateur</label>
+          <label class="form-label">${t('poste.laps.user')}</label>
           <input class="form-input" id="laps-user-field" readonly>
         </div>
         <div class="form-row">
-          <label class="form-label">Mot de passe</label>
+          <label class="form-label">${t('poste.laps.password')}</label>
           <div style="display:flex;gap:8px">
             <input class="form-input" id="laps-pwd-field" readonly type="password" style="font-family:monospace;letter-spacing:.1em;flex:1">
-            <button class="btn btn-sm" onclick="window.lapsTogglePwd()" title="Afficher"><i class="ti ti-eye"></i></button>
-            <button class="btn btn-sm btn-primary" onclick="window.lapsCopyPwd()"><i class="ti ti-copy"></i> Copier</button>
+            <button class="btn btn-sm" onclick="window.lapsTogglePwd()" title="${t('poste.laps.show')}"><i class="ti ti-eye"></i></button>
+            <button class="btn btn-sm btn-primary" onclick="window.lapsCopyPwd()"><i class="ti ti-copy"></i> ${t('poste.laps.copy')}</button>
           </div>
         </div>
         <div style="font-size:11px;color:var(--text-tertiary);text-align:center;background:var(--bg-secondary);border-radius:6px;padding:6px">
-          Effacement automatique dans <span id="laps-countdown">${remaining}</span>s — pensez à rotater après usage
+          ${t('poste.laps.autoclear', { s: `<span id="laps-countdown">${remaining}</span>` })}
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn" onclick="closeModal()">Fermer</button>
+        <button class="btn" onclick="closeModal()">${t('btn.close')}</button>
       </div>`)
     // Injecter les valeurs via DOM (jamais dans l'HTML — sécurité)
     document.getElementById('laps-user-field').value = cred.username
@@ -592,7 +592,7 @@ async function lapsViewPassword() {
     }
     window.lapsCopyPwd = () => {
       navigator.clipboard.writeText(cred.password)
-        .then(() => showToast('Mot de passe copié', 'success'))
+        .then(() => showToast(t('poste.laps.toast_copied'), 'success'))
     }
     const iv = setInterval(() => {
       remaining--
@@ -607,10 +607,10 @@ async function lapsViewPassword() {
 
 async function lapsRequestRotation() {
   if (!_device) return
-  if (!confirm('Demander une rotation du mot de passe de récupération ?\nLa rotation sera effective au prochain checkin de l\'agent (max 15 min).')) return
+  if (!confirm(t('poste.laps.confirm_rotation'))) return
   try {
     await window.api.rotateAdminCredential(_device.id)
-    showToast('Rotation demandée — effective au prochain checkin', 'success')
+    showToast(t('poste.laps.toast_rotation'), 'success')
     _device = await window.api.getDevice(_device.id)
     renderBody()
   } catch (err) {
@@ -619,15 +619,15 @@ async function lapsRequestRotation() {
 }
 
 function complianceBadge(state) {
-  const map = { compliant: '✓ Conforme', noncompliant: '✗ Non conforme', unknown: '? Inconnu', configManager: 'Config Manager' }
+  const map = { compliant: t('poste.compliance.compliant'), noncompliant: t('poste.compliance.noncompliant'), unknown: t('poste.compliance.unknown'), configManager: 'Config Manager' }
   return map[state] || state
 }
 
 function formatJoinType(jt) {
   const map = {
-    azureADJoined:       'Azure AD Joint',
+    azureADJoined:       t('poste.join.azuread'),
     hybridAzureADJoined: 'Hybrid Azure AD',
-    azureADRegistered:   'Azure AD Enregistré',
+    azureADRegistered:   t('poste.join.registered'),
   }
   return map[jt] || jt
 }
@@ -635,7 +635,7 @@ function formatJoinType(jt) {
 function diskRow(disk) {
   const pct = disk.used_pct
   const diskLabel = `<span style="font-size:13px;font-weight:500">${esc(disk.letter)} ${disk.label ? `<span style="color:var(--text-tertiary);font-weight:400">(${esc(disk.label)})</span>` : ''}</span>`
-  const sizeNote  = `<div style="font-size:11px;color:var(--text-tertiary);margin-top:3px">${disk.size_gb ? disk.size_gb + ' Go total' : '—'}</div>`
+  const sizeNote  = `<div style="font-size:11px;color:var(--text-tertiary);margin-top:3px">${disk.size_gb ? t('poste.disk_total', { n: disk.size_gb }) : '—'}</div>`
   if (pct == null) {
     return `<div class="disk-detail-row">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px">${diskLabel}<span class="badge" style="font-size:11px">—</span></div>
@@ -797,7 +797,7 @@ function bwPanel(bw) {
     const periods = [
       { key: '4h',  label: '4h',  sent: s.sent_4h,  recv: s.recv_4h  },
       { key: '24h', label: '24h', sent: s.sent_24h, recv: s.recv_24h },
-      { key: '7j',  label: '7j',  sent: s.sent_7d,  recv: s.recv_7d  },
+      { key: '7j',  label: t('poste.period.7d'),  sent: s.sent_7d,  recv: s.recv_7d  },
     ]
     cardsHtml = `
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:${hasSeries ? '10px' : '0'}">
@@ -820,7 +820,7 @@ function bwPanel(bw) {
 
   return `
     <div style="border-top:1px solid var(--border);margin-top:8px;padding:10px 16px 14px">
-      <div style="font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Bande passante${adapterLabel}</div>
+      <div style="font-size:11px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">${t('poste.bw.title')}${adapterLabel}</div>
       ${graphHtml}
       ${cardsHtml}
     </div>`
@@ -876,7 +876,7 @@ function pingHostPanel(ping) {
   const periods = [
     { label: '4h',  s: sum['4h']  },
     { label: '24h', s: sum['24h'] },
-    { label: '7j',  s: sum['7d']  },
+    { label: t('poste.period.7d'),  s: sum['7d']  },
   ]
 
   const t0  = new Date(series[0].t).toLocaleString('fr-FR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -899,7 +899,7 @@ function pingHostPanel(ping) {
       </div>
       <div style="display:flex;justify-content:space-between;margin-top:3px;font-size:10px;color:var(--text-tertiary);padding:0 0 0 ${PL}px">
         <span>${t0}</span>
-        <span style="color:var(--red);font-size:9px">● perte</span>
+        <span style="color:var(--red);font-size:9px">${t('poste.ping.loss')}</span>
         <span>${t1}</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px">
@@ -1032,14 +1032,14 @@ function openSSHMenu(e) {
     font-size:13px;cursor:pointer;text-align:left`
   menu.innerHTML = `
     <button id="ssh-opt-browser" style="${itemStyle};border-bottom:1px solid var(--border)">
-      <i class="ti ti-browser"></i> SSH navigateur (ici)
+      <i class="ti ti-browser"></i> ${t('poste.ssh.browser')}
     </button>
     <button id="ssh-opt-local" style="${itemStyle};border-bottom:1px solid var(--border)">
-      <i class="ti ti-terminal-2"></i> SSH local
+      <i class="ti ti-terminal-2"></i> ${t('poste.ssh.local')}
     </button>
     <button id="ssh-opt-console" style="${itemStyle}">
       <i class="ti ti-bolt"></i>
-      <span>Console via agent</span>
+      <span>${t('poste.ssh.console')}</span>
       <span style="margin-left:auto;font-size:11px">${agentStatusBadge(_device.last_seen_ws)}</span>
     </button>`
   document.body.appendChild(menu)
@@ -1056,7 +1056,7 @@ function openSSHMenu(e) {
     const user = window.ENV?.SSH_USER || 'opale'
     const port = window.ENV?.SSH_PORT
     const cmd  = `ssh ${user}@${_device.ip_netbird}${port && port !== 22 ? ` -p ${port}` : ''}`
-    navigator.clipboard.writeText(cmd).then(() => showToast(`Copié : ${cmd}`, 'success'))
+    navigator.clipboard.writeText(cmd).then(() => showToast(t('poste.ssh.copied', { cmd }), 'success'))
   }
   menu.querySelector('#ssh-opt-console').onclick = async () => {
     menu.remove()
@@ -1090,11 +1090,11 @@ async function toggleTerminal() {
 
 async function connectSSH() {
   if (!_device?.ip_netbird) {
-    setSSHStatus('Aucune IP Netbird', 'error')
+    setSSHStatus(t('poste.ssh.no_ip'), 'error')
     return
   }
   if (_device.status !== 'online') {
-    setSSHStatus('Poste hors ligne', 'error')
+    setSSHStatus(t('poste.ssh.offline'), 'error')
     return
   }
   // Motif obligatoire (RGPD / traçabilité). Si l'admin annule, on ferme
@@ -1128,12 +1128,12 @@ async function connectSSH() {
   })
   _term.open(mount)
 
-  setSSHStatus('Connexion…', 'connecting')
+  setSSHStatus(t('poste.ssh.connecting'), 'connecting')
   let nonce
   try {
     ({ nonce } = await window.api.requestSshGrant(_device.id, reason))
   } catch (err) {
-    setSSHStatus(err.message || 'Erreur autorisation SSH', 'error')
+    setSSHStatus(err.message || t('poste.ssh.grant_error'), 'error')
     return
   }
   const wsProto = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -1150,9 +1150,9 @@ async function connectSSH() {
     if (msg.type === 'status') setSSHStatus(msg.data, 'ok')
     if (msg.type === 'error')  { setSSHStatus(msg.data, 'error'); _term.write('\r\n\x1b[31m' + msg.data + '\x1b[0m\r\n') }
   }
-  _ws.onopen  = () => setSSHStatus('Connecté', 'ok')
-  _ws.onclose = () => setSSHStatus('Déconnecté', '')
-  _ws.onerror = () => setSSHStatus('Erreur WebSocket', 'error')
+  _ws.onopen  = () => setSSHStatus(t('poste.ssh.connected'), 'ok')
+  _ws.onclose = () => setSSHStatus(t('poste.ssh.disconnected'), '')
+  _ws.onerror = () => setSSHStatus(t('poste.ssh.ws_error'), 'error')
 
   _term.onData((data) => {
     if (_ws.readyState === WebSocket.OPEN)
@@ -1257,7 +1257,7 @@ async function connectConsole(takeover = false, reason = null) {
   })
   _term.open(mount)
 
-  setSSHStatus('Autorisation…', 'connecting')
+  setSSHStatus(t('poste.console.authorizing'), 'connecting')
   let nonce
   try {
     ({ nonce } = await window.api.requestConsoleGrant(_device.id, takeover, reason))
@@ -1267,9 +1267,9 @@ async function connectConsole(takeover = false, reason = null) {
       // forcer en relançant avec takeover:true (ce qui kill l'ancienne).
       // On RÉUTILISE le reason déjà saisi — pas de re-prompt.
       const h = err.body.holder || {}
-      const ok = await showTakeoverConfirm(h.by_name || 'un autre administrateur', h.started_at)
+      const ok = await showTakeoverConfirm(h.by_name || t('poste.takeover.another_admin'), h.started_at)
       if (!ok) {
-        setSSHStatus('Annulé', '')
+        setSSHStatus(t('poste.console.cancelled'), '')
         disconnectSSH()
         return
       }
@@ -1277,9 +1277,9 @@ async function connectConsole(takeover = false, reason = null) {
     }
     const code = err.body?.code || ''
     const friendly =
-      code === 'AGENT_OFFLINE'      ? "L'agent n'est pas connecté en temps réel"
-    : code === 'CAPABILITY_MISSING' ? "L'agent doit être mis à jour (capability console manquante)"
-    : (err.message || 'Erreur autorisation')
+      code === 'AGENT_OFFLINE'      ? t('poste.console.agent_offline')
+    : code === 'CAPABILITY_MISSING' ? t('poste.console.capability_missing')
+    : (err.message || t('poste.console.grant_error'))
     setSSHStatus(friendly, 'error')
     return
   }
@@ -1288,9 +1288,9 @@ async function connectConsole(takeover = false, reason = null) {
   const wsUrl   = `${wsProto}://${location.host}/api/console/${_device.id}?nonce=${encodeURIComponent(nonce)}`
   _ws = new WebSocket(wsUrl)
 
-  _ws.onopen  = () => setSSHStatus('Connexion…', 'connecting')
-  _ws.onclose = (ev) => setSSHStatus(`Déconnecté${ev.reason ? ' : ' + ev.reason : ''}`, '')
-  _ws.onerror = () => setSSHStatus('Erreur WebSocket', 'error')
+  _ws.onopen  = () => setSSHStatus(t('poste.ssh.connecting'), 'connecting')
+  _ws.onclose = (ev) => setSSHStatus(`${t('poste.ssh.disconnected')}${ev.reason ? ' : ' + ev.reason : ''}`, '')
+  _ws.onerror = () => setSSHStatus(t('poste.ssh.ws_error'), 'error')
 
   _ws.onmessage = (e) => {
     const msg = JSON.parse(e.data)
@@ -1300,7 +1300,7 @@ async function connectConsole(takeover = false, reason = null) {
       return
     }
     if (msg.type === 'opened') {
-      setSSHStatus(`Console ouverte${msg.data?.pid ? ' (pid ' + msg.data.pid + ')' : ''}`, 'ok')
+      setSSHStatus(`${t('poste.console.opened')}${msg.data?.pid ? ' (pid ' + msg.data.pid + ')' : ''}`, 'ok')
       return
     }
     if (msg.type === 'status') {
@@ -1310,15 +1310,15 @@ async function connectConsole(takeover = false, reason = null) {
     if (msg.type === 'error') {
       // `error` arrive sous deux formes : string (refus côté serveur avant
       // l'ouverture, via fail()) ou { message } (erreur agent forwardée).
-      const errMsg = typeof msg.data === 'string' ? msg.data : (msg.data?.message || 'Erreur')
+      const errMsg = typeof msg.data === 'string' ? msg.data : (msg.data?.message || t('poste.error'))
       setSSHStatus(errMsg, 'error')
       _term.write('\r\n\x1b[31m' + errMsg + '\x1b[0m\r\n')
       return
     }
     if (msg.type === 'exit') {
       const reason = msg.data?.reason || `code ${msg.data?.code ?? '?'}`
-      setSSHStatus('Terminé : ' + reason, '')
-      _term.write(`\r\n\x1b[33m[Session terminée : ${reason}]\x1b[0m\r\n`)
+      setSSHStatus(t('poste.console.ended', { reason }), '')
+      _term.write(`\r\n\x1b[33m${t('poste.console.session_ended', { reason })}\x1b[0m\r\n`)
     }
   }
 
@@ -1337,22 +1337,22 @@ async function connectConsole(takeover = false, reason = null) {
 // renverra AGENT_OFFLINE si vraiment indisponible.
 function agentStatusBadge(lastSeenWs) {
   if (!lastSeenWs) {
-    return `<span style="color:var(--text-muted,#999)">jamais</span>`
+    return `<span style="color:var(--text-muted,#999)">${t('common.never')}</span>`
   }
   const ageMs = Date.now() - new Date(lastSeenWs).getTime()
   if (ageMs < 2 * 60 * 1000) {
-    return `<span style="color:var(--green,#3fb950)">● actif</span>`
+    return `<span style="color:var(--green,#3fb950)">${t('poste.ssh.active')}</span>`
   }
   return `<span style="color:var(--text-muted,#999)">${relativeTime(lastSeenWs)}</span>`
 }
 
 function relativeTime(iso) {
-  if (!iso) return 'récemment'
+  if (!iso) return t('poste.time.recently')
   const ageSec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
-  if (ageSec < 60)    return `il y a ${ageSec}s`
-  if (ageSec < 3600)  return `il y a ${Math.floor(ageSec/60)}min`
-  if (ageSec < 86400) return `il y a ${Math.floor(ageSec/3600)}h`
-  return `il y a ${Math.floor(ageSec/86400)}j`
+  if (ageSec < 60)    return t('poste.time.ago_s',   { n: ageSec })
+  if (ageSec < 3600)  return t('poste.time.ago_min', { n: Math.floor(ageSec/60) })
+  if (ageSec < 86400) return t('poste.time.ago_h',   { n: Math.floor(ageSec/3600) })
+  return t('poste.time.ago_d', { n: Math.floor(ageSec/86400) })
 }
 
 // Modal de saisie du motif d'ouverture d'une session distante (console
@@ -1445,19 +1445,17 @@ function showTakeoverConfirm(byName, startedAt) {
     const modal = document.createElement('div')
     modal.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;
       display:flex;align-items:center;justify-content:center`
-    const when = startedAt ? relativeTime(startedAt) : 'récemment'
+    const when = startedAt ? relativeTime(startedAt) : t('poste.time.recently')
     modal.innerHTML = `
       <div style="background:var(--panel-bg,#1e2030);padding:24px;border-radius:8px;
         max-width:440px;border:1px solid var(--border);box-shadow:0 4px 16px rgba(0,0,0,.4)">
-        <h3 style="margin:0 0 12px;font-size:16px">Une console est déjà ouverte</h3>
+        <h3 style="margin:0 0 12px;font-size:16px">${t('poste.takeover.title')}</h3>
         <p style="margin:0 0 20px;color:var(--text-secondary,#aaa);font-size:13px;line-height:1.5">
-          <b>${esc(byName)}</b> a ouvert une console sur ce poste ${esc(when)}.<br>
-          En continuant, sa session sera fermée immédiatement et l'éviction
-          sera tracée dans l'audit.
+          ${t('poste.takeover.body', { name: esc(byName), when: esc(when) })}
         </p>
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button class="btn btn-sm" id="tk-cancel">Annuler</button>
-          <button class="btn btn-primary btn-sm" id="tk-confirm">Prendre la main</button>
+          <button class="btn btn-sm" id="tk-cancel">${t('btn.cancel')}</button>
+          <button class="btn btn-primary btn-sm" id="tk-confirm">${t('poste.takeover.confirm')}</button>
         </div>
       </div>`
     document.body.appendChild(modal)
@@ -1508,7 +1506,7 @@ async function loadDeviceCompliance(deviceId) {
   try {
     data = await window.api.getDeviceCompliance(deviceId)
   } catch (e) {
-    el.innerHTML = `<div class="empty-state" style="padding:1rem"><p>Erreur de chargement</p></div>`
+    el.innerHTML = `<div class="empty-state" style="padding:1rem"><p>${t('poste.load_error')}</p></div>`
     return
   }
   const { results, counts } = data
@@ -1523,9 +1521,9 @@ async function loadDeviceCompliance(deviceId) {
   const summaryLine = `
     <div style="padding:10px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border)">
       <i class="ti ${counts.fail > 0 ? 'ti-shield-x' : 'ti-shield-check'}" style="font-size:18px;color:${sumColor}"></i>
-      <span style="font-size:13px;font-weight:500;color:${sumColor}">${counts.pass}/${evalTotal} règles conformes</span>
+      <span style="font-size:13px;font-weight:500;color:${sumColor}">${t('poste.compliance.rules_ok', { pass: counts.pass, total: evalTotal })}</span>
       ${counts.fail > 0
-        ? `<span style="font-size:11px;color:var(--text-tertiary)">· ${counts.fail} à corriger</span>`
+        ? `<span style="font-size:11px;color:var(--text-tertiary)">${t('poste.compliance.to_fix', { n: counts.fail })}</span>`
         : ''}
       ${nas.length
         ? `<span style="font-size:11px;color:var(--text-tertiary)">· ${nas.length} N/A</span>`
@@ -1552,7 +1550,7 @@ async function loadDeviceCompliance(deviceId) {
 
   const naBlock = nas.length ? `
     <details style="padding:8px 16px">
-      <summary style="font-size:12px;color:var(--text-tertiary);cursor:pointer">${nas.length} règle${nas.length > 1 ? 's' : ''} non applicable${nas.length > 1 ? 's' : ''}</summary>
+      <summary style="font-size:12px;color:var(--text-tertiary);cursor:pointer">${t(nas.length > 1 ? 'poste.compliance.na_plural' : 'poste.compliance.na', { n: nas.length })}</summary>
       <div style="margin-top:6px;display:flex;flex-direction:column;gap:4px">
         ${nas.map(r => `<div style="font-size:12px;color:var(--text-tertiary)">· ${esc(r.label)}</div>`).join('')}
       </div>
@@ -1561,7 +1559,7 @@ async function loadDeviceCompliance(deviceId) {
   const okState = !fails.length ? `
     <div class="empty-state" style="padding:1rem">
       <i class="ti ti-shield-check" style="color:var(--green)"></i>
-      <p>Toutes les règles applicables passent</p>
+      <p>${t('poste.compliance.all_pass')}</p>
     </div>` : ''
 
   el.innerHTML = summaryLine + failRows + okState + naBlock
@@ -1573,7 +1571,7 @@ async function loadRemoteSessionsHistory() {
   try {
     const { sessions } = await window.api.getRemoteSessions(_device.id)
     if (!sessions.length) {
-      el.innerHTML = `<div class="empty-state" style="padding:1rem"><p>Aucun accès distant enregistré</p></div>`
+      el.innerHTML = `<div class="empty-state" style="padding:1rem"><p>${t('poste.remote.empty')}</p></div>`
       return
     }
     el.innerHTML = sessions.map(s => {
@@ -1582,14 +1580,14 @@ async function loadRemoteSessionsHistory() {
       const icon       = isAgent ? 'ti-bolt' : 'ti-terminal'
       const color      = isActive ? 'var(--green)' : (s.end_reason === 'taken-over' ? 'var(--orange,#d29922)' : 'var(--text-tertiary)')
       const label      = isAgent ? (s.shell || 'console') : 'SSH'
-      const duration   = isActive ? '(en cours)' : formatDuration(s.duration_s)
+      const duration   = isActive ? t('poste.remote.in_progress') : formatDuration(s.duration_s)
       const ipPart     = s.ip ? ` · ${esc(s.ip)}` : ''
       const takenOver  = s.end_reason === 'taken-over'
       // Bouton "voir le log" : visible uniquement pour les sessions terminées
       // (le log est flush au close). Active = pas encore de log capturable.
       const logBtn = !isActive ? `
         <i class="ti ti-history audit-chevron" style="cursor:pointer;color:var(--text-tertiary);margin-left:8px"
-           title="Voir le log de la session"
+           title="${t('poste.remote.view_log')}"
            onclick="event.stopPropagation();window.showSessionLog('${esc(s.id)}',${jsArg(s.by_name || '')},'${esc(s.transport)}',${jsArg(s.started_at)})"></i>
       ` : ''
       return `
@@ -1599,8 +1597,8 @@ async function loadRemoteSessionsHistory() {
             <span class="audit-row-text">
               <span style="font-weight:500">${esc(s.by_name || '—')}</span>
               <span style="color:var(--text-tertiary)"> · ${esc(label)}${ipPart} · ${esc(duration)}</span>
-              ${takenOver ? `<span class="badge" style="margin-left:6px;background:var(--orange-bg,rgba(210,153,34,.15));color:var(--orange,#d29922);font-size:10px">évincé</span>` : ''}
-              ${isActive ? `<span class="badge badge-green" style="margin-left:6px;font-size:10px">actif</span>` : ''}
+              ${takenOver ? `<span class="badge" style="margin-left:6px;background:var(--orange-bg,rgba(210,153,34,.15));color:var(--orange,#d29922);font-size:10px">${t('poste.remote.evicted')}</span>` : ''}
+              ${isActive ? `<span class="badge badge-green" style="margin-left:6px;font-size:10px">${t('poste.remote.active')}</span>` : ''}
             </span>
             <span class="audit-row-time">${formatRelative(s.started_at)}</span>
             ${logBtn}
@@ -1608,7 +1606,7 @@ async function loadRemoteSessionsHistory() {
         </div>`
     }).join('')
   } catch {
-    el.innerHTML = `<div class="empty-state" style="padding:1rem"><p>Erreur</p></div>`
+    el.innerHTML = `<div class="empty-state" style="padding:1rem"><p>${t('poste.error')}</p></div>`
   }
 }
 
@@ -1617,7 +1615,7 @@ function formatDuration(seconds) {
   if (s < 60)    return `${s}s`
   if (s < 3600)  return `${Math.floor(s/60)}min ${s%60}s`
   if (s < 86400) return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}min`
-  return `${Math.floor(s/86400)}j ${Math.floor((s%86400)/3600)}h`
+  return t('poste.duration.d_h', { d: Math.floor(s/86400), h: Math.floor((s%86400)/3600) })
 }
 
 // Replay du log capturé d'une session remote (SSH ou agent_console).
@@ -1629,17 +1627,17 @@ window.showSessionLog = async function(sessionId, byName, transport, startedAt) 
   const label = transport === 'agent_console' ? 'console' : 'SSH'
   showModal(`
     <div class="modal-title">
-      <i class="ti ti-history"></i> Log session ${esc(label)} — ${esc(byName || '—')}
+      <i class="ti ti-history"></i> ${t('poste.log.title', { label: esc(label), name: esc(byName || '—') })}
       <span style="color:var(--text-tertiary);font-weight:normal;font-size:12px;margin-left:8px">${esc(startedAt || '')}</span>
     </div>
     <div id="session-log-mount" style="height:480px;background:#0d1117;border-radius:6px;margin:8px 0;padding:8px;overflow:hidden">
       <div style="color:var(--text-tertiary);padding:1rem">
-        <i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i> Chargement…
+        <i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i> ${t('common.loading')}…
       </div>
     </div>
     <div id="session-log-footer" style="font-size:11px;color:var(--text-tertiary);min-height:18px"></div>
     <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">Fermer</button>
+      <button class="btn" onclick="closeModal()">${t('btn.close')}</button>
     </div>
   `)
 
@@ -1657,7 +1655,7 @@ window.showSessionLog = async function(sessionId, byName, transport, startedAt) 
     log = await window.api.getRemoteSessionLog(sessionId)
   } catch (err) {
     const mount = document.getElementById('session-log-mount')
-    if (mount) mount.innerHTML = `<div style="color:var(--red);padding:1rem">${esc(err.message || 'Erreur de chargement')}</div>`
+    if (mount) mount.innerHTML = `<div style="color:var(--red);padding:1rem">${esc(err.message || t('poste.load_error'))}</div>`
     return
   }
 
@@ -1667,10 +1665,10 @@ window.showSessionLog = async function(sessionId, byName, transport, startedAt) 
 
   if (!log.available) {
     const msg = log.reason === 'feature-not-deployed'
-      ? "La capture des logs n'est pas encore activée sur ce serveur. Les sessions futures seront enregistrées."
+      ? t('poste.log.not_deployed')
       : log.reason === 'no-log-for-session'
-      ? "Cette session n'a pas de log capturé (probablement antérieure à l'activation de la capture)."
-      : "Log indisponible."
+      ? t('poste.log.no_log')
+      : t('poste.log.unavailable')
     mount.innerHTML = `<div style="color:var(--text-tertiary);padding:1rem">${esc(msg)}</div>`
     return
   }
@@ -1700,7 +1698,7 @@ window.showSessionLog = async function(sessionId, byName, transport, startedAt) 
   if (footer) {
     const sizeKb = (log.size_bytes != null ? log.size_bytes : outBytes) / 1024
     const parts = [`${frames.length} frames`, `${sizeKb.toFixed(1)} KiB`]
-    if (log.truncated) parts.push('⚠ tronqué')
+    if (log.truncated) parts.push(t('poste.log.truncated'))
     footer.textContent = parts.join(' · ')
   }
 }
@@ -1712,7 +1710,7 @@ async function loadExecHistory(offset = 0) {
   try {
     const { rows, total, limit } = await window.api.getDeviceExecutions(_device.id, offset)
     if (!rows.length && offset === 0) {
-      el.innerHTML = `<div class="empty-state" style="padding:1rem"><p>Aucune exécution</p></div>`
+      el.innerHTML = `<div class="empty-state" style="padding:1rem"><p>${t('poste.exec.empty')}</p></div>`
       return
     }
     const rowsHtml = rows.map(e => {
@@ -1740,7 +1738,7 @@ async function loadExecHistory(offset = 0) {
     const moreHtml = hasMore
       ? `<div style="padding:8px 12px;text-align:center">
            <button class="btn btn-sm" onclick="loadExecHistory(${offset + limit})">
-             <i class="ti ti-chevron-down"></i> Voir plus (${total - offset - limit} restantes)
+             <i class="ti ti-chevron-down"></i> ${t('poste.exec.more', { n: total - offset - limit })}
            </button>
          </div>`
       : ''
@@ -1752,17 +1750,17 @@ async function loadExecHistory(offset = 0) {
     }
   } catch {
     const el2 = document.getElementById('exec-history')
-    if (el2) el2.innerHTML = `<div class="empty-state" style="padding:1rem"><p>Erreur</p></div>`
+    if (el2) el2.innerHTML = `<div class="empty-state" style="padding:1rem"><p>${t('poste.error')}</p></div>`
   }
 }
 
 async function openRunScriptModal() {
   let scripts = []
   try { scripts = await window.api.getScripts() } catch {}
-  if (!scripts.length) { showToast('Aucun script disponible', 'error'); return }
+  if (!scripts.length) { showToast(t('poste.run.no_scripts'), 'error'); return }
 
   showModal(`
-    <div class="modal-title"><i class="ti ti-terminal-2"></i> Exécuter un script sur ${esc(_device.hostname)}</div>
+    <div class="modal-title"><i class="ti ti-terminal-2"></i> ${t('poste.run.title', { host: esc(_device.hostname) })}</div>
     <div class="form-row">
       <label class="form-label">Script</label>
       <select class="form-input" id="run-script-select">
@@ -1770,11 +1768,11 @@ async function openRunScriptModal() {
       </select>
     </div>
     <p style="font-size:11px;color:var(--text-tertiary);margin:8px 0 0">
-      <i class="ti ti-info-circle"></i> L'exécution se fera au prochain checkin de l'agent (max 15 min).
+      <i class="ti ti-info-circle"></i> ${t('poste.run.hint')}
     </p>
     <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">Annuler</button>
-      <button class="btn btn-primary" onclick="runScript()"><i class="ti ti-player-play"></i> Mettre en file</button>
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+      <button class="btn btn-primary" onclick="runScript()"><i class="ti ti-player-play"></i> ${t('poste.run.queue')}</button>
     </div>`)
 }
 
@@ -1784,7 +1782,7 @@ async function runScript() {
   try {
     await window.api.runScript(scriptId, _device.id)
     closeModal()
-    showToast('Script mis en file — résultat dans max 15 min', 'success')
+    showToast(t('poste.run.toast_queued'), 'success')
     loadExecHistory()
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
@@ -1793,10 +1791,10 @@ async function runScript() {
 
 async function deleteDevice() {
   if (!_device) return
-  if (!confirm(`Supprimer définitivement "${_device.hostname}" ?\n\nCette action est irréversible.`)) return
+  if (!confirm(t('poste.delete.confirm', { host: _device.hostname }))) return
   try {
     await window.api.deleteDevice(_device.id)
-    showToast('Poste supprimé', 'success')
+    showToast(t('poste.delete.toast'), 'success')
     navigateTo('/postes')
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
@@ -1810,14 +1808,14 @@ async function forceCheckin() {
   try {
     const res = await window.api.forceCheckinDevices([_device.id])
     const parts = []
-    if (res.ok > 0)      parts.push('Checkin déclenché')
-    if (res.skipped > 0) parts.push('Sans IP Netbird — ignoré')
-    if (res.errors?.length) parts.push('Erreur')
+    if (res.ok > 0)      parts.push(t('poste.toast.checkin_ok'))
+    if (res.skipped > 0) parts.push(t('poste.toast.checkin_skipped'))
+    if (res.errors?.length) parts.push(t('poste.error'))
     showToast(parts.join(', '), res.errors?.length ? 'error' : 'success')
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-refresh"></i> Forcer sync' }
+    if (btn) { btn.disabled = false; btn.innerHTML = `<i class="ti ti-refresh"></i> ${t('poste.force_checkin')}` }
   }
 }
 
@@ -1828,13 +1826,13 @@ async function posteSyncIntune() {
   try {
     const res = await window.api.forceSyncDevices([_device.id])
     const parts = []
-    if (res.ok > 0)      parts.push('Sync Intune envoyée')
-    if (res.skipped > 0) parts.push('Sans Intune — ignoré')
-    if (res.errors?.length) parts.push('Erreur')
+    if (res.ok > 0)      parts.push(t('poste.toast.sync_sent'))
+    if (res.skipped > 0) parts.push(t('poste.toast.sync_skipped'))
+    if (res.errors?.length) parts.push(t('poste.error'))
     showToast(parts.join(', '), res.errors?.length ? 'error' : 'success')
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-cloud-download"></i> Sync Intune' }
+    if (btn) { btn.disabled = false; btn.innerHTML = `<i class="ti ti-cloud-download"></i> ${t('poste.sync_intune')}` }
   }
 }
