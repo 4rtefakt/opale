@@ -50,13 +50,13 @@ func MaybeRotateToken(ctx context.Context, cfg *Config, st *State) {
 
 	// On garde une copie de l'ancien token pour rollback en cas d'échec
 	// d'écriture du config.json.
-	oldToken := cfg.Token
-	cfg.Token = newToken
+	oldToken := cfg.GetToken()
+	cfg.SetToken(newToken)
 	if err := cfg.Save(); err != nil {
 		logError("token-rotation-save-fail", err, LogFields{
 			"hint": "ancien token toujours actif côté serveur (grace 24h)",
 		})
-		cfg.Token = oldToken
+		cfg.SetToken(oldToken)
 		return
 	}
 
@@ -76,7 +76,7 @@ func requestNewToken(ctx context.Context, cfg *Config) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.GetToken())
 	req.Header.Set("User-Agent", userAgent())
 
 	resp, err := httpClient.Do(req)

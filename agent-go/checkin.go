@@ -45,8 +45,11 @@ func DoCheckin(ctx context.Context, cfg *Config, st *State) (*CheckinResponse, e
 		return nil, fmt.Errorf("collecte métriques : %w", err)
 	}
 	payload.AgentVersion = AgentVersion
-	payload.DeploymentResults = drainDeploymentResults(st)
-	payload.DetectionResults = drainDetectionResults(st)
+	// Snapshot SANS vider : les résultats ne sont retirés de l'état qu'après
+	// un 200 serveur. Les drainer avant le POST perdait définitivement les
+	// résultats de déploiement au premier échec réseau.
+	payload.DeploymentResults = snapshotDeploymentResults(st)
+	payload.DetectionResults = snapshotDetectionResults(st)
 	payload.Tamper = runtimeTamper // nil = champ absent dans le JSON
 
 	body, err := json.Marshal(payload)
@@ -59,7 +62,7 @@ func DoCheckin(ctx context.Context, cfg *Config, st *State) (*CheckinResponse, e
 	if err != nil {
 		return nil, fmt.Errorf("new request : %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.GetToken())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent())
 
@@ -85,6 +88,10 @@ func DoCheckin(ctx context.Context, cfg *Config, st *State) (*CheckinResponse, e
 	if !out.OK {
 		return nil, errors.New("checkin response ok=false")
 	}
+	// Le serveur a accepté le payload — les résultats remontés peuvent
+	// maintenant être retirés de l'état.
+	st.PendingDeployments = nil
+	st.PendingDetections = nil
 	return &out, nil
 }
 
@@ -114,7 +121,7 @@ func postCommandResult(ctx context.Context, cfg *Config, executionID string, exi
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.GetToken())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent())
 
@@ -129,20 +136,16 @@ func postCommandResult(ctx context.Context, cfg *Config, executionID string, exi
 	return nil
 }
 
-func drainDeploymentResults(st *State) []DeploymentResult {
-	out := st.PendingDeployments
-	if out == nil {
-		out = []DeploymentResult{}
+func snapshotDeploymentResults(st *State) []DeploymentResult {
+	if st.PendingDeployments == nil {
+		return []DeploymentResult{}
 	}
-	st.PendingDeployments = nil
-	return out
+	return st.PendingDeployments
 }
 
-func drainDetectionResults(st *State) []DetectionResult {
-	out := st.PendingDetections
-	if out == nil {
-		out = []DetectionResult{}
+func snapshotDetectionResults(st *State) []DetectionResult {
+	if st.PendingDetections == nil {
+		return []DetectionResult{}
 	}
-	st.PendingDetections = nil
-	return out
+	return st.PendingDetections
 }

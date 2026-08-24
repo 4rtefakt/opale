@@ -2,11 +2,20 @@ package main
 
 import (
 	"context"
+	"math/rand"
 	"time"
 )
 
 // CheckinInterval — fréquence du checkin. 15 min comme inventory.ps1.
 const CheckinInterval = 15 * time.Minute
+
+// jitteredCheckinInterval — CheckinInterval ±10%, tiré une fois par process.
+// Étale les checkins d'une flotte redémarrée en même temps (thundering herd
+// après un restart serveur). Le WS a déjà son propre jitter de reconnexion.
+func jitteredCheckinInterval() time.Duration {
+	span := int64(CheckinInterval) / 5 // fenêtre de 20% centrée sur l'intervalle
+	return CheckinInterval - CheckinInterval/10 + time.Duration(rand.Int63n(span))
+}
 
 // runCheckin — un cycle de checkin complet avec gestion d'erreur, rollback,
 // update et exécution des commandes/déploiements/détections demandés par le
@@ -25,17 +34,18 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 		"device_id": resp.DeviceID,
 		"is_new":    resp.New,
 	})
-	// DoCheckin draine PendingDeployments/Detections en mémoire — on
+	// DoCheckin vide PendingDeployments/Detections après un 200 — on
 	// persiste ici pour que le state.json reflète ce qui a été remonté.
 	st.Save()
 	// Rafraîchissement du cache runtime-config si TTL expiré (no-op
 	// sinon). Garantit que les changements UI Paramètres sont vus au
 	// cycle suivant sans attendre une rotation LAPS (30j).
-	GetRuntimeConfig(httpClient, cfg.URL, cfg.Token)
+	GetRuntimeConfig(httpClient, cfg.URL, cfg.GetToken())
 	// Rotation token éventuelle (toutes les 30j). Non bloquante.
 	MaybeRotateToken(ctx, cfg, st)
 	// Rotation mdp admin local (LAPS-like, opt-in via cfg.LAPSEnabled).
-	MaybeRotateAdminPassword(ctx, cfg, st)
+	// force = demande serveur (mot de passe vu, ou rotation manuelle UI).
+	MaybeRotateAdminPassword(ctx, cfg, st, resp.RotateAdminPassword)
 
 	// Fenêtre de maintenance : si déclarée et qu'on est en dehors, on
 	// défère les actions perturbantes (auto-update + deployments).
@@ -51,7 +61,13 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 				"target_version": resp.AgentUpdate.LatestVersion,
 			})
 		} else {
-			if err := HandleAgentUpdate(c, cfg, st, resp.AgentUpdate); err != nil {
+			// Contexte dédié : le download + verify d'un binaire de 10-20 Mo
+			// ne doit pas partager les 60s du checkin — sur un lien WAN lent,
+			// l'update timeoutait à chaque cycle, indéfiniment.
+			uc, ucancel := context.WithTimeout(ctx, 10*time.Minute)
+			err := HandleAgentUpdate(uc, cfg, st, resp.AgentUpdate)
+			ucancel()
+			if err != nil {
 				logError("update-fail", err, LogFields{"target_version": resp.AgentUpdate.LatestVersion})
 			}
 			// Si l'update a abouti, le service va redémarrer ; on évite de
@@ -118,7 +134,7 @@ func runDebugLoop(ctx context.Context, cfg *Config, st *State) error {
 	// tombe, le polling continue ; si le polling échoue, le WS continue.
 	go RunWSClient(ctx, cfg)
 	runCheckin(ctx, cfg, st)
-	tick := time.NewTicker(CheckinInterval)
+	tick := time.NewTicker(jitteredCheckinInterval())
 	defer tick.Stop()
 	for {
 		select {

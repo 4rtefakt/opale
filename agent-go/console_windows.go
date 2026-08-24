@@ -55,9 +55,15 @@ func wsCapabilitiesPlatform() []string {
 func notifyConsoleOpened(sessionID string) {
 	// Message court : msg.exe a un timeout par défaut et ne supporte pas
 	// les caractères trop exotiques. Format minimaliste.
+	// Borne le slice : un session id serveur < 8 chars paniquerait dans
+	// cette goroutine et tuerait tout le process agent.
+	short := strings.TrimSpace(sessionID)
+	if len(short) > 8 {
+		short = short[:8]
+	}
 	msg := fmt.Sprintf(
 		"[Opale] Un administrateur vient d'ouvrir une console sur ce poste. "+
-			"Session : %s.", strings.TrimSpace(sessionID[:8]))
+			"Session : %s.", short)
 	cmd := exec.Command("msg.exe", "*", "/TIME:10", msg)
 	if err := cmd.Run(); err != nil {
 		logWarn("toast-user-fail", "", LogFields{"error": err.Error()})

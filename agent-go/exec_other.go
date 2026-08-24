@@ -2,14 +2,24 @@
 
 package main
 
-import "context"
+import (
+	"context"
+	"runtime"
+)
 
 // Stubs non-Windows. L'exécution PowerShell n'a de sens que sur Windows ;
 // permet de compiler/tester sur Mac.
 
 func processCommands(ctx context.Context, cfg *Config, cmds []Command) {
-	if len(cmds) > 0 {
-		logf("processCommands : no-op (build non-Windows), %d commandes ignorées", len(cmds))
+	// On POSTe un résultat "non supporté" plutôt que d'avaler silencieusement
+	// la commande : sans ça, la row script_executions restait 'running'
+	// pour toujours côté serveur.
+	for _, cmd := range cmds {
+		logf("processCommands : plateforme non supportée, échec explicite (id=%s)", cmd.ID)
+		if err := postCommandResult(ctx, cfg, cmd.ID, 1,
+			"exécution de scripts non supportée sur cette plateforme (build "+runtime.GOOS+")"); err != nil {
+			logf("processCommands : POST résultat échoué : %v", err)
+		}
 	}
 }
 

@@ -18,9 +18,16 @@ import (
 // La fonction retourne dans tous les cas — c'est au caller de quitter
 // le service proprement (sortir de la boucle Run) après l'appel.
 func restartService() error {
+	// Retry sur le start : un échec transitoire (fichier encore verrouillé,
+	// SCM occupé) laissait sinon le service proprement ARRÊTÉ — et les
+	// recovery actions SCM ne se déclenchent que sur crash, pas sur stop
+	// propre. Deux tentatives espacées de 10s couvrent ces cas.
+	svc := branding.ServiceName
 	args := []string{
 		"/c",
-		"timeout /t 5 /nobreak >nul && sc stop " + branding.ServiceName + " && sc start " + branding.ServiceName,
+		"timeout /t 5 /nobreak >nul && sc stop " + svc +
+			" && timeout /t 3 /nobreak >nul && (sc start " + svc +
+			" || (timeout /t 10 /nobreak >nul & sc start " + svc + "))",
 	}
 	cmd := exec.Command("cmd.exe", args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{

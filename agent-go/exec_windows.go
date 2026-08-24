@@ -22,6 +22,40 @@ import (
 // à 5 min ; on garde la même valeur pour les scripts individuels.
 const scriptTimeout = 5 * time.Minute
 
+// maxScriptOutputBytes — capture bornée : un script qui imprime des Go de
+// texte OOMerait le process SYSTEM avec CombinedOutput() non borné. L'API
+// tronque de toute façon à 100 Ko côté serveur.
+const maxScriptOutputBytes = 1 << 20 // 1 MiB
+
+// cappedBuf — io.Writer qui garde les premiers maxScriptOutputBytes et
+// jette le reste (en comptant ce qui a été jeté).
+type cappedBuf struct {
+	buf     []byte
+	dropped int
+}
+
+func (b *cappedBuf) Write(p []byte) (int, error) {
+	room := maxScriptOutputBytes - len(b.buf)
+	if room > 0 {
+		if len(p) < room {
+			room = len(p)
+		}
+		b.buf = append(b.buf, p[:room]...)
+		b.dropped += len(p) - room
+	} else {
+		b.dropped += len(p)
+	}
+	return len(p), nil
+}
+
+func (b *cappedBuf) String() string {
+	s := string(b.buf)
+	if b.dropped > 0 {
+		s += fmt.Sprintf("\n[sortie tronquée : %d octets supplémentaires ignorés]", b.dropped)
+	}
+	return s
+}
+
 // runPowerShell exécute un script PS en passant par un fichier temporaire,
 // retourne (exitCode, output combiné stdout+stderr).
 func runPowerShell(ctx context.Context, script string) (int, string) {
@@ -47,7 +81,11 @@ func runPowerShell(ctx context.Context, script string) (int, string) {
 		"-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", f.Name())
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
-	out, err := cmd.CombinedOutput()
+	var capped cappedBuf
+	cmd.Stdout = &capped
+	cmd.Stderr = &capped
+	err = cmd.Run()
+	out := capped.String()
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -56,13 +94,13 @@ func runPowerShell(ctx context.Context, script string) (int, string) {
 			exitCode = exitErr.ExitCode()
 		case errors.Is(c.Err(), context.DeadlineExceeded):
 			exitCode = 124 // convention Unix timeout — l'API ne fait que le stocker
-			out = append(out, []byte("\n[timeout après "+scriptTimeout.String()+"]")...)
+			out += "\n[timeout après " + scriptTimeout.String() + "]"
 		default:
 			exitCode = 1
-			out = append(out, []byte("\nerror : "+err.Error())...)
+			out += "\nerror : " + err.Error()
 		}
 	}
-	return exitCode, strings.TrimSpace(string(out))
+	return exitCode, strings.TrimSpace(out)
 }
 
 // findWinget — winget n'est pas dans le PATH en contexte SYSTEM. On le cherche
@@ -114,7 +152,11 @@ func runWingetInstall(ctx context.Context, wingetID string) (int, string) {
 		"--accept-source-agreements",
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.CombinedOutput()
+	var capped cappedBuf
+	cmd.Stdout = &capped
+	cmd.Stderr = &capped
+	err := cmd.Run()
+	out := capped.String()
 
 	exitCode := 0
 	if err != nil {
@@ -132,7 +174,7 @@ func runWingetInstall(ctx context.Context, wingetID string) (int, string) {
 		 0x8A150019: // pas de mise à jour disponible
 		exitCode = 0
 	}
-	return exitCode, filterWingetOutput(string(out))
+	return exitCode, filterWingetOutput(out)
 }
 
 // processCommands exécute les script_executions et POSTe chaque résultat.

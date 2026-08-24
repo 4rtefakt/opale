@@ -107,8 +107,9 @@ func testConfigReadable() testResult {
 	}
 	// On masque le token (premier+dernier 4 caractères seulement).
 	masked := "(vide)"
-	if n := len(cfg.Token); n >= 8 {
-		masked = cfg.Token[:4] + "…" + cfg.Token[n-4:]
+	tok := cfg.GetToken()
+	if n := len(tok); n >= 8 {
+		masked = tok[:4] + "…" + tok[n-4:]
 	}
 	return testResult{Name: "Config valide", OK: true,
 		Message: fmt.Sprintf("url=%s token=%s", cfg.URL, masked)}
@@ -136,7 +137,7 @@ func testServerReachable() testResult {
 	if err != nil {
 		return testResult{Name: "Serveur accessible", Message: err.Error()}
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.GetToken())
 	req.Header.Set("User-Agent", userAgent()+" selftest")
 
 	client := &http.Client{

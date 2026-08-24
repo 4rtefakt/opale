@@ -168,6 +168,9 @@ type CheckinResponse struct {
 	Detect            []Detect           `json:"detect"`
 	AgentUpdate       *AgentUpdate       `json:"agent_update"`
 	MaintenanceWindow *MaintenanceWindow `json:"maintenance_window,omitempty"`
+	// RotateAdminPassword : le serveur demande une rotation LAPS immédiate
+	// (mot de passe vu par un admin, ou rotation manuelle demandée en UI).
+	RotateAdminPassword bool `json:"rotate_admin_password,omitempty"`
 }
 
 type Command struct {

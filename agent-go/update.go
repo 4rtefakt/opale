@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -129,9 +131,22 @@ func atomicReplace() error {
 // CheckRollback est appelé après un checkin. Si on est dans la fenêtre
 // post-update et qu'un seuil d'échecs consécutifs est atteint, on
 // restaure le binaire précédent et on redémarre.
+//
+// Les erreurs purement réseau (serveur injoignable, DNS, timeout de dial)
+// ne comptent PAS : elles n'indiquent rien sur la santé du nouveau binaire,
+// et une panne serveur de 30 min juste après un update de flotte faisait
+// rollback tous les agents en même temps.
 func CheckRollback(st *State, lastCheckinErr error) {
 	// Pas d'update récent à surveiller
 	if st.LastUpdateAt.IsZero() {
+		return
+	}
+
+	if lastCheckinErr != nil && isNetworkError(lastCheckinErr) {
+		logWarn("update-checkin-neterr", "erreur réseau — ne compte pas pour le rollback", LogFields{
+			"version": st.LastUpdateVersion,
+			"error":   lastCheckinErr.Error(),
+		})
 		return
 	}
 
@@ -179,6 +194,18 @@ func CheckRollback(st *State, lastCheckinErr error) {
 	_ = restartService()
 }
 
+// isNetworkError — vrai pour les échecs de transport (dial, DNS, timeout),
+// faux pour les erreurs applicatives (HTTP non-200, parse, collecte) qui,
+// elles, peuvent trahir un binaire cassé.
+func isNetworkError(err error) bool {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return true
+	}
+	var nerr net.Error
+	return errors.As(err, &nerr)
+}
+
 func rollback() error {
 	cur := binaryPath()
 	bak := backupPath()
@@ -206,7 +233,7 @@ func downloadBinary(ctx context.Context, cfg *Config, upd *AgentUpdate) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.GetToken())
 	req.Header.Set("User-Agent", userAgent())
 
 	resp, err := httpClient.Do(req)

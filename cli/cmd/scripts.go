@@ -30,9 +30,15 @@ var scriptsLsCmd = &cobra.Command{
 	RunE:  runScriptsLs,
 }
 
+var scriptsRunWait time.Duration
+
 var scriptsRunCmd = &cobra.Command{
 	Use:   "run <hostname> <script>",
 	Short: "Lance un script sur un poste et attend le résultat",
+	Long: "Met le script en file : l'agent l'exécute à son prochain checkin " +
+		"(toutes les ~15 min). --wait borne l'attente du résultat ; passé ce " +
+		"délai, le script reste en file et le résultat est visible via " +
+		"'scripts history'.",
 	Args:  cobra.ExactArgs(2),
 	RunE:  runScriptsRun,
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -65,6 +71,8 @@ var scriptsHistoryCmd = &cobra.Command{
 }
 
 func init() {
+	scriptsRunCmd.Flags().DurationVar(&scriptsRunWait, "wait", 16*time.Minute,
+		"durée max d'attente du résultat (l'agent exécute au prochain checkin, ~15 min)")
 	scriptsCmd.AddCommand(scriptsLsCmd, scriptsRunCmd, scriptsExecCmd, scriptsHistoryCmd)
 }
 
@@ -122,10 +130,11 @@ func runScriptsRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	output.Infof("Script envoyé (exec %s…), en attente du résultat…", exec.ID[:8])
+	output.Infof("Script mis en file (exec %s…) — l'agent l'exécutera à son prochain checkin (≤ ~15 min).", exec.ID[:8])
+	output.Infof("Attente du résultat (max %s, Ctrl+C pour rendre la main — le script restera en file)…", scriptsRunWait)
 
-	// Poll jusqu'à completion (max 3 min)
-	deadline := time.Now().Add(3 * time.Minute)
+	// Poll jusqu'à completion (borné par --wait)
+	deadline := time.Now().Add(scriptsRunWait)
 	for time.Now().Before(deadline) {
 		time.Sleep(3 * time.Second)
 
@@ -157,7 +166,10 @@ func runScriptsRun(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("timeout : résultat non reçu après 3 min (exec %s)", exec.ID[:8])
+	return fmt.Errorf(
+		"résultat non reçu après %s (exec %s) — le script reste en file et sera "+
+			"exécuté au prochain checkin de l'agent ; consultez 'opale scripts history %s'",
+		scriptsRunWait, exec.ID[:8], args[0])
 }
 
 func runScriptsExec(cmd *cobra.Command, args []string) error {

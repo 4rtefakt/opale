@@ -151,7 +151,7 @@ func runWSSession(ctx context.Context, cfg *Config) error {
 	}
 
 	hdr := http.Header{}
-	hdr.Set("Authorization", "Bearer "+cfg.Token)
+	hdr.Set("Authorization", "Bearer "+cfg.GetToken())
 	hdr.Set("User-Agent", userAgent())
 
 	dialCtx, cancel := context.WithTimeout(ctx, wsDialTimeout)

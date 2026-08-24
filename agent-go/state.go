@@ -65,7 +65,16 @@ func (s *State) Save() {
 		logf("state marshal err : %v", err)
 		return
 	}
-	if err := os.WriteFile(statePath(), raw, 0o600); err != nil {
+	// Écriture atomique (temp + rename, comme Config.Save) : une coupure
+	// de courant mid-write ne doit pas corrompre le state — il porte le
+	// baseline tamper, les horloges de rotation et les résultats en attente.
+	tmp := statePath() + ".new"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		logf("state write err : %v", err)
+		return
+	}
+	if err := os.Rename(tmp, statePath()); err != nil {
+		_ = os.Remove(tmp)
+		logf("state rename err : %v", err)
 	}
 }

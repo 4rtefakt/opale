@@ -42,7 +42,7 @@ func (s *agentService) Execute(args []string, r <-chan svc.ChangeRequest, status
 	// Premier checkin immédiat
 	runCheckin(ctx, cfg, st)
 
-	tick := time.NewTicker(CheckinInterval)
+	tick := time.NewTicker(jitteredCheckinInterval())
 	defer tick.Stop()
 
 	for {

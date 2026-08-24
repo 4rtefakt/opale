@@ -67,6 +67,14 @@ func main() {
 
 	logf("%s %s starting (pid=%d, args=%v)", branding.BinName, AgentVersion, os.Getpid(), os.Args[1:])
 
+	// Pinning fail-open par design (pins.txt vide = désactivé) : on le dit
+	// fort au démarrage pour qu'un opérateur qui croit avoir du pinning ne
+	// le découvre pas pendant un incident.
+	if len(PinsList()) == 0 {
+		logWarn("pinning-disabled", "aucun pin SPKI embarqué — validation CA standard uniquement "+
+			"(cf. agent-go/pinning/pins.txt pour en ajouter au build)", nil)
+	}
+
 	// Détecter si on tourne sous SCM (sans flag --debug explicite)
 	isSvc, err := IsWindowsService()
 	if err != nil {

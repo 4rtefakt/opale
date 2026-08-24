@@ -57,13 +57,13 @@ func encryptAdminPassword(plain string) ([]byte, error) {
 }
 
 // MaybeRotateAdminPassword — appelé après un checkin réussi.
-// Décide s'il faut rotater (intervalle + force flag) puis le fait.
+// Décide s'il faut rotater (intervalle ou force flag serveur) puis le fait.
 //
-// Force-flag : transmis via la réponse checkin, à ajouter dans v3.0.
-// Pour le moment, seul l'intervalle déclenche.
+// force : posé par la réponse checkin (rotate_admin_password) quand un
+// admin a vu le mot de passe (rotate-after-view) ou demandé une rotation.
 //
 // Échec de la rotation : non bloquant, retry au prochain cycle.
-func MaybeRotateAdminPassword(ctx context.Context, cfg *Config, st *State) {
+func MaybeRotateAdminPassword(ctx context.Context, cfg *Config, st *State, force bool) {
 	if !cfg.LAPSEnabled {
 		return // explicitement désactivé
 	}
@@ -71,7 +71,35 @@ func MaybeRotateAdminPassword(ctx context.Context, cfg *Config, st *State) {
 		logWarn("laps-no-pubkey", "LAPS activé mais clé publique absente du binaire", nil)
 		return
 	}
-	if !st.LastAdminRotation.IsZero() && time.Since(st.LastAdminRotation) < LAPSRotationInterval {
+
+	// Un ciphertext en attente (POST échoué après un set local) passe avant
+	// tout : le mot de passe local actuel n'est pas escrowé côté serveur.
+	// Tant qu'il n'est pas flushé, on ne re-rotate pas — re-changer le mot
+	// de passe toutes les 15 min pendant une panne n'apporte rien.
+	if st.PendingAdminCred != nil {
+		enc, err := base64.StdEncoding.DecodeString(st.PendingAdminCred.EncB64)
+		if err != nil {
+			logError("laps-stash-corrompu", err, nil)
+			st.PendingAdminCred = nil
+			st.Save()
+			// stash inutilisable → on retombe sur une rotation normale ci-dessous
+		} else if err := postAdminCredential(ctx, cfg, st.PendingAdminCred.Username, enc); err != nil {
+			logWarn("laps-stash-flush-fail", "retry au prochain checkin", LogFields{"error": err.Error()})
+			return
+		} else {
+			// Le serveur connaît désormais le mot de passe posé au moment du
+			// stash — l'horloge de rotation repart de là.
+			st.LastAdminRotation = st.PendingAdminCred.StashedAt
+			st.PendingAdminCred = nil
+			st.Save()
+			logInfo("laps-stash-flushed", "ciphertext en attente remonté", nil)
+			if !force {
+				return
+			}
+		}
+	}
+
+	if !force && !st.LastAdminRotation.IsZero() && time.Since(st.LastAdminRotation) < LAPSRotationInterval {
 		return
 	}
 
@@ -115,8 +143,9 @@ func MaybeRotateAdminPassword(ctx context.Context, cfg *Config, st *State) {
 }
 
 // stashPendingAdminCred — best-effort : on garde le ciphertext en state
-// pour retry. Si même ça échoue, le mdp est perdu → admin doit redéclencher
-// une rotation depuis l'UI (qui notifie l'agent).
+// pour retry (drainé en tête de MaybeRotateAdminPassword). Si même ça
+// échoue, le mdp est perdu → admin doit redéclencher une rotation depuis
+// l'UI (qui pose le flag rotate_admin_password).
 func stashPendingAdminCred(st *State, username string, encrypted []byte) {
 	st.PendingAdminCred = &PendingAdminCred{
 		Username:  username,
@@ -141,7 +170,7 @@ func postAdminCredential(ctx context.Context, cfg *Config, username string, encr
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.GetToken())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent())
 

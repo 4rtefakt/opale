@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
@@ -33,6 +34,16 @@ func Connect(serverURL, wsPath string) error {
 	}
 	defer conn.Close()
 
+	// gorilla/websocket interdit les writers concurrents : la pompe stdin et
+	// la pompe resize écrivent toutes deux sur conn — un resize pendant une
+	// frappe corrompait des frames. writeMu sérialise tous les writes.
+	var writeMu sync.Mutex
+	writeMsg := func(payload []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteMessage(websocket.TextMessage, payload)
+	}
+
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		return fmt.Errorf("raw terminal : %w", err)
@@ -40,7 +51,7 @@ func Connect(serverURL, wsPath string) error {
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
 	// Initial size
-	sendResize(conn)
+	sendResize(writeMsg)
 
 	// Resize notifications (SIGWINCH on Unix; no-op on Windows — see session_*.go)
 	resizeCh := newResizeChan()
@@ -101,7 +112,7 @@ func Connect(serverURL, wsPath string) error {
 			}
 			b64 := base64.StdEncoding.EncodeToString(buf[:n])
 			msg, _ := json.Marshal(wsMsg{Type: "input", Data: b64})
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			if err := writeMsg(msg); err != nil {
 				done <- nil
 				return
 			}
@@ -111,14 +122,14 @@ func Connect(serverURL, wsPath string) error {
 	// resize
 	go func() {
 		for range resizeCh {
-			sendResize(conn)
+			sendResize(writeMsg)
 		}
 	}()
 
 	return <-done
 }
 
-func sendResize(conn *websocket.Conn) {
+func sendResize(writeMsg func([]byte) error) {
 	cols, rows, err := term.GetSize(int(os.Stdin.Fd()))
 	if err != nil {
 		return
@@ -127,7 +138,7 @@ func sendResize(conn *websocket.Conn) {
 		Type: "resize",
 		Data: map[string]int{"cols": cols, "rows": rows},
 	})
-	conn.WriteMessage(websocket.TextMessage, msg)
+	_ = writeMsg(msg)
 }
 
 func toWS(s string) string {
