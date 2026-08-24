@@ -63,7 +63,10 @@ export default async function settingsRoute(fastify) {
   // - actions_in      : CSV d'actions autorisées (catégorie côté UI)
   // - actions_not_in  : CSV d'actions exclues (ex: masquer les events bruyants)
   fastify.get('/audit', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
-    const { action, actions_in, actions_not_in, level, limit = 100, offset = 0 } = req.query
+    const { action, actions_in, actions_not_in, level, limit, offset } = req.query
+    // Clamp : sans borne, ?limit=10000000 dumpait la table entière.
+    const lim = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 500)
+    const off = Math.max(parseInt(offset, 10) || 0, 0)
     const conds  = []
     const params = []
     let i = 1
@@ -80,7 +83,7 @@ export default async function settingsRoute(fastify) {
     if (level)  { conds.push(`al.details->>'level' = $${i++}`); params.push(level) }
 
     const where = conds.length ? 'WHERE ' + conds.join(' AND ') : ''
-    params.push(parseInt(limit), parseInt(offset))
+    params.push(lim, off)
 
     const [rows, total] = await Promise.all([
       fastify.db.query(
@@ -189,16 +192,34 @@ export default async function settingsRoute(fastify) {
 
     let brandingTouched = false
     let userFilterTouched = false
+    const changed = []
     for (const key of allowed) {
       if (req.body?.[key] !== undefined) {
+        const { rows: prev } = await fastify.db.query(
+          'SELECT value FROM settings WHERE key = $1', [key]
+        )
+        const newValue = String(req.body[key])
         await fastify.db.query(`
           INSERT INTO settings (key, value, updated_at, updated_by)
           VALUES ($1, $2, now(), $3)
           ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now(), updated_by = $3
-        `, [key, String(req.body[key]), displayName])
+        `, [key, newValue, displayName])
+        if ((prev[0]?.value ?? null) !== newValue) {
+          changed.push({ key, old: prev[0]?.value ?? null, new: newValue })
+        }
         if (key.startsWith('org.') || key.startsWith('app.')) brandingTouched = true
         if (key.startsWith('users.filter_')) userFilterTouched = true
       }
+    }
+    // Journal : des clés sensibles passent par ici (seuils d'alerte, compte
+    // LAPS recovery, clé SSH) — chaque changement effectif est tracé.
+    if (changed.length) {
+      await logAudit(fastify.db, fastify.log, {
+        action:  'settings_updated',
+        byUser:  displayName,
+        target:  changed.map(c => c.key).join(','),
+        details: { changed },
+      })
     }
     if (brandingTouched) {
       fastify.invalidateBrandingCache()
@@ -263,15 +284,22 @@ export default async function settingsRoute(fastify) {
        RETURNING id, label, public_key, created_at, created_by`,
       [label.trim(), public_key.trim(), displayName]
     )
+    await logAudit(fastify.db, fastify.log, {
+      action: 'ssh_key_added', byUser: displayName, target: label.trim(),
+    })
     reply.code(201).send(rows[0])
   })
 
   // DELETE /api/settings/ssh-keys/:id — supprimer une clé SSH
   fastify.delete('/ssh-keys/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+    const { displayName } = fastify.getUserIdentity(req)
     const { rows } = await fastify.db.query(
       `DELETE FROM ssh_keys WHERE id = $1 RETURNING label`, [req.params.id]
     )
     if (!rows.length) return reply.code(404).send({ error: 'Clé introuvable' })
+    await logAudit(fastify.db, fastify.log, {
+      action: 'ssh_key_deleted', byUser: displayName, target: rows[0].label,
+    })
     reply.code(204).send()
   })
 

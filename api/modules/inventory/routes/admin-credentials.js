@@ -30,8 +30,9 @@ export default async function adminCredentialsRoute(fastify) {
   // GET /api/admin-credentials/:device_id — récupère + déchiffre le password.
   // Exige authentification + droit admin. Chaque accès est audit logé.
   // L'API retourne le password EN CLAIR dans la réponse JSON ; le client
-  // doit l'afficher en lecture-une-fois et idéalement déclencher une
-  // rotation immédiate après usage (TODO frontend).
+  // l'affiche en lecture-une-fois. Propriété LAPS : tout mot de passe vu est
+  // considéré brûlé — la vue flag rotation_requested_at, consommé par le
+  // prochain checkin agent (rotate_admin_password dans la réponse).
   fastify.get('/:device_id', {
     preHandler: [fastify.authenticate, fastify.requireAdmin],
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } }
@@ -64,7 +65,9 @@ export default async function adminCredentialsRoute(fastify) {
     const user = fastify.getUserIdentity(req)
     await fastify.db.query(`
       UPDATE device_admin_credentials
-        SET last_viewed_at = now(), last_viewed_by = $1
+        SET last_viewed_at        = now(),
+            last_viewed_by        = $1,
+            rotation_requested_at = COALESCE(rotation_requested_at, now())
       WHERE device_id = $2
     `, [user?.entraId || null, device_id])
     await logAudit(fastify.db, fastify.log, {
@@ -85,9 +88,10 @@ export default async function adminCredentialsRoute(fastify) {
     })
   })
 
-  // POST /api/admin-credentials/:device_id/rotate — flag une rotation
-  // au prochain checkin. (Le checkin agent ne consomme pas encore ce flag —
-  // à câbler dans une pass suivante avec le frontend.)
+  // POST /api/admin-credentials/:device_id/rotate — flag une rotation,
+  // consommée au prochain checkin (rotate_admin_password dans la réponse ;
+  // l'agent re-rotate immédiatement et le POST /agent/admin-credential
+  // remet rotation_requested_at à NULL).
   fastify.post('/:device_id/rotate', {
     preHandler: [fastify.authenticate, fastify.requireAdmin]
   }, async (req, reply) => {

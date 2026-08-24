@@ -142,10 +142,20 @@ export async function pollOnce(db, log, injection = {}) {
 export function startMailPollWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
   if (_timer) return  // idempotent
 
-  const run = () =>
-    pollOnce(db, log).catch(err =>
+  // Garde de réentrance : un tick plus lent que l'intervalle (Graph qui
+  // rame) ne doit pas se superposer au suivant.
+  let running = false
+  const run = async () => {
+    if (running) return
+    running = true
+    try {
+      await pollOnce(db, log)
+    } catch (err) {
       log?.warn({ err: err.message }, 'email-bridge: tick a planté')
-    )
+    } finally {
+      running = false
+    }
+  }
 
   setTimeout(run, 5_000)
   _timer = setInterval(run, intervalMs)

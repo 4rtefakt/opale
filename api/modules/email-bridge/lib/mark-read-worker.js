@@ -88,10 +88,20 @@ export async function flushMarkRead(db, log, { markImpl = markMessageAsRead } = 
 
 export function startMailMarkReadWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
   if (_timer) return
-  const run = () =>
-    flushMarkRead(db, log).catch(err =>
+  // Garde de réentrance : un tick plus lent que l'intervalle (Graph qui
+  // rame) ne doit pas se superposer au suivant.
+  let running = false
+  const run = async () => {
+    if (running) return
+    running = true
+    try {
+      await flushMarkRead(db, log)
+    } catch (err) {
       log?.warn({ err: err.message }, 'mark-read: tick a planté')
-    )
+    } finally {
+      running = false
+    }
+  }
   setTimeout(run, 9_000)  // décalé de l'outbound (7s) et de l'inbound (5s)
   _timer = setInterval(run, intervalMs)
   log?.info({ intervalMs }, 'email-bridge: worker mark-read démarré')

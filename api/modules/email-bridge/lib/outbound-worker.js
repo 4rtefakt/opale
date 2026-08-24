@@ -260,10 +260,20 @@ export async function flushOutbox(db, log, { sendImpl, sendReplyImpl } = {}) {
 
 export function startMailOutboundWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
   if (_timer) return
-  const run = () =>
-    flushOutbox(db, log).catch(err =>
+  // Garde de réentrance : un tick plus lent que l'intervalle (Graph qui
+  // rame) ne doit pas se superposer au suivant.
+  let running = false
+  const run = async () => {
+    if (running) return
+    running = true
+    try {
+      await flushOutbox(db, log)
+    } catch (err) {
       log?.warn({ err: err.message }, 'outbound: tick a planté')
-    )
+    } finally {
+      running = false
+    }
+  }
   setTimeout(run, 7_000)  // décalé du polling inbound (5s) pour étaler la charge
   _timer = setInterval(run, intervalMs)
   log?.info({ intervalMs }, 'email-bridge: worker outbound démarré')

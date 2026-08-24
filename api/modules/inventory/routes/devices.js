@@ -7,16 +7,27 @@ async function getThresholds(fastify) {
     `SELECT key, value FROM settings WHERE key IN ('disk_warn_pct', 'disk_critical_pct')`
   )
   const map = Object.fromEntries(res.rows.map(r => [r.key, parseInt(r.value, 10)]))
+  // Number.isFinite écarte les NaN d'un setting corrompu — ces valeurs sont
+  // interpolées dans du SQL plus bas, un NaN produirait une requête invalide.
   return {
-    warn:     map.disk_warn_pct     ?? 80,
-    critical: map.disk_critical_pct ?? 90,
+    warn:     Number.isFinite(map.disk_warn_pct)     ? map.disk_warn_pct     : 80,
+    critical: Number.isFinite(map.disk_critical_pct) ? map.disk_critical_pct : 90,
   }
+}
+
+// Clamp de pagination : parseInt(NaN) ou limit=10000000 ne doivent jamais
+// atteindre le SQL.
+function clampPage(limit, offset, { defLimit = 100, maxLimit = 500 } = {}) {
+  const lim = Math.min(Math.max(parseInt(limit, 10) || defLimit, 1), maxLimit)
+  const off = Math.max(parseInt(offset, 10) || 0, 0)
+  return { lim, off }
 }
 
 export default async function devicesRoute(fastify) {
   // Liste des postes
   fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
-    const { status, search, limit = 100, offset = 0 } = req.query
+    const { status, search, limit, offset } = req.query
+    const { lim, off } = clampPage(limit, offset)
     const thr = await getThresholds(fastify)
 
     const conditions = []
@@ -66,15 +77,15 @@ export default async function devicesRoute(fastify) {
          END,
          d.hostname
        LIMIT $${i} OFFSET $${i + 1}`,
-      [...params, parseInt(limit), parseInt(offset)]
+      [...params, lim, off]
     )
 
     const total = parseInt(result.rows[0]?.total_count ?? 0)
     return {
       devices: result.rows.map(row => formatDevice(row, thr)),
       total,
-      limit: parseInt(limit),
-      offset: parseInt(offset),
+      limit: lim,
+      offset: off,
       // Permet à l'UI d'afficher les seuils settings (ex: "Disque critique
       // (≥95%)") et de colorer/filtrer côté client en accord avec la même
       // logique server-side (cf. computeStatus → device.status).

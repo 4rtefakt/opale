@@ -247,10 +247,51 @@ export default async function agentRoute(fastify) {
       // Trouver ou créer le device par hostname
       let deviceId
       const { rows: dev } = await client.query(
-        'SELECT id FROM devices WHERE hostname = $1', [hostname]
+        'SELECT id, serial FROM devices WHERE hostname = $1', [hostname]
       )
       if (dev[0]) {
         deviceId = dev[0].id
+
+        // Anti-impersonation : un bootstrap token (largement distribué via
+        // Intune) ne doit pas pouvoir revendiquer un device déjà enrôlé —
+        // sinon n'importe quel porteur du bootstrap récupère les scripts
+        // en attente du device et peut poster de faux résultats.
+        // Réinstallation légitime : autorisée si le serial correspond
+        // (les anciens tokens du device sont alors révoqués + audit).
+        const { rows: activeTok } = await client.query(
+          `SELECT id FROM agent_tokens
+             WHERE device_id = $1 AND is_bootstrap = FALSE
+               AND revoked_at IS NULL
+               AND (expires_at IS NULL OR expires_at > now())`,
+          [deviceId]
+        )
+        if (activeTok.length) {
+          const serialMatches = serial && dev[0].serial && serial === dev[0].serial
+          if (!serialMatches) {
+            await client.query('ROLLBACK')
+            logAudit(fastify.db, fastify.log, {
+              action:  'agent_bootstrap_exchange_refused',
+              byUser:  hostname,
+              target:  deviceId,
+              details: { reason: 'device déjà enrôlé, serial absent ou différent', serial },
+            })
+            return reply.code(409).send({
+              error: 'Device déjà enrôlé avec un token actif. Réinstallation : ' +
+                     'fournir le serial de la machine, ou révoquer ses tokens côté serveur.'
+            })
+          }
+          await client.query(
+            `UPDATE agent_tokens SET revoked_at = now()
+              WHERE device_id = $1 AND is_bootstrap = FALSE AND revoked_at IS NULL`,
+            [deviceId]
+          )
+          logAudit(fastify.db, fastify.log, {
+            action:  'agent_bootstrap_rebind',
+            byUser:  hostname,
+            target:  deviceId,
+            details: { reason: 'réinstallation (serial identique) — anciens tokens révoqués', serial },
+          })
+        }
       } else {
         const { rows: nd } = await client.query(
           `INSERT INTO devices (hostname, serial, source, last_seen)
@@ -496,11 +537,16 @@ export default async function agentRoute(fastify) {
   })
 
   // POST /api/agent/setup-log — logs des scripts Intune (openssh, agent install…)
-  // Pas d'auth : tourne en SYSTEM avant tout enrôlement. Rate-limit large pour
-  // ne pas pénaliser un déploiement de masse Intune.
+  // Auth : n'importe quel token valide (bootstrap inclus — les scripts
+  // d'install l'ont déjà en main). Sans auth, ce endpoint permettait à
+  // quiconque sur le réseau d'injecter des entrées arbitraires dans
+  // audit_logs et d'empoisonner la piste de forensic.
   fastify.post('/setup-log', {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } }
   }, async (req, reply) => {
+    const token = await authToken(fastify, req)
+    if (!token) return reply.code(401).send({ error: 'Token invalide ou révoqué' })
+
     const { hostname, script, level = 'info', log } = req.body || {}
     if (!hostname || !log) return reply.code(400).send({ error: 'hostname et log requis' })
 
@@ -597,152 +643,179 @@ export default async function agentRoute(fastify) {
       return reply.code(403).send({ error: 'Token lié à un autre device' })
     }
 
+    // Hostname inconnu avec un token déjà lié = renommage de la machine,
+    // pas une nouvelle machine. Sans ce rattachement, le checkin créait un
+    // device fantôme et re-pointait silencieusement le token dessus,
+    // orphelinant le device d'origine (historique, scripts, LAPS).
+    if (token.device_id && !lookup.rows.length) {
+      lookup = await fastify.db.query(
+        `SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE id = $1`,
+        [token.device_id]
+      )
+    }
+
     const mainDisk = disks.find(d => d.letter === 'C:') || disks[0]
 
     const healthJSON = health && typeof health === 'object' ? JSON.stringify(health) : null
     const sysInfoJSON = system_info && typeof system_info === 'object' ? JSON.stringify(system_info) : null
 
+    // Ingestion inventaire dans une transaction unique : sans elle, un échec
+    // en cours de checkin laissait un état partiel (ex : interfaces réseau
+    // supprimées mais jamais réinsérées). Les cleanups fire-and-forget
+    // (.catch) restent sur le pool, hors transaction.
+    const txn = await fastify.db.connect()
     let deviceId
-    if (lookup.rows.length) {
-      deviceId = lookup.rows[0].id
-      await fastify.db.query(`
-        UPDATE devices SET
-          hostname          = $1,
-          os                = COALESCE($2, os),
-          os_build          = COALESCE($3, os_build),
-          ram_gb            = COALESCE($4, ram_gb),
-          disk_used_pct     = COALESCE($5, disk_used_pct),
-          disk_total_gb     = COALESCE($6, disk_total_gb),
-          ip_netbird        = COALESCE($7, ip_netbird),
-          agent_version     = COALESCE($8, agent_version),
-          health_signals    = COALESCE($10::jsonb, health_signals),
-          health_updated_at = CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE health_updated_at END,
-          system_info       = COALESCE($11::jsonb, system_info),
-          last_seen         = now(),
-          updated_at        = now()
-        WHERE id = $9
-      `, [
-        hostname,
-        os            || null,
-        os_build      || null,
-        ram_gb        || null,
-        mainDisk?.used_pct  ?? null,
-        mainDisk?.size_gb   ?? null,
-        ip_netbird    || null,
-        agent_version || null,
-        deviceId,
-        healthJSON,
-        sysInfoJSON,
-      ])
-    } else {
-      const res = await fastify.db.query(`
-        INSERT INTO devices (
-          hostname, serial, os, os_build, ram_gb,
-          disk_used_pct, disk_total_gb, ip_netbird,
-          agent_version, health_signals,
-          health_updated_at, system_info,
-          source, last_seen, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
-          CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE NULL END,
-          $11::jsonb,
-          'agent',now(),now())
-        RETURNING id
-      `, [
-        hostname,
-        serial        || null,
-        os            || null,
-        os_build      || null,
-        ram_gb        || null,
-        mainDisk?.used_pct ?? null,
-        mainDisk?.size_gb  ?? null,
-        ip_netbird    || null,
-        agent_version || null,
-        healthJSON,
-        sysInfoJSON,
-      ])
-      deviceId = res.rows[0].id
-    }
-
-    // ── Upsert partitions ───────────────────────────────────────────────────
-    for (const disk of disks) {
-      if (!disk.letter) continue
-      await fastify.db.query(`
-        INSERT INTO disks (device_id, letter, label, size_gb, used_pct, updated_at)
-        VALUES ($1, $2, $3, $4, $5, now())
-        ON CONFLICT (device_id, letter) DO UPDATE SET
-          label      = COALESCE(EXCLUDED.label, disks.label),
-          size_gb    = EXCLUDED.size_gb,
-          used_pct   = EXCLUDED.used_pct,
-          updated_at = now()
-      `, [deviceId, disk.letter, disk.label || null, disk.size_gb || null, disk.used_pct ?? null])
-    }
-
-    // ── Interfaces réseau (refresh complet) ────────────────────────────────
-    if (network.length > 0) {
-      await fastify.db.query(`DELETE FROM network_interfaces WHERE device_id = $1`, [deviceId])
-      for (const iface of network) {
-        if (!iface.mac) continue
-        await fastify.db.query(`
-          INSERT INTO network_interfaces (device_id, mac, ip, adapter, type)
-          VALUES ($1, $2, $3, $4, $5)
-        `, [deviceId, iface.mac, iface.ip || null, iface.adapter || null, iface.type || 'eth'])
+    try {
+      await txn.query('BEGIN')
+      if (lookup.rows.length) {
+        deviceId = lookup.rows[0].id
+        await txn.query(`
+          UPDATE devices SET
+            hostname          = $1,
+            os                = COALESCE($2, os),
+            os_build          = COALESCE($3, os_build),
+            ram_gb            = COALESCE($4, ram_gb),
+            disk_used_pct     = COALESCE($5, disk_used_pct),
+            disk_total_gb     = COALESCE($6, disk_total_gb),
+            ip_netbird        = COALESCE($7, ip_netbird),
+            agent_version     = COALESCE($8, agent_version),
+            health_signals    = COALESCE($10::jsonb, health_signals),
+            health_updated_at = CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE health_updated_at END,
+            system_info       = COALESCE($11::jsonb, system_info),
+            last_seen         = now(),
+            updated_at        = now()
+          WHERE id = $9
+        `, [
+          hostname,
+          os            || null,
+          os_build      || null,
+          ram_gb        || null,
+          mainDisk?.used_pct  ?? null,
+          mainDisk?.size_gb   ?? null,
+          ip_netbird    || null,
+          agent_version || null,
+          deviceId,
+          healthJSON,
+          sysInfoJSON,
+        ])
+      } else {
+        const res = await txn.query(`
+          INSERT INTO devices (
+            hostname, serial, os, os_build, ram_gb,
+            disk_used_pct, disk_total_gb, ip_netbird,
+            agent_version, health_signals,
+            health_updated_at, system_info,
+            source, last_seen, updated_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
+            CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE NULL END,
+            $11::jsonb,
+            'agent',now(),now())
+          RETURNING id
+        `, [
+          hostname,
+          serial        || null,
+          os            || null,
+          os_build      || null,
+          ram_gb        || null,
+          mainDisk?.used_pct ?? null,
+          mainDisk?.size_gb  ?? null,
+          ip_netbird    || null,
+          agent_version || null,
+          healthJSON,
+          sysInfoJSON,
+        ])
+        deviceId = res.rows[0].id
       }
-    }
 
-    // ── Bande passante ──────────────────────────────────────────────────────
-    for (const bw of bandwidth) {
-      if (!bw.adapter) continue
-      await fastify.db.query(`
-        INSERT INTO bandwidth_stats (device_id, adapter, bytes_sent, bytes_recv)
-        VALUES ($1, $2, $3, $4)
-      `, [deviceId, bw.adapter, bw.bytes_sent ?? null, bw.bytes_recv ?? null])
-    }
-    // Nettoyage des samples > 7 jours (non-bloquant)
-    fastify.db.query(`DELETE FROM bandwidth_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
+      // ── Upsert partitions ───────────────────────────────────────────────────
+      for (const disk of disks) {
+        if (!disk.letter) continue
+        await txn.query(`
+          INSERT INTO disks (device_id, letter, label, size_gb, used_pct, updated_at)
+          VALUES ($1, $2, $3, $4, $5, now())
+          ON CONFLICT (device_id, letter) DO UPDATE SET
+            label      = COALESCE(EXCLUDED.label, disks.label),
+            size_gb    = EXCLUDED.size_gb,
+            used_pct   = EXCLUDED.used_pct,
+            updated_at = now()
+        `, [deviceId, disk.letter, disk.label || null, disk.size_gb || null, disk.used_pct ?? null])
+      }
 
-    // ── Ping stats ──────────────────────────────────────────────────────────
-    const pings = Array.isArray(ping) ? ping : (ping ? [ping] : [])
-    for (const p of pings) {
-      if (!p?.host) continue
-      await fastify.db.query(`
-        INSERT INTO ping_stats (device_id, host, latency_ms, packet_loss_pct)
-        VALUES ($1, $2, $3, $4)
-      `, [deviceId, p.host, p.latency_ms ?? null, p.packet_loss_pct ?? null])
-    }
-    if (pings.length) {
-      fastify.db.query(`DELETE FROM ping_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
-    }
+      // ── Interfaces réseau (refresh complet) ────────────────────────────────
+      if (network.length > 0) {
+        await txn.query(`DELETE FROM network_interfaces WHERE device_id = $1`, [deviceId])
+        for (const iface of network) {
+          if (!iface.mac) continue
+          await txn.query(`
+            INSERT INTO network_interfaces (device_id, mac, ip, adapter, type)
+            VALUES ($1, $2, $3, $4, $5)
+          `, [deviceId, iface.mac, iface.ip || null, iface.adapter || null, iface.type || 'eth'])
+        }
+      }
 
-    // ── System perf (RAM/CPU/uptime/batterie) ──────────────────────────────
-    if (system_perf && typeof system_perf === 'object') {
-      const sp = system_perf
-      await fastify.db.query(`
-        INSERT INTO system_perf_stats (
-          device_id, ram_used_gb, ram_total_gb, ram_used_pct,
-          cpu_avg_pct, cpu_max_pct, uptime_seconds,
-          battery_pct, battery_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      `, [
-        deviceId,
-        sp.ram_used_gb    ?? null,
-        sp.ram_total_gb   ?? null,
-        sp.ram_used_pct   ?? null,
-        sp.cpu_avg_pct    ?? null,
-        sp.cpu_max_pct    ?? null,
-        sp.uptime_seconds ?? null,
-        sp.battery_pct    ?? null,
-        sp.battery_status ?? null,
-      ])
-      // Cleanup non-bloquant
-      fastify.db.query(
-        `DELETE FROM system_perf_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`,
-        [deviceId]
-      ).catch(() => {})
+      // ── Bande passante ──────────────────────────────────────────────────────
+      for (const bw of bandwidth) {
+        if (!bw.adapter) continue
+        await txn.query(`
+          INSERT INTO bandwidth_stats (device_id, adapter, bytes_sent, bytes_recv)
+          VALUES ($1, $2, $3, $4)
+        `, [deviceId, bw.adapter, bw.bytes_sent ?? null, bw.bytes_recv ?? null])
+      }
+      // Nettoyage des samples > 7 jours (non-bloquant)
+      fastify.db.query(`DELETE FROM bandwidth_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
+
+      // ── Ping stats ──────────────────────────────────────────────────────────
+      const pings = Array.isArray(ping) ? ping : (ping ? [ping] : [])
+      for (const p of pings) {
+        if (!p?.host) continue
+        await txn.query(`
+          INSERT INTO ping_stats (device_id, host, latency_ms, packet_loss_pct)
+          VALUES ($1, $2, $3, $4)
+        `, [deviceId, p.host, p.latency_ms ?? null, p.packet_loss_pct ?? null])
+      }
+      if (pings.length) {
+        fastify.db.query(`DELETE FROM ping_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
+      }
+
+      // ── System perf (RAM/CPU/uptime/batterie) ──────────────────────────────
+      if (system_perf && typeof system_perf === 'object') {
+        const sp = system_perf
+        await txn.query(`
+          INSERT INTO system_perf_stats (
+            device_id, ram_used_gb, ram_total_gb, ram_used_pct,
+            cpu_avg_pct, cpu_max_pct, uptime_seconds,
+            battery_pct, battery_status
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `, [
+          deviceId,
+          sp.ram_used_gb    ?? null,
+          sp.ram_total_gb   ?? null,
+          sp.ram_used_pct   ?? null,
+          sp.cpu_avg_pct    ?? null,
+          sp.cpu_max_pct    ?? null,
+          sp.uptime_seconds ?? null,
+          sp.battery_pct    ?? null,
+          sp.battery_status ?? null,
+        ])
+        // Cleanup non-bloquant
+        fastify.db.query(
+          `DELETE FROM system_perf_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`,
+          [deviceId]
+        ).catch(() => {})
+      }
+
+
+      await txn.query('COMMIT')
+    } catch (err) {
+      await txn.query('ROLLBACK').catch(() => {})
+      throw err
+    } finally {
+      txn.release()
     }
 
     // ── Évaluation conformité ──────────────────────────────────────────────
     // Set fixe de règles built-in (cf. api/lib/compliance.js). Évalué à chaque
-    // checkin : transaction déjà ouverte, data fraîche, pas de batch
+    // checkin (hors transaction inventaire) : data fraîche, pas de batch
     // périodique à orchestrer. Best-effort : un problème ici (DB, règle
     // bugguée) ne doit jamais faire échouer le checkin — un agent qui ne
     // checkin plus est bien plus grave qu'une éval ratée.
@@ -918,6 +991,22 @@ export default async function agentRoute(fastify) {
     const legacyUa = (process.env.OPALE_LEGACY_AGENT_UA_PATTERN || '').trim()
     const isGoAgent = /opale-agent(-go)?/.test(ua) || (legacyUa && new RegExp(legacyUa).test(ua))
 
+    // ── Rotation LAPS demandée ? ───────────────────────────────────────────
+    // Posé par la vue du mot de passe (rotate-after-view) ou par la route
+    // /admin-credentials/:id/rotate. L'agent re-rotate immédiatement ; le
+    // POST /agent/admin-credential qui suit remet le flag à NULL.
+    let rotateAdminPassword = false
+    try {
+      const { rows: rotRows } = await fastify.db.query(
+        `SELECT 1 FROM device_admin_credentials
+          WHERE device_id = $1 AND rotation_requested_at IS NOT NULL`,
+        [deviceId]
+      )
+      rotateAdminPassword = rotRows.length > 0
+    } catch (err) {
+      fastify.log.warn({ err: err.message }, 'lookup rotation LAPS échoué (checkin continue)')
+    }
+
     let agentUpdate = null
     if (inMaintWindow && isGoAgent) {
       const arch = archFromUA(ua)
@@ -976,8 +1065,9 @@ export default async function agentRoute(fastify) {
         package_id:       r.package_id,
         detection_script: r.detection_script,
       })),
-      agent_update:        agentUpdate,
-      maintenance_window:  maintenanceWindow,
+      agent_update:           agentUpdate,
+      maintenance_window:     maintenanceWindow,
+      rotate_admin_password:  rotateAdminPassword,
     })
   })
 

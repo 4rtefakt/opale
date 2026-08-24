@@ -361,3 +361,131 @@ test('GET /version — token valide → 200 + latest_version (peut être null en
   // avec un champ latest_version".
   assert.ok('latest_version' in res.json())
 })
+
+// ─── POST /exchange-token — anti-impersonation device enrôlé ────────────────
+
+test('POST /exchange-token — device déjà enrôlé, sans serial → 409', { skip: SKIP }, async () => {
+  const dev = await seedDevice(db, { hostname: 'PC-ENROLLED-1' })
+  await db.query('UPDATE devices SET serial = $1 WHERE id = $2', ['SN-ENR-1', dev.id])
+  await seedAgentToken(db, { deviceId: dev.id, label: 'existing' })
+  const bootstrap = await seedAgentToken(db, { isBootstrap: true, label: 'bs-guard-1' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/exchange-token',
+    headers: bearer(bootstrap.secret),
+    payload: { hostname: 'PC-ENROLLED-1' },
+  })
+  assert.equal(res.statusCode, 409)
+})
+
+test('POST /exchange-token — device enrôlé, serial différent → 409', { skip: SKIP }, async () => {
+  const dev = await seedDevice(db, { hostname: 'PC-ENROLLED-2' })
+  await db.query('UPDATE devices SET serial = $1 WHERE id = $2', ['SN-ENR-2', dev.id])
+  await seedAgentToken(db, { deviceId: dev.id, label: 'existing-2' })
+  const bootstrap = await seedAgentToken(db, { isBootstrap: true, label: 'bs-guard-2' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/exchange-token',
+    headers: bearer(bootstrap.secret),
+    payload: { hostname: 'PC-ENROLLED-2', serial: 'SN-AUTRE' },
+  })
+  assert.equal(res.statusCode, 409)
+})
+
+test('POST /exchange-token — réinstallation (serial identique) → 201 + anciens tokens révoqués', { skip: SKIP }, async () => {
+  const dev = await seedDevice(db, { hostname: 'PC-ENROLLED-3' })
+  await db.query('UPDATE devices SET serial = $1 WHERE id = $2', ['SN-ENR-3', dev.id])
+  const oldTok = await seedAgentToken(db, { deviceId: dev.id, label: 'existing-3' })
+  const bootstrap = await seedAgentToken(db, { isBootstrap: true, label: 'bs-guard-3' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/exchange-token',
+    headers: bearer(bootstrap.secret),
+    payload: { hostname: 'PC-ENROLLED-3', serial: 'SN-ENR-3' },
+  })
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.json().device_id, dev.id)
+
+  const { rows } = await db.query(
+    'SELECT revoked_at FROM agent_tokens WHERE id = $1', [oldTok.id]
+  )
+  assert.ok(rows[0].revoked_at, 'l’ancien token doit être révoqué')
+})
+
+// ─── POST /checkin — renommage : pas de device fantôme ──────────────────────
+
+test('POST /checkin — hostname inconnu avec token lié = renommage, pas de fantôme', { skip: SKIP }, async () => {
+  const dev = await seedDevice(db, { hostname: 'PC-RENAME-OLD' })
+  const tok = await seedAgentToken(db, { deviceId: dev.id, label: 'rename-tok' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(tok.secret),
+    payload: { hostname: 'PC-RENAME-NEW' },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().device_id, dev.id, 'checkin doit rester sur le device lié')
+
+  const { rows } = await db.query(
+    `SELECT id, hostname FROM devices WHERE hostname IN ('PC-RENAME-OLD','PC-RENAME-NEW')`
+  )
+  assert.equal(rows.length, 1, 'aucun device fantôme créé')
+  assert.equal(rows[0].id, dev.id)
+  assert.equal(rows[0].hostname, 'PC-RENAME-NEW')
+})
+
+// ─── POST /checkin — flag rotation LAPS exposé ──────────────────────────────
+
+test('POST /checkin — rotate_admin_password reflète rotation_requested_at', { skip: SKIP }, async () => {
+  const dev = await seedDevice(db, { hostname: 'PC-LAPS-FLAG' })
+  const tok = await seedAgentToken(db, { deviceId: dev.id, label: 'laps-flag' })
+  await db.query(
+    `INSERT INTO device_admin_credentials (device_id, username, encrypted_password, rotation_requested_at)
+     VALUES ($1, 'opale-recovery', '\\x00'::bytea, now())`,
+    [dev.id]
+  )
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(tok.secret),
+    payload: { hostname: 'PC-LAPS-FLAG' },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().rotate_admin_password, true)
+
+  // Une fois le flag consommé (rotation POSTée par l'agent → NULL), plus de demande
+  await db.query(
+    `UPDATE device_admin_credentials SET rotation_requested_at = NULL WHERE device_id = $1`,
+    [dev.id]
+  )
+  const res2 = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(tok.secret),
+    payload: { hostname: 'PC-LAPS-FLAG' },
+  })
+  assert.equal(res2.json().rotate_admin_password, false)
+})
+
+// ─── POST /setup-log — auth requise ─────────────────────────────────────────
+
+test('POST /setup-log — sans Bearer → 401 (anti-poison audit_logs)', { skip: SKIP }, async () => {
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/setup-log',
+    payload: { hostname: 'PC-X', log: 'hello' },
+  })
+  assert.equal(res.statusCode, 401)
+})
+
+test('POST /setup-log — avec token valide → 204 + audit', { skip: SKIP }, async () => {
+  const tok = await seedAgentToken(db, { label: 'setup-log-tok' })
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/setup-log',
+    headers: bearer(tok.secret),
+    payload: { hostname: 'PC-SETUPLOG', script: 'install', level: 'error', log: 'boom' },
+  })
+  assert.equal(res.statusCode, 204)
+  const { rows } = await db.query(
+    `SELECT 1 FROM audit_logs WHERE action = 'setup_script' AND by_user = 'PC-SETUPLOG'`
+  )
+  assert.equal(rows.length, 1)
+})

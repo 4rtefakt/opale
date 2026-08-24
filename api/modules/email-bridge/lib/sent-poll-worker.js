@@ -127,10 +127,20 @@ export async function pollSentOnce(db, log, injection = {}) {
 export function startMailSentPollWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
   if (_timer) return  // idempotent
 
-  const run = () =>
-    pollSentOnce(db, log).catch(err =>
+  // Garde de réentrance : un tick plus lent que l'intervalle (Graph qui
+  // rame) ne doit pas se superposer au suivant.
+  let running = false
+  const run = async () => {
+    if (running) return
+    running = true
+    try {
+      await pollSentOnce(db, log)
+    } catch (err) {
       log?.warn({ err: err.message }, 'sent-worker: tick a planté')
-    )
+    } finally {
+      running = false
+    }
+  }
 
   setTimeout(run, 7_000)  // léger décalage vs le worker inbound (5s)
   _timer = setInterval(run, intervalMs)

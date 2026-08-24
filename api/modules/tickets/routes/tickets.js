@@ -403,7 +403,25 @@ export default async function ticketsRoute(fastify) {
     const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
     if (!acl) return
     const { status, priority, assigned_to_entra_id, assigned_to_name, user_id, device_id } = req.body || {}
-    const { displayName } = acl
+    const { displayName, isAdmin } = acl
+
+    // Enums fermés — sans ça, n'importe quelle chaîne finissait en DB et
+    // cassait les filtres/kanban ('merged' est réservé à la route de merge).
+    const STATUSES   = ['open', 'in_progress', 'resolved', 'closed']
+    const PRIORITIES = ['low', 'normal', 'high', 'critical']
+    if (status !== undefined && !STATUSES.includes(status)) {
+      return reply.code(400).send({ error: `status invalide (${STATUSES.join(', ')})` })
+    }
+    if (priority !== undefined && !PRIORITIES.includes(priority)) {
+      return reply.code(400).send({ error: `priority invalide (${PRIORITIES.join(', ')})` })
+    }
+    // Réassignation / re-rattachement : réservé aux admins. Un requester peut
+    // changer statut/priorité de son ticket, pas s'auto-assigner ni déplacer
+    // le ticket vers un autre user/device.
+    if (!isAdmin && (assigned_to_entra_id !== undefined || assigned_to_name !== undefined
+        || user_id !== undefined || device_id !== undefined)) {
+      return reply.code(403).send({ error: 'Réassignation réservée aux admins' })
+    }
 
     const fields = []
     const params = []
@@ -477,7 +495,10 @@ export default async function ticketsRoute(fastify) {
     if (!acl) return
     const { content, type = 'internal_note' } = req.body || {}
     if (!content) return reply.code(400).send({ error: 'Contenu requis' })
-    if (!['internal_note', 'comment', 'system', 'resolution'].includes(type)) {
+    // 'system' exclu : ces messages sont générés par le serveur (changements
+    // de statut, merges) — accepter le type depuis le client permettait de
+    // forger de fausses entrées système dans le fil.
+    if (!['internal_note', 'comment', 'resolution'].includes(type)) {
       return reply.code(400).send({ error: 'Type invalide' })
     }
 

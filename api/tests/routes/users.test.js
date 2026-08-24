@@ -211,3 +211,39 @@ test('GET /search — matche par email ILIKE', { skip: SKIP }, async () => {
   assert.ok('display_name' in first)
   assert.ok('email' in first)
 })
+
+// ─── POST /sync-me — bootstrap premier admin ────────────────────────────────
+
+test('POST /sync-me — aucun admin existant → premier login promu + audit', { skip: SKIP }, async () => {
+  // Repartir d'un état sans admin (le schéma de la suite en a créé plusieurs).
+  await db.query('UPDATE users_cache SET is_admin = false')
+
+  const token = await jwt.sign({
+    oid: 'oid-first-admin',
+    name: 'First Admin',
+    preferred_username: 'first-admin@test.local',
+  })
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/users/sync-me',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().isAdmin, true, 'premier compte promu admin')
+
+  const { rows } = await db.query(
+    `SELECT 1 FROM audit_logs WHERE action = 'first_admin_bootstrap' AND target = 'oid-first-admin'`
+  )
+  assert.equal(rows.length, 1, 'promotion tracée en audit')
+
+  // Un second nouveau compte n'est PAS promu (un admin existe désormais).
+  const token2 = await jwt.sign({
+    oid: 'oid-second-user',
+    name: 'Second User',
+    preferred_username: 'second@test.local',
+  })
+  const res2 = await fastify.inject({
+    method: 'POST', url: '/api/users/sync-me',
+    headers: { authorization: `Bearer ${token2}` },
+  })
+  assert.equal(res2.json().isAdmin, false)
+})

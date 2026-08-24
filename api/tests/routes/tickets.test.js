@@ -1123,3 +1123,66 @@ test('POST /:id/merge — email_thread_mapping repointé vers target',
     assert.equal(rows[0].ticket_id, tgt.json().id)
   }
 )
+
+// ─── PATCH /:id — validation enums + réassignation admin-only ───────────────
+
+test('PATCH /:id — status hors enum → 400', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-badstatus')
+  const created = await createTicketAs(admin.token, { title: 'Enum status' })
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${created.json().id}`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { status: 'n_importe_quoi' },
+  })
+  assert.equal(res.statusCode, 400)
+})
+
+test('PATCH /:id — priority hors enum → 400', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-badprio')
+  const created = await createTicketAs(admin.token, { title: 'Enum prio' })
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${created.json().id}`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { priority: 'ultra' },
+  })
+  assert.equal(res.statusCode, 400)
+})
+
+test('PATCH /:id — requester non-admin ne peut pas se réassigner le ticket → 403', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-reassign-admin')
+  const requester = await userAuth('oid-tk-reassign-user', 'Requester')
+  const created = await createTicketAs(admin.token, {
+    title: 'Réassignation', user_id: requester.user.entraId,
+  })
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${created.json().id}`,
+    headers: { authorization: `Bearer ${requester.token}` },
+    payload: { assigned_to_entra_id: requester.user.entraId },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
+test('PATCH /:id — requester non-admin peut toujours changer le statut', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-status-admin')
+  const requester = await userAuth('oid-tk-status-user', 'Requester Status')
+  const created = await createTicketAs(admin.token, {
+    title: 'Statut par requester', user_id: requester.user.entraId,
+  })
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${created.json().id}`,
+    headers: { authorization: `Bearer ${requester.token}` },
+    payload: { status: 'resolved' },
+  })
+  assert.equal(res.statusCode, 200)
+})
+
+test('POST /:id/messages — type system refusé (réservé serveur) → 400', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-sysmsg')
+  const created = await createTicketAs(admin.token, { title: 'Forge system' })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${created.json().id}/messages`,
+    headers: { authorization: `Bearer ${admin.token}` },
+    payload: { content: 'fake', type: 'system' },
+  })
+  assert.equal(res.statusCode, 400)
+})
