@@ -11,11 +11,12 @@
 
 import { t } from '/i18n.js'
 
-const SUGGESTIONS = [
-  'postes hors ligne depuis 3 jours',
-  'tickets critiques ouverts',
-  'postes sans BitLocker actif',
-  'postes du département Compta',
+// Fonction (et non constante) : évaluée au rendu pour suivre la locale active.
+const SUGGESTIONS = () => [
+  t('ask.chip.offline'),
+  t('ask.chip.tickets'),
+  t('ask.chip.bitlocker'),
+  t('ask.chip.department'),
 ]
 
 // Métadonnées de rendu par ressource : icône + extraction titre/sous-titre +
@@ -55,7 +56,7 @@ function ensureOverlay() {
         <i class="ti ti-sparkles ask-inputicon"></i>
         <input id="ask-input" class="ask-input" type="text" autocomplete="off"
           placeholder="${esc(t('ask.placeholder'))}">
-        <kbd>Échap</kbd>
+        <kbd>${esc(t('ask.kbd.esc'))}</kbd>
       </div>
       <div id="ask-body" class="ask-body"></div>
     </div>`
@@ -86,7 +87,7 @@ function describeSpec(spec) {
 }
 
 function renderEmpty() {
-  const chips = SUGGESTIONS.map(s =>
+  const chips = SUGGESTIONS().map(s =>
     `<button class="ask-chip" onclick="askSuggest(${jsArg(s)})">${esc(s)}</button>`
   ).join('')
   setBody(`

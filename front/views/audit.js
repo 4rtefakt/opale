@@ -5,28 +5,29 @@ let _timer  = null
 
 // Catégories : chaque entrée définit soit `in` (actions visibles), soit
 // `notIn` (actions masquées). Ordre = ordre du dropdown UI.
+// `label` = clé i18n, résolue via t() au rendu (suit les changements de locale).
 const _CATEGORIES = {
   default: {
-    label: 'Tout sauf connexion agent',
+    label: 'audit.cat.default',
     notIn: ['agent_ws_connect', 'agent_ws_disconnect', 'agent_checkin'],
   },
   all: {
-    label: 'Toutes les actions',
+    label: 'audit.cat.all',
   },
   remote: {
-    label: 'Accès distants',
+    label: 'audit.cat.remote',
     in: ['agent_console_open', 'agent_console_close', 'agent_console_takeover', 'ssh_open', 'ssh_close'],
   },
   devices: {
-    label: 'Gestion des postes',
+    label: 'audit.cat.devices',
     in: ['rmm_force_checkin', 'intune_force_sync', 'device_deleted', 'intune_sync'],
   },
   security: {
-    label: 'Tokens & sécurité',
+    label: 'audit.cat.security',
     in: ['token_created', 'token_revoked', 'agent_bootstrap_exchange', 'admin_granted', 'admin_revoked'],
   },
   agent_conn: {
-    label: 'Connexion agent (bruyant)',
+    label: 'audit.cat.agent_conn',
     in: ['agent_ws_connect', 'agent_ws_disconnect', 'agent_checkin', 'setup_script'],
   },
 }
@@ -36,7 +37,7 @@ const _CATEGORY_STORAGE_KEY = 'audit:category'
 export async function renderAudit(container) {
   const savedCategory = localStorage.getItem(_CATEGORY_STORAGE_KEY) || 'default'
   const catOptions = Object.entries(_CATEGORIES)
-    .map(([key, c]) => `<option value="${key}"${key === savedCategory ? ' selected' : ''}>${esc(c.label)}</option>`)
+    .map(([key, c]) => `<option value="${key}"${key === savedCategory ? ' selected' : ''}>${esc(t(c.label))}</option>`)
     .join('')
 
   container.innerHTML = `
@@ -139,20 +140,20 @@ const _BADGE = {
   ssh_close:                 ['b-done',   'ti-terminal'],
 }
 
-// Libellés FR pour les actions remontées dans les badges. Si absent,
-// on tombe sur le nom brut de l'action (forward-compat).
+// Clés i18n des libellés d'actions remontées dans les badges (résolues via
+// t() au rendu). Si absent, on tombe sur le nom brut de l'action (forward-compat).
 const _ACTION_LABEL = {
-  agent_console_open:     'console ouverte',
-  agent_console_close:    'console fermée',
-  agent_console_takeover: 'console reprise',
-  ssh_open:               'ssh ouvert',
-  ssh_close:              'ssh fermé',
-  agent_ws_connect:       'agent connecté',
-  agent_ws_disconnect:    'agent déconnecté',
-  agent_checkin:          'checkin agent',
-  rmm_force_checkin:      'forçage checkin',
-  intune_force_sync:      'forçage sync intune',
-  device_deleted:         'poste supprimé',
+  agent_console_open:     'audit.action.agent_console_open',
+  agent_console_close:    'audit.action.agent_console_close',
+  agent_console_takeover: 'audit.action.agent_console_takeover',
+  ssh_open:               'audit.action.ssh_open',
+  ssh_close:              'audit.action.ssh_close',
+  agent_ws_connect:       'audit.action.agent_ws_connect',
+  agent_ws_disconnect:    'audit.action.agent_ws_disconnect',
+  agent_checkin:          'audit.action.agent_checkin',
+  rmm_force_checkin:      'audit.action.rmm_force_checkin',
+  intune_force_sync:      'audit.action.intune_force_sync',
+  device_deleted:         'audit.action.device_deleted',
 }
 
 function _formatDuration(s) {
@@ -170,7 +171,9 @@ function _reasonShort(reason) {
   if (!reason || !reason.category) return ''
   const note = (reason.note || '').slice(0, 60)
   const ellipsis = (reason.note || '').length > 60 ? '…' : ''
-  return note ? `motif: ${reason.category} — ${note}${ellipsis}` : `motif: ${reason.category}`
+  return note
+    ? t('audit.reason.with_note', { category: reason.category, note: `${note}${ellipsis}` })
+    : t('audit.reason.category_only', { category: reason.category })
 }
 
 function _summary(action, details) {
@@ -185,7 +188,7 @@ function _summary(action, details) {
   if (action === 'setup_script')  return details.level || ''
   if (action === 'agent_console_open')     return [_reasonShort(details.reason), details.shell, details.session_id?.slice(0, 8)].filter(Boolean).join(' · ')
   if (action === 'agent_console_close')    return [_formatDuration(details.duration_seconds), details.reason].filter(Boolean).join(' · ')
-  if (action === 'agent_console_takeover') return details.taken_session ? `prise de la session ${details.taken_session.slice(0, 8)}` : ''
+  if (action === 'agent_console_takeover') return details.taken_session ? t('audit.summary.takeover', { session: details.taken_session.slice(0, 8) }) : ''
   if (action === 'ssh_open')               return [_reasonShort(details.reason), details.host, details.ip].filter(Boolean).join(' · ')
   if (action === 'ssh_close')              return _formatDuration(details.duration_seconds)
   if (action === 'agent_ws_disconnect')    return [details.reason, _formatDuration(details.duration_seconds)].filter(Boolean).join(' · ')
@@ -233,7 +236,7 @@ function _renderRows(rows, append) {
     return `
       <div class="audit-row">
         <div class="audit-row-main" onclick="auditToggleRow('${rowId}')">
-          <span class="badge ${badgeClass}" style="min-width:110px;text-align:center"><i class="ti ${icon}"></i> ${esc(_ACTION_LABEL[r.action] || r.action)}</span>
+          <span class="badge ${badgeClass}" style="min-width:110px;text-align:center"><i class="ti ${icon}"></i> ${esc(_ACTION_LABEL[r.action] ? t(_ACTION_LABEL[r.action]) : r.action)}</span>
           ${level && levelColor ? `<span style="font-size:10px;font-weight:600;color:${levelColor}">${level.toUpperCase()}</span>` : ''}
           <span class="audit-row-text">
             ${byUser}

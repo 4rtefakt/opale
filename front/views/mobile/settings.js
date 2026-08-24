@@ -55,9 +55,24 @@ function renderBody() {
 
   const bioSupported = window.bio?.isSupported?.() ?? false
   const bioEnabled   = window.bio?.isEnabled?.()   ?? false
+  const locale       = window.getLocale?.() || 'fr'
+
+  // Endonymes volontairement non traduits (chaque langue dans sa propre langue).
+  const langBtn = (code, label) => `
+    <button class="m-btn-primary" style="flex:1;${code === locale ? '' : 'background:var(--bg-tertiary);color:var(--text-secondary)'}"
+      onclick="window.setLocale('${code}')">${label}</button>`
 
   body.innerHTML = `
     <div style="padding:16px;display:flex;flex-direction:column;gap:16px">
+
+      <!-- Langue -->
+      <div class="m-panel">
+        <div class="m-panel-header"><i class="ti ti-language"></i> ${t('mobile.settings.lang.title')}</div>
+        <div style="padding:14px 16px;display:flex;gap:10px">
+          ${langBtn('fr', '🇫🇷 Français')}
+          ${langBtn('en', '🇬🇧 English')}
+        </div>
+      </div>
 
       <!-- Barre du bas -->
       <div class="m-panel">
