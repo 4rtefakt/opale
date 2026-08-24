@@ -17,11 +17,9 @@ const PALETTE = {
   pink:   { bg: '#db2777', light: '#fdf2f8', dark: '#fce7f3' },
   teal:   { bg: '#0d9488', light: '#f0fdfa', dark: '#ccfbf1' },
 }
-const COLOR_LABELS = {
-  slate: 'Gris', blue: 'Bleu', green: 'Vert', amber: 'Ambre',
-  red: 'Rouge', violet: 'Violet', pink: 'Rose', teal: 'Sarcelle',
-}
 const COLOR_KEYS = Object.keys(PALETTE)
+// Libellé traduit d'une couleur de la palette (clés groups.color.*)
+const colorLabel = k => t(`groups.color.${k}`)
 
 let _groups   = []
 let _overlaps = []     // [{ a, b, shared }] membres communs par paire (diagramme)
@@ -31,13 +29,13 @@ let _detail   = null   // { devices, users } du groupe sélectionné
 export async function renderGroupes(container) {
   container.innerHTML = `
     <div class="topbar">
-      <h1 class="topbar-title">Groupes</h1>
+      <h1 class="topbar-title">${t('groups.title')}</h1>
       <div class="topbar-actions">
         <button class="btn" onclick="groupesImportFromEntra()">
-          <i class="ti ti-cloud-download"></i> Importer depuis Entra
+          <i class="ti ti-cloud-download"></i> ${t('groups.btn.import_entra')}
         </button>
         <button class="btn btn-primary" onclick="groupesOpenCreate()">
-          <i class="ti ti-plus"></i> Nouveau groupe
+          <i class="ti ti-plus"></i> ${t('groups.btn.new')}
         </button>
       </div>
     </div>
@@ -47,7 +45,7 @@ export async function renderGroupes(container) {
         <div id="grp-map" style="flex:0 0 auto;height:340px;position:relative;border-bottom:0.5px solid var(--border)">
           <svg id="grp-svg" width="100%" height="100%" style="display:block"></svg>
           <div id="grp-map-empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-tertiary);font-size:13px;pointer-events:none;display:none">
-            Aucun groupe — créez-en un pour commencer.
+            ${t('groups.map_empty')}
           </div>
         </div>
         <div id="grp-detail" style="flex:1;overflow-y:auto;padding:16px 20px"></div>
@@ -91,7 +89,7 @@ async function loadGroups(keepSelected = false) {
     await loadDetail(_selected)
   } else {
     document.getElementById('grp-detail').innerHTML =
-      `<p style="color:var(--text-tertiary);font-size:13px">Cliquez sur un groupe pour voir ses membres.</p>`
+      `<p style="color:var(--text-tertiary);font-size:13px">${t('groups.select_hint')}</p>`
   }
 }
 
@@ -99,7 +97,7 @@ function renderSidebar() {
   const el = document.getElementById('grp-sidebar')
   if (!el) return
   if (_groups.length === 0) {
-    el.innerHTML = `<p style="color:var(--text-tertiary);font-size:12px;padding:8px 4px">Aucun groupe.</p>`
+    el.innerHTML = `<p style="color:var(--text-tertiary);font-size:12px;padding:8px 4px">${t('groups.empty')}</p>`
     return
   }
   el.innerHTML = _groups.map(g => {
@@ -113,12 +111,12 @@ function renderSidebar() {
           <span style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.name)}</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
-          <span style="font-size:11px;color:var(--text-tertiary)">${g.member_count} membre${g.member_count !== 1 ? 's' : ''}</span>
+          <span style="font-size:11px;color:var(--text-tertiary)">${t('groups.member_count', { n: g.member_count })}</span>
           <span style="flex:1"></span>
-          <button class="icon-btn" title="Modifier" onclick="event.stopPropagation();groupesOpenEdit(${jsArg(g.id)})">
+          <button class="icon-btn" title="${t('groups.btn.edit')}" onclick="event.stopPropagation();groupesOpenEdit(${jsArg(g.id)})">
             <i class="ti ti-pencil" style="font-size:13px"></i>
           </button>
-          <button class="icon-btn icon-btn-danger" title="Supprimer" onclick="event.stopPropagation();groupesConfirmDelete(${jsArg(g.id)},${jsArg(g.name)})">
+          <button class="icon-btn icon-btn-danger" title="${t('groups.btn.delete')}" onclick="event.stopPropagation();groupesConfirmDelete(${jsArg(g.id)},${jsArg(g.name)})">
             <i class="ti ti-trash" style="font-size:13px"></i>
           </button>
         </div>
@@ -301,7 +299,7 @@ function renderMap() {
         </text>
         <text x="${nd.x}" y="${countY}" text-anchor="middle"
           style="font-size:${nd.r < 44 ? 9 : 11}px;fill:${p.bg};opacity:0.8;pointer-events:none;user-select:none">
-          ${nd.g.member_count} membre${nd.g.member_count !== 1 ? 's' : ''}
+          ${t('groups.member_count', { n: nd.g.member_count })}
         </text>
       </g>`
   }).join('')
@@ -334,21 +332,21 @@ function renderDetail(panel) {
   const p = PALETTE[g.color] || PALETTE.slate
 
   const deviceRows = g.devices.length === 0
-    ? `<tr><td colspan="4" style="text-align:center;color:var(--text-tertiary);padding:12px">Aucun poste</td></tr>`
+    ? `<tr><td colspan="4" style="text-align:center;color:var(--text-tertiary);padding:12px">${t('groups.devices_empty')}</td></tr>`
     : g.devices.map(d => `
         <tr>
           <td style="padding:6px 8px"><i class="ti ti-device-laptop" style="color:var(--text-tertiary)"></i></td>
           <td style="padding:6px 8px;font-weight:500">${esc(d.hostname || '—')}</td>
           <td style="padding:6px 8px;color:var(--text-secondary);font-size:12px">${esc(d.os || '—')}</td>
           <td style="padding:6px 8px;text-align:right">
-            <button class="icon-btn icon-btn-danger" title="Retirer" onclick="groupesRemoveMember(${jsArg(g.id)},${jsArg(d.member_id)})">
+            <button class="icon-btn icon-btn-danger" title="${t('groups.btn.remove')}" onclick="groupesRemoveMember(${jsArg(g.id)},${jsArg(d.member_id)})">
               <i class="ti ti-x" style="font-size:12px"></i>
             </button>
           </td>
         </tr>`).join('')
 
   const userRows = g.users.length === 0
-    ? `<tr><td colspan="3" style="text-align:center;color:var(--text-tertiary);padding:12px">Aucun utilisateur</td></tr>`
+    ? `<tr><td colspan="3" style="text-align:center;color:var(--text-tertiary);padding:12px">${t('groups.users_empty')}</td></tr>`
     : g.users.map(u => {
         const hasName = u.display_name || u.email
         return `
@@ -360,11 +358,11 @@ function renderDetail(panel) {
               ? `<div style="font-weight:500;font-size:13px">${esc(u.display_name || u.email)}</div>
                  <div style="font-size:11px;color:var(--text-secondary)">${esc(u.email || '')}</div>`
               : `<div style="font-size:12px;color:var(--text-tertiary);font-family:monospace">${esc(u.user_id)}</div>
-                 <div style="font-size:11px;color:var(--text-tertiary)">Utilisateur non synchronisé</div>`
+                 <div style="font-size:11px;color:var(--text-tertiary)">${t('groups.user_not_synced')}</div>`
             }
           </td>
           <td style="padding:6px 8px;text-align:right" onclick="event.stopPropagation()">
-            <button class="icon-btn icon-btn-danger" title="Retirer" onclick="groupesRemoveMember(${jsArg(g.id)},${jsArg(u.member_id)})">
+            <button class="icon-btn icon-btn-danger" title="${t('groups.btn.remove')}" onclick="groupesRemoveMember(${jsArg(g.id)},${jsArg(u.member_id)})">
               <i class="ti ti-x" style="font-size:12px"></i>
             </button>
           </td>
@@ -374,13 +372,13 @@ function renderDetail(panel) {
   const entraActions = g.source === 'entra' ? `
     <div style="display:flex;gap:6px;padding:8px 10px;background:var(--bg-secondary);border-radius:var(--radius-md);margin-bottom:14px;align-items:center;font-size:12px">
       <i class="ti ti-brand-azure" style="color:var(--blue);font-size:15px"></i>
-      <span style="color:var(--text-secondary)">Synchronisé depuis Entra</span>
+      <span style="color:var(--text-secondary)">${t('groups.entra.synced_badge')}</span>
       <span style="flex:1"></span>
       <button class="btn btn-sm" onclick="groupesSyncFromEntra(${jsArg(g.id)})">
-        <i class="ti ti-refresh"></i> Synchroniser
+        <i class="ti ti-refresh"></i> ${t('groups.btn.sync')}
       </button>
       <button class="btn btn-sm" onclick="groupesDetachFromEntra(${jsArg(g.id)},${jsArg(g.name)})">
-        <i class="ti ti-unlink"></i> Détacher
+        <i class="ti ti-unlink"></i> ${t('groups.btn.detach')}
       </button>
     </div>` : ''
 
@@ -391,16 +389,16 @@ function renderDetail(panel) {
       ${g.description ? `<span style="font-size:12px;color:var(--text-secondary)">${esc(g.description)}</span>` : ''}
       <span style="flex:1"></span>
       <button class="btn btn-sm" onclick="groupesOpenEdit(${jsArg(g.id)})">
-        <i class="ti ti-pencil"></i> Modifier
+        <i class="ti ti-pencil"></i> ${t('groups.btn.edit')}
       </button>
     </div>
     ${entraActions}
 
     <div style="margin-bottom:14px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <span style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary)">Postes (${g.devices.length})</span>
+        <span style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary)">${t('groups.section.devices', { n: g.devices.length })}</span>
         <button class="btn btn-sm" onclick="groupesAddDevice(${jsArg(g.id)})">
-          <i class="ti ti-plus"></i> Ajouter un poste
+          <i class="ti ti-plus"></i> ${t('groups.btn.add_device')}
         </button>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -410,9 +408,9 @@ function renderDetail(panel) {
 
     <div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <span style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary)">Utilisateurs (${g.users.length})</span>
+        <span style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary)">${t('groups.section.users', { n: g.users.length })}</span>
         <button class="btn btn-sm" onclick="groupesAddUser(${jsArg(g.id)})">
-          <i class="ti ti-plus"></i> Ajouter un utilisateur
+          <i class="ti ti-plus"></i> ${t('groups.btn.add_user')}
         </button>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -425,21 +423,21 @@ function renderDetail(panel) {
 
 function groupesOpenCreate() {
   showModal(`
-    <p class="modal-title">Nouveau groupe</p>
+    <p class="modal-title">${t('groups.new.title')}</p>
     ${groupForm()}
     <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">Annuler</button>
-      <button class="btn btn-primary" onclick="groupesSaveCreate()">Créer</button>
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+      <button class="btn btn-primary" onclick="groupesSaveCreate()">${t('btn.create')}</button>
     </div>`)
   window.groupesSaveCreate = async () => {
     const name  = document.getElementById('grp-f-name').value.trim()
     const desc  = document.getElementById('grp-f-desc').value.trim()
     const color = document.getElementById('grp-f-color').value
-    if (!name) { showFieldError('grp-f-name', 'Nom requis'); return }
+    if (!name) { showFieldError('grp-f-name', t('groups.form.name_required')); return }
     try {
       await window.api.createGroup({ name, description: desc || undefined, color })
       closeModal()
-      showToast('Groupe créé', 'success')
+      showToast(t('groups.toast.created'), 'success')
       await loadGroups()
     } catch (e) {
       showModalError(e.message)
@@ -451,21 +449,21 @@ async function groupesOpenEdit(id) {
   const g = _groups.find(x => x.id === id) || _detail
   if (!g) return
   showModal(`
-    <p class="modal-title">Modifier le groupe</p>
+    <p class="modal-title">${t('groups.edit.title')}</p>
     ${groupForm({ name: g.name, description: g.description || '', color: g.color || 'slate' })}
     <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">Annuler</button>
-      <button class="btn btn-primary" onclick="groupesSaveEdit(${jsArg(id)})">Enregistrer</button>
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+      <button class="btn btn-primary" onclick="groupesSaveEdit(${jsArg(id)})">${t('groups.btn.save')}</button>
     </div>`)
   window.groupesSaveEdit = async (gid) => {
     const name  = document.getElementById('grp-f-name').value.trim()
     const desc  = document.getElementById('grp-f-desc').value.trim()
     const color = document.getElementById('grp-f-color').value
-    if (!name) { showFieldError('grp-f-name', 'Nom requis'); return }
+    if (!name) { showFieldError('grp-f-name', t('groups.form.name_required')); return }
     try {
       await window.api.updateGroup(gid, { name, description: desc || null, color })
       closeModal()
-      showToast('Groupe mis à jour', 'success')
+      showToast(t('groups.toast.updated'), 'success')
       const keepSel = _selected === gid
       await loadGroups(keepSel)
     } catch (e) {
@@ -476,17 +474,17 @@ async function groupesOpenEdit(id) {
 
 function groupesConfirmDelete(id, name) {
   showModal(`
-    <p class="modal-title">Supprimer le groupe</p>
-    <p style="font-size:13px;color:var(--text-secondary)">Supprimer <strong>${esc(name)}</strong> ? Cette action est irréversible. Les membres seront retirés du groupe mais les postes/utilisateurs ne seront pas supprimés.</p>
+    <p class="modal-title">${t('groups.delete.title')}</p>
+    <p style="font-size:13px;color:var(--text-secondary)">${t('groups.delete.body', { name: `<strong>${esc(name)}</strong>` })}</p>
     <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">Annuler</button>
-      <button class="btn btn-danger" onclick="groupesDoDelete(${jsArg(id)})">Supprimer</button>
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+      <button class="btn btn-danger" onclick="groupesDoDelete(${jsArg(id)})">${t('groups.btn.delete')}</button>
     </div>`)
   window.groupesDoDelete = async (gid) => {
     try {
       await window.api.deleteGroup(gid)
       closeModal()
-      showToast('Groupe supprimé', 'success')
+      showToast(t('groups.toast.deleted'), 'success')
       if (_selected === gid) _selected = null
       await loadGroups()
     } catch (e) {
@@ -508,29 +506,29 @@ async function groupesAddDevice(groupId) {
 
   if (!options) {
     showModal(`
-      <p class="modal-title">Ajouter un poste</p>
-      <p style="font-size:13px;color:var(--text-secondary)">Tous les postes sont déjà dans ce groupe.</p>
-      <div class="modal-footer"><button class="btn" onclick="closeModal()">Fermer</button></div>`)
+      <p class="modal-title">${t('groups.btn.add_device')}</p>
+      <p style="font-size:13px;color:var(--text-secondary)">${t('groups.add_device.all_in')}</p>
+      <div class="modal-footer"><button class="btn" onclick="closeModal()">${t('btn.close')}</button></div>`)
     return
   }
   showModal(`
-    <p class="modal-title">Ajouter un poste</p>
+    <p class="modal-title">${t('groups.btn.add_device')}</p>
     <select class="form-input" id="grp-add-device" style="width:100%">
-      <option value="">— Choisir un poste —</option>
+      <option value="">${t('groups.add_device.choose')}</option>
       ${options}
     </select>
     <div id="grp-add-err" style="color:var(--red);font-size:12px;margin-top:6px;display:none"></div>
     <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">Annuler</button>
-      <button class="btn btn-primary" onclick="groupesDoAddDevice(${jsArg(groupId)})">Ajouter</button>
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+      <button class="btn btn-primary" onclick="groupesDoAddDevice(${jsArg(groupId)})">${t('groups.btn.add')}</button>
     </div>`)
   window.groupesDoAddDevice = async (gid) => {
     const device_id = document.getElementById('grp-add-device').value
-    if (!device_id) { showModalError('Sélectionnez un poste'); return }
+    if (!device_id) { showModalError(t('groups.add_device.required')); return }
     try {
       await window.api.addGroupMember(gid, { device_id })
       closeModal()
-      showToast('Poste ajouté', 'success')
+      showToast(t('groups.toast.device_added'), 'success')
       await loadGroups(true)
     } catch (e) { showModalError(e.message) }
   }
@@ -547,29 +545,29 @@ async function groupesAddUser(groupId) {
 
   if (!options) {
     showModal(`
-      <p class="modal-title">Ajouter un utilisateur</p>
-      <p style="font-size:13px;color:var(--text-secondary)">Tous les utilisateurs sont déjà dans ce groupe.</p>
-      <div class="modal-footer"><button class="btn" onclick="closeModal()">Fermer</button></div>`)
+      <p class="modal-title">${t('groups.btn.add_user')}</p>
+      <p style="font-size:13px;color:var(--text-secondary)">${t('groups.add_user.all_in')}</p>
+      <div class="modal-footer"><button class="btn" onclick="closeModal()">${t('btn.close')}</button></div>`)
     return
   }
   showModal(`
-    <p class="modal-title">Ajouter un utilisateur</p>
+    <p class="modal-title">${t('groups.btn.add_user')}</p>
     <select class="form-input" id="grp-add-user" style="width:100%">
-      <option value="">— Choisir un utilisateur —</option>
+      <option value="">${t('groups.add_user.choose')}</option>
       ${options}
     </select>
     <div id="grp-add-err" style="color:var(--red);font-size:12px;margin-top:6px;display:none"></div>
     <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">Annuler</button>
-      <button class="btn btn-primary" onclick="groupesDoAddUser(${jsArg(groupId)})">Ajouter</button>
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+      <button class="btn btn-primary" onclick="groupesDoAddUser(${jsArg(groupId)})">${t('groups.btn.add')}</button>
     </div>`)
   window.groupesDoAddUser = async (gid) => {
     const user_id = document.getElementById('grp-add-user').value
-    if (!user_id) { showModalError('Sélectionnez un utilisateur'); return }
+    if (!user_id) { showModalError(t('groups.add_user.required')); return }
     try {
       await window.api.addGroupMember(gid, { user_id })
       closeModal()
-      showToast('Utilisateur ajouté', 'success')
+      showToast(t('groups.toast.user_added'), 'success')
       await loadGroups(true)
     } catch (e) { showModalError(e.message) }
   }
@@ -578,7 +576,7 @@ async function groupesAddUser(groupId) {
 async function groupesRemoveMember(groupId, memberId) {
   try {
     await window.api.removeGroupMember(groupId, memberId)
-    showToast('Membre retiré', 'success')
+    showToast(t('groups.toast.member_removed'), 'success')
     await loadGroups(true)
   } catch (e) {
     showToast(e.message, 'error')
@@ -589,36 +587,36 @@ async function groupesRemoveMember(groupId, memberId) {
 
 function groupesImportFromEntra() {
   const colorOptions = COLOR_KEYS.map(k =>
-    `<option value="${k}" ${k === 'slate' ? 'selected' : ''}>${COLOR_LABELS[k]}</option>`
+    `<option value="${k}" ${k === 'slate' ? 'selected' : ''}>${colorLabel(k)}</option>`
   ).join('')
 
   showModal(`
-    <p class="modal-title">Importer un groupe depuis Entra</p>
+    <p class="modal-title">${t('groups.entra.import_title')}</p>
     <div style="display:flex;flex-direction:column;gap:12px">
       <div>
-        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">Groupe Entra *</label>
-        <input class="form-input" id="grp-entra-q" placeholder="Rechercher un groupe…" autocomplete="off" style="width:100%">
+        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">${t('groups.entra.group_label')}</label>
+        <input class="form-input" id="grp-entra-q" placeholder="${t('groups.entra.search_placeholder')}" autocomplete="off" style="width:100%">
         <div id="grp-entra-results" style="max-height:200px;overflow-y:auto;border:0.5px solid var(--border);border-radius:6px;margin-top:4px;display:none"></div>
         <input type="hidden" id="grp-entra-id">
         <div id="grp-entra-id-err" style="color:var(--red);font-size:12px;margin-top:3px;display:none"></div>
       </div>
       <div>
-        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">Nom *</label>
-        <input class="form-input" id="grp-entra-name" placeholder="Nom du groupe" style="width:100%">
+        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">${t('groups.form.name_label')}</label>
+        <input class="form-input" id="grp-entra-name" placeholder="${t('groups.entra.name_placeholder')}" style="width:100%">
         <div id="grp-entra-name-err" style="color:var(--red);font-size:12px;margin-top:3px;display:none"></div>
       </div>
       <div>
-        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">Description</label>
-        <input class="form-input" id="grp-entra-desc" placeholder="Optionnel" style="width:100%">
+        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">${t('groups.form.description')}</label>
+        <input class="form-input" id="grp-entra-desc" placeholder="${t('groups.form.optional')}" style="width:100%">
       </div>
       <div>
-        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">Couleur</label>
+        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">${t('groups.form.color')}</label>
         <select class="form-input" id="grp-entra-color" style="width:100%">${colorOptions}</select>
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">Annuler</button>
-      <button class="btn btn-primary" onclick="groupesDoImportFromEntra()">Importer</button>
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+      <button class="btn btn-primary" onclick="groupesDoImportFromEntra()">${t('groups.btn.import')}</button>
     </div>`)
 
   const qInput   = document.getElementById('grp-entra-q')
@@ -644,7 +642,7 @@ function groupesImportFromEntra() {
                 <div style="font-size:13px;font-weight:500">${esc(g.displayName)}</div>
                 ${g.description ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(g.description)}</div>` : ''}
               </div>`).join('')
-          : `<div style="padding:10px;color:var(--text-tertiary);font-size:12px">Aucun groupe trouvé</div>`
+          : `<div style="padding:10px;color:var(--text-tertiary);font-size:12px">${t('groups.search_empty')}</div>`
       } catch (e) {
         results.style.display = 'block'
         results.innerHTML = `<div style="padding:10px;color:var(--red);font-size:12px">${esc(e.message)}</div>`
@@ -668,13 +666,13 @@ function groupesImportFromEntra() {
     const description    = document.getElementById('grp-entra-desc').value.trim() || undefined
     const color          = document.getElementById('grp-entra-color').value
 
-    if (!entra_group_id) { showFieldError('grp-entra-id', 'Sélectionnez un groupe Entra'); return }
-    if (!name)           { showFieldError('grp-entra-name', 'Nom requis'); return }
+    if (!entra_group_id) { showFieldError('grp-entra-id', t('groups.entra.group_required')); return }
+    if (!name)           { showFieldError('grp-entra-name', t('groups.form.name_required')); return }
 
     try {
       const res = await window.api.importGroupFromEntra({ entra_group_id, name, description, color })
       closeModal()
-      showToast(`Groupe importé — ${res.devices_imported} poste(s) importé(s)${res.unmatched ? `, ${res.unmatched} non trouvé(s)` : ''}`, 'success')
+      showToast(`${t('groups.toast.imported', { n: res.devices_imported })}${res.unmatched ? t('groups.toast.imported_unmatched', { n: res.unmatched }) : ''}`, 'success')
       await loadGroups()
     } catch (e) {
       showModalError(e.message)
@@ -685,7 +683,7 @@ function groupesImportFromEntra() {
 async function groupesSyncFromEntra(groupId) {
   try {
     const res = await window.api.syncGroupFromEntra(groupId)
-    showToast(`Synchronisé — ${res.devices_synced} poste(s), ${res.users_synced} utilisateur(s)${res.unmatched ? ` (${res.unmatched} postes non trouvés)` : ''}`, 'success')
+    showToast(`${t('groups.toast.synced', { devices: res.devices_synced, users: res.users_synced })}${res.unmatched ? ` ${t('groups.toast.synced_unmatched', { n: res.unmatched })}` : ''}`, 'success')
     await loadGroups(true)
   } catch (e) {
     showToast(e.message, 'error')
@@ -694,17 +692,17 @@ async function groupesSyncFromEntra(groupId) {
 
 function groupesDetachFromEntra(groupId, name) {
   showModal(`
-    <p class="modal-title">Détacher de Entra</p>
-    <p style="font-size:13px;color:var(--text-secondary)">Détacher <strong>${esc(name)}</strong> de son groupe Entra source ? Le groupe deviendra natif et ne sera plus synchronisé automatiquement. Les membres actuels sont conservés.</p>
+    <p class="modal-title">${t('groups.entra.detach_title')}</p>
+    <p style="font-size:13px;color:var(--text-secondary)">${t('groups.entra.detach_body', { name: `<strong>${esc(name)}</strong>` })}</p>
     <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">Annuler</button>
-      <button class="btn btn-danger" onclick="groupesDoDetach(${jsArg(groupId)})">Détacher</button>
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+      <button class="btn btn-danger" onclick="groupesDoDetach(${jsArg(groupId)})">${t('groups.btn.detach')}</button>
     </div>`)
   window.groupesDoDetach = async (gid) => {
     try {
       await window.api.detachGroupFromEntra(gid)
       closeModal()
-      showToast('Groupe détaché de Entra', 'success')
+      showToast(t('groups.toast.detached'), 'success')
       await loadGroups(true)
     } catch (e) {
       showModalError(e.message)
@@ -717,21 +715,21 @@ function groupesDetachFromEntra(groupId, name) {
 function groupForm({ name = '', description = '', color = 'slate' } = {}) {
   const colorOptions = COLOR_KEYS.map(k => {
     const p = PALETTE[k]
-    return `<option value="${k}" ${k === color ? 'selected' : ''}>${COLOR_LABELS[k]}</option>`
+    return `<option value="${k}" ${k === color ? 'selected' : ''}>${colorLabel(k)}</option>`
   }).join('')
   return `
     <div style="display:flex;flex-direction:column;gap:12px">
       <div>
-        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">Nom *</label>
-        <input class="form-input" id="grp-f-name" value="${esc(name)}" placeholder="Ex : Comptabilité" style="width:100%">
+        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">${t('groups.form.name_label')}</label>
+        <input class="form-input" id="grp-f-name" value="${esc(name)}" placeholder="${t('groups.form.name_placeholder')}" style="width:100%">
         <div id="grp-f-name-err" style="color:var(--red);font-size:12px;margin-top:3px;display:none"></div>
       </div>
       <div>
-        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">Description</label>
-        <input class="form-input" id="grp-f-desc" value="${esc(description)}" placeholder="Optionnel" style="width:100%">
+        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">${t('groups.form.description')}</label>
+        <input class="form-input" id="grp-f-desc" value="${esc(description)}" placeholder="${t('groups.form.optional')}" style="width:100%">
       </div>
       <div>
-        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">Couleur</label>
+        <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">${t('groups.form.color')}</label>
         <select class="form-input" id="grp-f-color" style="width:100%">${colorOptions}</select>
       </div>
     </div>`
@@ -755,7 +753,7 @@ function showModalError(msg) {
 
 function showError(e) {
   const body = document.getElementById('grp-detail')
-  if (body) body.innerHTML = `<p style="color:var(--red);font-size:13px">Erreur : ${esc(e.message)}</p>`
+  if (body) body.innerHTML = `<p style="color:var(--red);font-size:13px">${t('groups.error', { msg: esc(e.message) })}</p>`
 }
 
 function showToast(msg, type) { window.showToast(msg, type) }
