@@ -87,7 +87,18 @@ function renderList(q = '') {
 
 function filterScripts(q) { renderList(q) }
 
+// Dirty-tracking de l'éditeur : changer de script ou re-render écrasait
+// silencieusement les modifications non sauvegardées.
+function editorIsDirty() {
+  const ta = document.getElementById('sc-code')
+  if (!ta || ta.readOnly) return false
+  const current = _scripts.find(x => x.id === _activeId)
+  return !!current && ta.value !== current.code
+}
+
 async function selectScript(id) {
+  if (id !== _activeId && editorIsDirty()
+      && !confirm(t('scripts.confirm.discard_changes'))) return
   _activeId = id
   renderList()
   const col = document.getElementById('script-editor-col')

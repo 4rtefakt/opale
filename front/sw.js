@@ -1,8 +1,11 @@
-const CACHE_NAME = 'opale-v4'
+const CACHE_NAME = 'opale-v5'
 
 // Charge window/self.ENV pour récupérer le branding (fallback titre push).
 // importScripts est synchrone et ne bloque pas l'install si l'endpoint échoue.
 try { importScripts('/env.js') } catch { /* env indispo : on tombera sur les fallbacks */ }
+// Précache complet : vues mobiles, locales et icônes inclus — sans eux,
+// une install fraîche qui passait hors-ligne obtenait un shell sans vues
+// ni icônes.
 const PRECACHE = [
   '/mobile.html',
   '/mobile-app.js',
@@ -11,6 +14,31 @@ const PRECACHE = [
   '/api.js',
   '/i18n.js',
   '/env.js',
+  '/biometric.js',
+  '/icon.svg',
+  '/locales/fr.js',
+  '/locales/en.js',
+  '/tabler-icons-webfont/tabler-icons.min.css',
+  '/tabler-icons-webfont/fonts/tabler-icons.woff2',
+  '/views/mobile/alertes.js',
+  '/views/mobile/ask.js',
+  '/views/mobile/audit.js',
+  '/views/mobile/conformite.js',
+  '/views/mobile/dashboard.js',
+  '/views/mobile/menu.js',
+  '/views/mobile/nav-config.js',
+  '/views/mobile/onboarding.js',
+  '/views/mobile/packages.js',
+  '/views/mobile/poste.js',
+  '/views/mobile/postes.js',
+  '/views/mobile/rapports.js',
+  '/views/mobile/scripts.js',
+  '/views/mobile/search.js',
+  '/views/mobile/settings.js',
+  '/views/mobile/ssh.js',
+  '/views/mobile/stock.js',
+  '/views/mobile/ticket.js',
+  '/views/mobile/tickets.js',
 ]
 
 // ── Installation : précache des assets statiques ──────────────────────────────
@@ -28,6 +56,11 @@ self.addEventListener('activate', e => {
     caches.keys()
       .then(keys => Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
+      // Prévenir les pages ouvertes qu'une nouvelle version est active :
+      // en cache-first, elles tournent encore sur les vieux assets jusqu'au
+      // prochain reload — on leur laisse afficher un toast "recharger".
+      .then(() => self.clients.matchAll({ type: 'window' }))
+      .then(clients => clients.forEach(c => c.postMessage({ type: 'sw-updated' })))
   )
 })
 

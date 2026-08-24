@@ -6,7 +6,7 @@
 <title>Opale</title>
 <link rel="icon" type="image/svg+xml" href="/branding/icon.svg">
 <!-- Tabler Icons — self-host via setup.sh avant mise en production -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<link rel="stylesheet" href="/tabler-icons-webfont/tabler-icons.min.css">
 <link rel="stylesheet" href="/styles/main.css">
 <script src="/env.js"></script>
 <script>
@@ -56,35 +56,35 @@
       </div>
     </div>
 
-    <span class="nav-section" data-module="core">Général</span>
-    <a class="nav-item" href="#/dashboard" data-module="core"><i class="ti ti-layout-dashboard"></i> Dashboard</a>
-    <a class="nav-item" href="#/alertes" data-module="monitoring"><i class="ti ti-bell"></i> Alertes
+    <span class="nav-section" data-module="core" data-i18n="nav.section.general">Général</span>
+    <a class="nav-item" href="#/dashboard" data-module="core"><i class="ti ti-layout-dashboard"></i> <span data-i18n="nav.dashboard">Dashboard</span></a>
+    <a class="nav-item" href="#/alertes" data-module="monitoring"><i class="ti ti-bell"></i> <span data-i18n="nav.alertes">Alertes</span>
       <span class="nav-badge" id="badge-alertes" style="display:none"></span>
     </a>
-    <a class="nav-item" href="#/tickets" data-module="tickets"><i class="ti ti-ticket"></i> Tickets
+    <a class="nav-item" href="#/tickets" data-module="tickets"><i class="ti ti-ticket"></i> <span data-i18n="nav.tickets">Tickets</span>
       <span class="nav-badges">
         <span class="nav-badge" id="badge-proposals" title="Propositions à valider" style="display:none"></span>
         <span class="nav-badge nav-badge-warn" id="badge-tickets" title="Tickets ouverts non assignés" style="display:none"></span>
       </span>
     </a>
 
-    <span class="nav-section" data-module="inventory">Parc</span>
-    <a class="nav-item" href="#/postes" data-module="inventory"><i class="ti ti-device-laptop"></i> Postes</a>
-    <a class="nav-item" href="#/conformite" data-module="monitoring"><i class="ti ti-shield-check"></i> Conformité</a>
-    <a class="nav-item" href="#/reseau" data-module="monitoring"><i class="ti ti-network"></i> Réseau</a>
-    <a class="nav-item" href="#/stock" data-module="inventory"><i class="ti ti-package"></i> Stock consommable</a>
-    <a class="nav-item" href="#/users" data-module="core"><i class="ti ti-users"></i> Utilisateurs</a>
-    <a class="nav-item" href="#/groupes" data-module="groups"><i class="ti ti-circles"></i> Groupes</a>
+    <span class="nav-section" data-module="inventory" data-i18n="nav.section.parc">Parc</span>
+    <a class="nav-item" href="#/postes" data-module="inventory"><i class="ti ti-device-laptop"></i> <span data-i18n="nav.postes">Postes</span></a>
+    <a class="nav-item" href="#/conformite" data-module="monitoring"><i class="ti ti-shield-check"></i> <span data-i18n="nav.conformite">Conformité</span></a>
+    <a class="nav-item" href="#/reseau" data-module="monitoring"><i class="ti ti-network"></i> <span data-i18n="nav.reseau">Réseau</span></a>
+    <a class="nav-item" href="#/stock" data-module="inventory"><i class="ti ti-package"></i> <span data-i18n="nav.stock">Stock consommable</span></a>
+    <a class="nav-item" href="#/users" data-module="core"><i class="ti ti-users"></i> <span data-i18n="nav.users">Utilisateurs</span></a>
+    <a class="nav-item" href="#/groupes" data-module="groups"><i class="ti ti-circles"></i> <span data-i18n="nav.groupes">Groupes</span></a>
 
-    <span class="nav-section" data-module="inventory">Outils</span>
-    <a class="nav-item" href="#/packages" data-module="inventory"><i class="ti ti-rocket"></i> Déploiement</a>
-    <a class="nav-item" href="#/scripts" data-module="inventory"><i class="ti ti-terminal-2"></i> Scripts</a>
-    <a class="nav-item" href="#/onboarding" data-module="onboarding"><i class="ti ti-checklist"></i> Onboarding</a>
-    <a class="nav-item" href="#/rapports" data-module="monitoring"><i class="ti ti-chart-bar"></i> Rapports</a>
+    <span class="nav-section" data-module="inventory" data-i18n="nav.section.outils">Outils</span>
+    <a class="nav-item" href="#/packages" data-module="inventory"><i class="ti ti-rocket"></i> <span data-i18n="nav.packages">Déploiement</span></a>
+    <a class="nav-item" href="#/scripts" data-module="inventory"><i class="ti ti-terminal-2"></i> <span data-i18n="nav.scripts">Scripts</span></a>
+    <a class="nav-item" href="#/onboarding" data-module="onboarding"><i class="ti ti-checklist"></i> <span data-i18n="nav.onboarding">Onboarding</span></a>
+    <a class="nav-item" href="#/rapports" data-module="monitoring"><i class="ti ti-chart-bar"></i> <span data-i18n="nav.rapports">Rapports</span></a>
 
-    <span class="nav-section" data-module="core">Config</span>
-    <a class="nav-item" href="#/audit" data-module="core"><i class="ti ti-history"></i> Audit</a>
-    <a class="nav-item" href="#/parametres" data-module="core"><i class="ti ti-settings"></i> Paramètres</a>
+    <span class="nav-section" data-module="core" data-i18n="nav.section.config">Config</span>
+    <a class="nav-item" href="#/audit" data-module="core"><i class="ti ti-history"></i> <span data-i18n="nav.audit">Audit</span></a>
+    <a class="nav-item" href="#/parametres" data-module="core"><i class="ti ti-settings"></i> <span data-i18n="nav.parametres">Paramètres</span></a>
 
     <div class="sidebar-footer" id="sidebar-user-btn" onclick="toggleUserMenu()" title="Menu utilisateur">
       <div class="avatar" id="sidebar-avatar">?</div>
@@ -94,7 +94,7 @@
       </div>
       <div id="user-menu" class="user-menu hidden">
         <button class="user-menu-item" onclick="window.auth.logout()">
-          <i class="ti ti-logout"></i> Déconnexion
+          <i class="ti ti-logout"></i> <span data-i18n="nav.logout">Déconnexion</span>
         </button>
       </div>
     </div>
@@ -143,7 +143,7 @@
 </div>
 
 <!-- TOAST -->
-<div id="toast" class="toast hidden"></div>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
 <script type="module" src="/app.js"></script>
 </body>

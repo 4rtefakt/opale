@@ -116,7 +116,7 @@ async function reseauRefresh() {
     updateSortHeaders()
   } catch (err) {
     const tbody = document.getElementById('reseau-tbody')
-    if (tbody) tbody.innerHTML = `<tr><td colspan="8" style="padding:1rem;color:var(--red)">${esc(err.message)}</td></tr>`
+    if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="padding:1rem;color:var(--red)">${esc(err.message)}</td></tr>`
   }
 }
 
@@ -171,7 +171,7 @@ function renderTable() {
   if (!tbody) return
   const rows = getFiltered()
   if (rows.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state" style="padding:2rem"><i class="ti ti-network"></i><p>${t('reseau.empty')}</p></div></td></tr>`
+    tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state" style="padding:2rem"><i class="ti ti-network"></i><p>${t('reseau.empty')}</p></div></td></tr>`
     return
   }
   tbody.innerHTML = rows.map(rowHtml).join('')

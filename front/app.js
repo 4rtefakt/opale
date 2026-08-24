@@ -66,6 +66,15 @@ function applyModuleVisibility() {
   })
 }
 
+// Traduit les éléments statiques du shell (sidebar) marqués data-i18n.
+// Appelé au boot et à chaque localechange.
+function applyStaticI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.getAttribute('data-i18n'))
+  })
+}
+window.addEventListener('localechange', applyStaticI18n)
+
 window.showToast = (msg, type = 'info') => {
   const el = document.getElementById('toast')
   el.textContent = msg
@@ -85,12 +94,75 @@ window.errorBox = (msg, retryFnName) => `
     ${retryFnName ? `<button class="btn" onclick="${retryFnName}()"><i class="ti ti-refresh"></i> ${esc(t('btn.retry'))}</button>` : ''}
   </div>`
 
+let _modalPrevFocus = null
+
 window.showModal = (html) => {
-  document.getElementById('modal-content').innerHTML = html
-  document.getElementById('modal-overlay').classList.remove('hidden')
+  const overlay = document.getElementById('modal-overlay')
+  const content = document.getElementById('modal-content')
+  content.innerHTML = html
+  // Sémantique dialogue + gestion du focus : sans ça, les lecteurs d'écran
+  // ne signalent pas le modal et le focus clavier reste derrière l'overlay.
+  content.setAttribute('role', 'dialog')
+  content.setAttribute('aria-modal', 'true')
+  content.setAttribute('tabindex', '-1')
+  overlay.classList.remove('hidden')
+  _modalPrevFocus = document.activeElement
+  const first = content.querySelector('input, select, textarea, button')
+  ;(first || content).focus()
 }
 window.closeModal = () => {
-  document.getElementById('modal-overlay').classList.add('hidden')
+  const overlay = document.getElementById('modal-overlay')
+  if (overlay.classList.contains('hidden')) return
+  overlay.classList.add('hidden')
+  if (_modalPrevFocus?.focus) _modalPrevFocus.focus()
+  _modalPrevFocus = null
+}
+
+// Fermeture "polie" : si un champ contient du texte, on confirme avant de
+// jeter la saisie (Escape fermait sans prévenir, backdrop ne fermait pas).
+function modalIsDirty() {
+  const content = document.getElementById('modal-content')
+  if (!content) return false
+  return [...content.querySelectorAll('input[type="text"], input:not([type]), textarea')]
+    .some(el => el.value.trim() !== '')
+}
+window.requestCloseModal = () => {
+  if (modalIsDirty() && !confirm(t('modal.discard_confirm'))) return
+  closeModal()
+}
+
+// Backdrop : clic hors du contenu = demande de fermeture (convention UI).
+document.addEventListener('click', (e) => {
+  if (e.target === document.getElementById('modal-overlay')) window.requestCloseModal()
+})
+
+// Piège à focus : Tab reste dans le modal tant qu'il est ouvert.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab') return
+  const overlay = document.getElementById('modal-overlay')
+  if (!overlay || overlay.classList.contains('hidden')) return
+  const foci = overlay.querySelectorAll(
+    'input, select, textarea, button, a[href], [tabindex]:not([tabindex="-1"])')
+  if (!foci.length) return
+  const first = foci[0], last = foci[foci.length - 1]
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+})
+
+// withBusy — anti double-submit (porté du shell mobile) : désactive le
+// bouton et affiche un spinner le temps de l'action asynchrone.
+window.withBusy = async (btn, fn) => {
+  if (!btn) return fn()
+  if (btn.disabled) return
+  const prev = btn.innerHTML
+  btn.disabled = true
+  btn.innerHTML = '<span class="loading-spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:-2px"></span>'
+  try {
+    return await fn()
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = prev
+  }
 }
 
 // ─── Search ───
@@ -108,40 +180,39 @@ document.addEventListener('keydown', (e) => {
     openAsk()
   }
   if (e.key === 'Escape') {
-    closeModal()
+    window.requestCloseModal()
     window.closeAskPalette?.()
   }
 })
 
 // ─── Formatage ───
+// Basé sur Intl + la locale active (getLocale) : les dates relatives et
+// absolues suivent la langue de l'UI au lieu d'être codées en dur en FR.
+const _localeTag = () => (getLocale?.() === 'en' ? 'en-GB' : 'fr-FR')
+
 window.formatWithDate = (iso) => {
-  if (!iso) return 'jamais'
+  if (!iso) return t('common.never')
   const rel = window.formatRelative(iso)
   const d   = new Date(iso)
-  const abs = d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }) +
-              ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+  const tag = _localeTag()
+  const abs = d.toLocaleDateString(tag, { day: 'numeric', month: 'short', year: 'numeric' }) +
+              ' ' + d.toLocaleTimeString(tag, { hour: '2-digit', minute: '2-digit' })
   return `${rel} · ${abs}`
 }
 
 window.formatRelative = (iso) => {
-  if (!iso) return 'jamais'
+  if (!iso) return t('common.never')
   const diff = Date.now() - new Date(iso).getTime()
   const min  = Math.floor(diff / 60_000)
   const h    = Math.floor(diff / 3_600_000)
   const d    = Math.floor(diff / 86_400_000)
-  if (min < 2)  return 'à l\'instant'
-  if (min < 60) return `il y a ${min} min`
-  if (h < 24)   return `il y a ${h}h`
-  if (d === 1)  return 'hier'
-  if (d < 30)   return `il y a ${d} jours`
-  const years  = Math.floor(d / 365)
-  const months = Math.floor((d % 365) / 30)
-  const days   = d % 30
-  const parts  = []
-  if (years)  parts.push(`${years} an${years > 1 ? 's' : ''}`)
-  if (months) parts.push(`${months} mois`)
-  if (days)   parts.push(`${days} jour${days > 1 ? 's' : ''}`)
-  return `il y a ${parts.join(', ').replace(/,([^,]*)$/, ' et$1')}`
+  if (min < 2) return t('common.just_now')
+  const rtf = new Intl.RelativeTimeFormat(_localeTag(), { numeric: 'auto' })
+  if (min < 60) return rtf.format(-min, 'minute')
+  if (h < 24)   return rtf.format(-h, 'hour')
+  if (d < 30)   return rtf.format(-d, 'day')
+  if (d < 365)  return rtf.format(-Math.floor(d / 30), 'month')
+  return rtf.format(-Math.floor(d / 365), 'year')
 }
 
 // ─── Router ───
@@ -376,6 +447,7 @@ async function init() {
 
   // Retire du DOM les entrées de menu des modules désactivés avant tout render
   applyModuleVisibility()
+  applyStaticI18n()
 
   // Barre Ask Opale globale : déclencheur visible de la palette (le ⌘K seul
   // n'était pas découvrable). Le bandeau est déjà retiré par applyModuleVisibility

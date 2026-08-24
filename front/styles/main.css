@@ -1237,3 +1237,42 @@ kbd {
 }
 .icon-btn:hover            { background: var(--bg-tertiary); color: var(--text-primary); }
 .icon-btn-danger:hover     { background: var(--red-bg); color: var(--red); }
+
+/* ─── ACCESSIBILITÉ CLAVIER ───
+   Focus visible sur tout ce qui est activable (les inputs avaient déjà un
+   style :focus, les boutons/lignes/nav rien du tout). */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* Les actions de ligne apparaissaient uniquement au :hover — invisibles au
+   clavier et au tactile. */
+tbody tr:focus-within .action-btn,
+.action-btn:focus-visible { opacity: 1; }
+
+/* ─── RESPONSIVE ───
+   Le shell était figé (grilles fixes) : entre 768 et ~1100px (tablettes,
+   fenêtres partagées) tout débordait. En-dessous de 768px, app.js redirige
+   vers le shell mobile. */
+@media (max-width: 1100px) {
+  .kpi-grid   { grid-template-columns: repeat(2, 1fr); }
+  .kpi-grid-3 { grid-template-columns: repeat(2, 1fr); }
+  .main-grid  { grid-template-columns: 1fr; }
+  .pd-grid    { grid-template-columns: 1fr; }
+  .rapports-grid-2 { grid-template-columns: 1fr; }
+}
+@media (max-width: 980px) {
+  .app { grid-template-columns: 64px 1fr; }
+  /* Sidebar en mode icônes : on masque libellés et sections, on centre les
+     icônes. Les title= des nav-items restent en tooltip. */
+  .sidebar .nav-section { display: none; }
+  .sidebar .nav-item { justify-content: center; padding: 10px 0; }
+  .sidebar .nav-item span[data-i18n] { display: none; }
+  .sidebar .nav-badges, .sidebar .nav-badge { display: none !important; }
+  .sidebar .logo-sub, .sidebar .avatar-name, .sidebar .avatar-role { display: none; }
+  .sidebar-footer { justify-content: center; }
+  .view-split { grid-template-columns: 300px 1fr; }
+  .ticket-body-grid { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
+}

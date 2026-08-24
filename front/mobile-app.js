@@ -1,4 +1,4 @@
-import { initI18n, t } from '/i18n.js'
+import { initI18n, setLocale, getLocale, t } from '/i18n.js'
 import '/auth.js'
 import '/api.js'
 import * as bio from '/biometric.js'
@@ -23,25 +23,25 @@ window.esc = (s) => String(s ?? '')
 // l'attribut → on remplace `"` par `&quot;` qui décode à l'évaluation.
 window.jsArg = (v) => JSON.stringify(String(v ?? '')).replace(/"/g, '&quot;')
 
+// Locale exposée comme sur desktop — permet un sélecteur de langue mobile
+// et le re-render à chaud via l'événement localechange.
+window.setLocale = setLocale
+window.getLocale = getLocale
+const _localeTag = () => (getLocale?.() === 'en' ? 'en-GB' : 'fr-FR')
+
 window.formatRelative = (iso) => {
-  if (!iso) return 'jamais'
+  if (!iso) return t('common.never')
   const diff = Date.now() - new Date(iso).getTime()
   const min = Math.floor(diff / 60_000)
   const h   = Math.floor(diff / 3_600_000)
   const d   = Math.floor(diff / 86_400_000)
-  if (min < 2)  return 'à l\'instant'
-  if (min < 60) return `il y a ${min} min`
-  if (h < 24)   return `il y a ${h}h`
-  if (d === 1)  return 'hier'
-  if (d < 30)   return `il y a ${d} j`
-  const years  = Math.floor(d / 365)
-  const months = Math.floor((d % 365) / 30)
-  const days   = d % 30
-  const parts  = []
-  if (years)  parts.push(`${years} an${years > 1 ? 's' : ''}`)
-  if (months) parts.push(`${months} mois`)
-  if (days)   parts.push(`${days} j`)
-  return `il y a ${parts.join(', ').replace(/,([^,]*)$/, ' et$1')}`
+  if (min < 2) return t('common.just_now')
+  const rtf = new Intl.RelativeTimeFormat(_localeTag(), { numeric: 'auto' })
+  if (min < 60) return rtf.format(-min, 'minute')
+  if (h < 24)   return rtf.format(-h, 'hour')
+  if (d < 30)   return rtf.format(-d, 'day')
+  if (d < 365)  return rtf.format(-Math.floor(d / 30), 'month')
+  return rtf.format(-Math.floor(d / 365), 'year')
 }
 
 window.appState = { user: null }
@@ -304,6 +304,13 @@ async function initPWA() {
 
   try {
     const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' })
+    // Nouvelle version du SW activée → proposer de recharger (sans ce
+    // signal, le cache-first servait l'ancien JS jusqu'à un reload manuel).
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data?.type === 'sw-updated') {
+        window.showToast?.(t('mobile.common.update_available'), 'info')
+      }
+    })
 
     // Push notifications
     if (!('PushManager' in window)) return
@@ -418,6 +425,9 @@ async function launchApp() {
   setInterval(updateBadge, 5 * 60 * 1000)
 
   window.addEventListener('hashchange', router)
+  // Re-render à chaud quand la langue change (le desktop le faisait déjà,
+  // le mobile restait figé sur la locale du localStorage).
+  window.addEventListener('localechange', router)
   await router()
 
   // Verrou automatique au retour en premier plan après inactivité

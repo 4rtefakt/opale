@@ -633,6 +633,7 @@ async function tkKanbanDrop(e, newStatus) {
   if (!tk || tk.status === newStatus) return
 
   const oldStatus = tk.status
+  const oldResolvedAt = tk.resolved_at
   // Optimistic update : on déplace en mémoire et on re-render
   tk.status = newStatus
   if (newStatus === 'resolved') tk.resolved_at = new Date().toISOString()
@@ -642,9 +643,10 @@ async function tkKanbanDrop(e, newStatus) {
     const updated = await window.api.updateTicket(ticketId, { status: newStatus })
     Object.assign(tk, updated, { tags: tk.tags })  // garde les tags chargés
   } catch {
-    // Rollback
+    // Rollback complet : restaurer le resolved_at d'origine (le mettre à
+    // null écrasait un resolved_at préexistant sur un ticket réouvert).
     tk.status = oldStatus
-    if (oldStatus !== 'resolved') tk.resolved_at = null
+    tk.resolved_at = oldResolvedAt
     renderKanbanCards()
     showToast(t('error.generic'), 'error')
   }
@@ -912,13 +914,14 @@ function renderDetail(tk, container) {
         </div>
         ${!resolved ? `
           <div class="reply-box">
-            <textarea class="reply-input" id="reply-input" placeholder="${t('tickets.reply_placeholder')}"></textarea>
+            <textarea class="reply-input" id="reply-input" placeholder="${t('tickets.reply_placeholder')}"
+              onkeydown="if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();sendReply('${tk.id}')}"></textarea>
             <div class="reply-actions">
               <button class="btn btn-sm" id="tk-ai-btn" onclick="tkAiSuggest('${tk.id}')" title="${esc(t('tickets.ai.hint'))}">
                 <i class="ti ti-sparkles" style="font-size:13px"></i> ${t('tickets.ai.suggest')}
               </button>
               <span style="flex:1"></span>
-              <button class="btn btn-primary btn-sm" onclick="sendReply('${tk.id}')">${t('tickets.send')}</button>
+              <button class="btn btn-primary btn-sm" id="reply-send-btn" onclick="sendReply('${tk.id}')">${t('tickets.send')}</button>
             </div>
           </div>
         ` : ''}
@@ -1201,6 +1204,8 @@ async function sendReply(id) {
   const input = document.getElementById('reply-input')
   const content = input?.value?.trim()
   if (!content) return
+  const btn = document.getElementById('reply-send-btn')
+  await window.withBusy(btn, async () => {
   try {
     // Pas de type explicite : l'API défaulte à 'internal_note' (Phase 1c).
     await window.api.addMessage(id, { content })
@@ -1212,6 +1217,7 @@ async function sendReply(id) {
   } catch {
     showToast(t('error.generic'), 'error')
   }
+  })
 }
 
 // Phase 1c — convertit une note interne en message à envoyer par mail.
