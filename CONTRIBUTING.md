@@ -65,6 +65,27 @@ features (`alerts`, `tickets`, `branding`, …).
 The maintainer squashes most PRs on merge — your individual commits don't
 need to be perfect.
 
+## Where to start
+
+Good first contributions, roughly by increasing scope:
+
+- **Locales** — `front/locales/{fr,en}.js`: some views still hardcode
+  French strings; converting them to `t()` keys is mechanical and CI
+  enforces key parity (`scripts/check-locales-parity.mjs`).
+- **Docs** — INSTALL.md, docs/OPERATIONS.md, troubleshooting entries.
+- **CLI subcommands** — `cli/cmd/`: the web UI has features the CLI
+  doesn't cover yet (LAPS retrieval, device settings, reports).
+- **Provider abstraction** — the big one: issues labeled
+  `auth-providers` / `mdm-providers` track generic-OIDC and non-Intune
+  support (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) §5).
+
+**Working without an Entra tenant**: you can run the entire API test
+suite with just a local Postgres (`PG_TEST_URL=… npm test`) — the tests
+sign their own JWTs against a local JWKS (`api/tests/helpers/jwt.js`)
+with `ENTRA_TENANT_ID=test-tenant ENTRA_CLIENT_ID=test-client`, so no
+Azure account is needed for API/agent/CLI work. Running the full web UI
+does currently require a real Entra app registration (free tier works).
+
 ## Security issues
 
 Do **not** open a public issue for security vulnerabilities. See

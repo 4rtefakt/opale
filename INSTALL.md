@@ -261,6 +261,9 @@ SYSTEM with the appropriate environment variables.
 
 ## 9. Day-2 operations
 
+> Backup, restore and upgrade procedures live in
+> [docs/OPERATIONS.md](docs/OPERATIONS.md) — read it before you need it.
+
 **Updating the API**
 ```bash
 git pull
