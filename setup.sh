@@ -30,6 +30,46 @@ curl -fsSL "https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js" \
 
 echo ""
 echo "✓ Bibliothèques téléchargées dans $FRONT/"
+
+# ─── Clés agent-go (signature binaires + escrow LAPS) ───────────────────────
+# docker-compose.example.yml monte ces fichiers : s'ils n'existent pas au
+# premier `up`, Docker crée des RÉPERTOIRES à leur place, ce qui empoisonne
+# toute génération ultérieure. On les génère donc ici si absents.
+#
+# Skippé hors checkout complet (ex : stage frontvendor du Dockerfile, qui ne
+# copie que setup.sh + front/ et n'a pas openssl).
+if [ ! -f agent-go/go.mod ] || ! command -v openssl >/dev/null 2>&1; then
+  echo "→ Clés agent : skip (pas de checkout agent-go ou openssl absent)"
+  exit 0
+fi
+
+KEYS=agent-go/keys
+mkdir -p "$KEYS" agent-go/dist
+
+for f in signing.key laps.key signing.pub laps.pub; do
+  if [ -d "$KEYS/$f" ]; then
+    echo "✗ $KEYS/$f est un répertoire (créé par un montage Docker avant la"
+    echo "  génération des clés). Supprimez-le (rmdir $KEYS/$f) puis relancez."
+    exit 1
+  fi
+done
+
+if [ ! -f "$KEYS/signing.key" ]; then
+  echo "→ Génération de la clé de signature agent (ed25519)..."
+  openssl genpkey -algorithm ed25519 -out "$KEYS/signing.key"
+  openssl pkey -in "$KEYS/signing.key" -pubout > "$KEYS/signing.pub"
+  chmod 600 "$KEYS/signing.key"
+fi
+
+if [ ! -f "$KEYS/laps.key" ]; then
+  echo "→ Génération de la clé d'escrow LAPS (RSA 4096)..."
+  openssl genrsa -out "$KEYS/laps.key" 4096 2>/dev/null
+  openssl rsa -in "$KEYS/laps.key" -pubout > "$KEYS/laps.pub" 2>/dev/null
+  chmod 600 "$KEYS/laps.key"
+fi
+
+echo "✓ Clés agent présentes dans $KEYS/ (privées en mode 600 — à sauvegarder :"
+echo "  perdre laps.key rend illisibles tous les mots de passe LAPS escrowés)"
 echo ""
 echo "Pensez à mettre à jour index.html pour pointer sur les fichiers locaux :"
 echo "  <link rel=\"stylesheet\" href=\"/tabler-icons-webfont/tabler-icons.min.css\">"

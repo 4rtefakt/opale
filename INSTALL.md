@@ -145,10 +145,16 @@ docker compose -f docker-compose.example.yml up -d
 docker compose -f docker-compose.example.yml logs -f api
 ```
 
-The first start applies `api/migrations/001_init.sql` automatically.
-Migrations `002+` are not auto-applied — run them in order:
+The first start applies `api/migrations/001_init.sql` automatically
+(Postgres initdb), then the API applies **all remaining migrations at
+boot** via its built-in runner (tracked in the `schema_migrations`
+table, serialized by an advisory lock). No manual step needed — watch
+the `api` logs for `migrations à jour`. To opt out and apply them
+yourself, set `MIGRATE_ON_BOOT=false` in `.env`; the manual loop is
+then:
 
 ```bash
+set -a; source .env; set +a   # export POSTGRES_USER / POSTGRES_DB
 for m in api/migrations/0[0-9][0-9]_*.sql; do
   [[ "$m" == *001_init.sql ]] && continue
   echo "→ $m"
@@ -174,17 +180,20 @@ screen with the Microsoft button.
 ## 6. Bootstrap the first admin
 
 The login flow trusts the JWT but reads admin status from the
-`users_cache` table. After your first login, your row exists but has
-`is_admin = false`. Promote yourself manually:
+`users_cache` table. **As long as no admin exists, the first account to
+sign in is promoted to admin automatically** (logged in the audit trail
+as `first_admin_bootstrap`) — so sign in yourself before sharing the
+URL. The full sidebar (Devices, Settings, Stock, etc.) appears right
+after that first login.
+
+To promote additional admins (or if you need to do it manually):
 
 ```bash
+set -a; source .env; set +a   # export POSTGRES_USER / POSTGRES_DB
 docker compose -f docker-compose.example.yml exec -T db \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
   "UPDATE users_cache SET is_admin = true WHERE email = 'you@example.com';"
 ```
-
-Refresh the browser. The full sidebar (Devices, Settings, Stock, etc.)
-should now appear.
 
 ---
 
@@ -266,10 +275,10 @@ git pull
 ```
 
 **Applying a new migration**
+
+Restart the API — pending migrations are applied at boot:
 ```bash
-docker compose -f docker-compose.example.yml exec -T db \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  < api/migrations/0NN_description.sql
+docker compose -f docker-compose.example.yml restart api
 ```
 
 **One-off data migration scripts** (`api/scripts/`)
@@ -333,7 +342,7 @@ signature, and self-replaces atomically with rollback on failure.
 | Symptom | Likely cause |
 |---|---|
 | 401 on every API call after login | `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` mismatch with the redirect URI configured in Entra |
-| Login works but sidebar is empty | `users_cache.is_admin` not set — see step 6 |
+| Login works but sidebar is empty | `users_cache.is_admin` not set (an admin already existed at first login) — see step 6 |
 | Agent installs but no checkin | Server URL unreachable from the endpoint (firewall? mesh VPN missing?) — check `C:\ProgramData\<DataDir>\agent.log` |
 | Agent rolls back after each update | Signature verification failure — the agent expects the binary served by `/api/agent/binary` to be signed by the ed25519 key embedded at build time |
 | Push notifications don't trigger | `VAPID_EMAIL` missing or invalid — must be `mailto:…` or a bare email |

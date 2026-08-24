@@ -24,6 +24,33 @@ const fastify = Fastify({
   logger: { level: process.env.NODE_ENV === 'production' ? 'info' : 'debug' }
 })
 
+// Garde-fou montage Docker : si signing.key / laps.key n'existaient pas au
+// premier `up`, Docker a créé des RÉPERTOIRES à leur place — état silencieux
+// qui casse la signature des binaires et l'escrow LAPS. On échoue fort avec
+// la marche à suivre plutôt que de laisser pourrir.
+{
+  const { statSync } = await import('fs')
+  const agentKeys = [
+    process.env.AGENT_SIGNING_KEY || join(__dirname, 'agent-go/keys/signing.key'),
+    process.env.LAPS_PRIVATE_KEY  || join(__dirname, 'agent-go/keys/laps.key'),
+  ]
+  for (const p of agentKeys) {
+    try {
+      if (statSync(p).isDirectory()) {
+        throw new Error(
+          `${p} est un répertoire, pas une clé. Docker l'a créé parce que le ` +
+          `fichier n'existait pas au premier démarrage. Supprimez-le, générez ` +
+          `les clés (bash setup.sh) puis relancez.`
+        )
+      }
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err
+      // Absente = OK : les clés sont optionnelles tant qu'on ne sert pas de
+      // binaires agent ni d'escrow LAPS.
+    }
+  }
+}
+
 if (!process.env.SSH_USER) {
   fastify.log.warn(
     "SSH_USER non défini — utilisation du défaut 'opale'. " +
@@ -85,6 +112,17 @@ await fastify.register(cleanupPlugin)
 await fastify.register(errorHandlerPlugin)
 await fastify.register(sensible)   // expose fastify.httpErrors.X()
 
+// Sonde de vie — utilisée par le healthcheck compose, le reverse proxy et
+// tout orchestrateur. 200 si l'API et la DB répondent, 503 sinon.
+fastify.get('/api/health', async (req, reply) => {
+  try {
+    await fastify.db.query('SELECT 1')
+    return { status: 'ok' }
+  } catch {
+    return reply.code(503).send({ status: 'db_unavailable' })
+  }
+})
+
 // Chargement des modules activés (cf. modules.config.js).
 const modules = await loadModules(fastify)
 
@@ -101,3 +139,17 @@ await fastify.listen({ port, host: '0.0.0.0' })
 
 // Workers / timers des modules — démarrés après listen().
 startModuleWorkers(modules, fastify)
+
+// Arrêt propre : docker stop envoie SIGTERM — on ferme les connexions HTTP/WS
+// en cours et le pool pg (hooks onClose) au lieu de mourir mid-transaction.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.once(sig, async () => {
+    fastify.log.info({ sig }, 'signal reçu — arrêt propre')
+    try {
+      await fastify.close()
+    } catch (err) {
+      fastify.log.error({ err: err.message }, 'erreur pendant la fermeture')
+    }
+    process.exit(0)
+  })
+}

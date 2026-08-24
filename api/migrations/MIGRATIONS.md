@@ -3,18 +3,21 @@
 ## Fonctionnement
 
 - **`001_init.sql`** : monté sur `/docker-entrypoint-initdb.d/` du container
-  PostgreSQL via `docker-compose.yml`. Joué automatiquement la première
-  fois que la DB est initialisée (DB vide).
-- **`002+`** : appliquées **manuellement** par le maintainer après
-  rebuild/déploiement, dans l'ordre alphabétique du nom de fichier.
+  PostgreSQL via la compose. Joué automatiquement la première fois que la
+  DB est initialisée (DB vide).
+- **Runner intégré** : au boot, l'API applique toutes les migrations
+  `NNN_*.sql` dans l'ordre alphabétique via
+  [`api/lib/migrate.js`](../lib/migrate.js) — chacune dans sa propre
+  transaction, tracée dans la table `schema_migrations`, sérialisé par un
+  advisory lock. Les instances existantes (pré-runner) rejouent tout une
+  fois au premier boot : no-op sûr, toutes les migrations sont
+  idempotentes. Opt-out : `MIGRATE_ON_BOOT=false`.
 - **CI** : le job `validate-sql-migrations` (cf.
   [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)) joue tous
   les fichiers `api/migrations/0*.sql` dans l'ordre alphabétique sur une
   DB Postgres 16 fraîche, puis **les rejoue une seconde fois** pour
-  valider l'idempotence. Toute migration doit donc être idempotente.
-
-Il n'existe **pas** de table `_migrations` ni de runner intégré. Le
-maintainer trace ce qu'il a appliqué via le `git log` et le déploiement.
+  valider l'idempotence. Toute migration doit donc rester idempotente —
+  le runner en dépend pour le premier boot des instances existantes.
 
 ## Convention de nommage
 

@@ -24,16 +24,24 @@ curl -fsSL https://opale.pages.dev/install.sh | bash
 
 Or step-by-step if you'd rather see every command:
 
+> **Hard requirement:** Opale's SSO is Microsoft Entra ID only — there is
+> no local password login. You need an Entra tenant and the rights to
+> create an App Registration (and grant it admin consent) *before*
+> installing. See [INSTALL.md §3](INSTALL.md) and the
+> [provider matrix](docs/CONFIGURATION.md).
+
 ```bash
 git clone https://github.com/4rtefakt/opale.git && cd opale
-cp .env.example .env                                # fill in the required values
-./setup.sh                                          # vendor front-end deps
-docker compose -f docker-compose.example.yml up -d  # API + Postgres
+cp .env.example .env      # fill in the required values (incl. Entra tenant/client,
+                          # and FRONTEND_URL=http://localhost:3010 for a local try)
+./setup.sh                # vendor front-end deps + generate agent keys
+docker compose -f docker-compose.example.yml up -d  # API + Postgres (all
+                          # migrations are applied automatically at API boot)
 ```
 
-Browse to `http://localhost:3010`. For a production deployment with TLS,
-Microsoft Entra app registration, and the Windows agent, follow
-[INSTALL.md](INSTALL.md).
+Browse to `http://localhost:3010` — the first account to sign in becomes
+the admin. For a production deployment with TLS, Microsoft Entra app
+registration, and the Windows agent, follow [INSTALL.md](INSTALL.md).
 
 ---
 

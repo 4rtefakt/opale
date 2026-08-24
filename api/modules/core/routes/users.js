@@ -86,6 +86,27 @@ export default async function usersRoute(fastify) {
       [entraId, displayName, email]
     )
 
+    // Bootstrap : tant qu'aucun admin n'existe, le premier compte qui se
+    // connecte le devient. Les connexions passent déjà par le tenant Entra
+    // de l'instance, donc ce premier compte est forcément un compte de
+    // l'organisation. Tracé en audit ; sans effet dès qu'un admin existe.
+    const promoted = await fastify.db.query(
+      `UPDATE users_cache SET is_admin = true
+       WHERE entra_id = $1
+         AND NOT EXISTS (SELECT 1 FROM users_cache WHERE is_admin = true)
+       RETURNING entra_id`,
+      [entraId]
+    )
+    if (promoted.rows.length) {
+      fastify.log.warn({ entraId, email }, 'premier login — compte promu admin')
+      await fastify.db.query(
+        `INSERT INTO audit_logs (action, by_user, target, details)
+         VALUES ('first_admin_bootstrap', $1, $2, $3)`,
+        [displayName || email || entraId, entraId,
+         JSON.stringify({ email, reason: 'aucun admin existant' })]
+      ).catch(err => fastify.log.warn({ err: err.message }, 'audit first_admin_bootstrap échoué'))
+    }
+
     const res = await fastify.db.query(
       'SELECT is_admin, job_title FROM users_cache WHERE entra_id = $1',
       [entraId]

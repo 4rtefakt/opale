@@ -49,6 +49,11 @@ bold ""
 bold "  Opale installer"
 printf '%s  https://github.com/4rtefakt/opale%s\n\n' "$DIM" "$RESET"
 
+# Hard requirement stated before anything is cloned: there is no local login.
+printf '%sOpale requires a Microsoft Entra ID tenant (SSO is Entra-only, no local\n' "$BOLD"
+printf 'password auth) and an App Registration you can grant admin consent for.\n'
+printf 'See INSTALL.md §3. Press Ctrl+C now if you do not have that.%s\n\n' "$RESET"
+
 # ─── 1. Prerequisites ──────────────────────────────────────────────────────
 info "Checking prerequisites"
 missing=0
@@ -144,14 +149,16 @@ info "Starting the stack (docker compose -f docker-compose.example.yml up -d)"
 docker compose -f docker-compose.example.yml up -d
 
 # ─── 8. Healthcheck poll ───────────────────────────────────────────────────
-info "Waiting for API to respond (up to 60s)"
+# /api/health returns 200 only once the API is up, the DB answers, and all
+# SQL migrations have been applied by the boot-time runner.
+info "Waiting for API + database migrations (up to 120s)"
 ready=0
-for _ in $(seq 1 60); do
-  if curl -sf "http://localhost:3010/env.js" >/dev/null 2>&1; then ready=1; break; fi
+for _ in $(seq 1 120); do
+  if curl -sf "http://localhost:3010/api/health" >/dev/null 2>&1; then ready=1; break; fi
   sleep 1
 done
-if [[ "$ready" -eq 1 ]]; then ok "API responding on :3010"
-else err "API did not respond within 60s — check 'docker compose logs api'"; fi
+if [[ "$ready" -eq 1 ]]; then ok "API healthy on :3010 (schema migrated)"
+else err "API did not become healthy within 120s — check 'docker compose logs api'"; fi
 
 # ─── 9. Next steps ─────────────────────────────────────────────────────────
 bold ""
@@ -169,8 +176,9 @@ ${DIM}Next steps:${RESET}
 
   ${BOLD}2.${RESET} In Entra → API permissions, grant admin consent for the application.
 
-  ${BOLD}3.${RESET} Open ${BOLD}https://${DOMAIN}${RESET} and sign in. Your account becomes the
-     first admin automatically.
+  ${BOLD}3.${RESET} Open ${BOLD}https://${DOMAIN}${RESET} and sign in. As long as no admin exists,
+     the first account to sign in is promoted to admin (audited). Verify it
+     is yours before sharing the URL.
 
   ${BOLD}4.${RESET} Build the Windows agent:
          node agent-go/build.js --url https://${DOMAIN}
@@ -181,6 +189,8 @@ ${DIM}Next steps:${RESET}
          docker compose -f docker-compose.example.yml restart api
 
 ${DIM}Logs:${RESET}       docker compose -f docker-compose.example.yml logs -f api
-${DIM}Backup .env:${RESET} cp .env .env.backup.\$(date +%s)
+${DIM}Backups:${RESET}    back up .env, agent-go/keys/ (losing laps.key bricks every
+            escrowed password), the pgdata volume (pg_dump) and the
+            attachments volume — see docs/OPERATIONS.md
 ${DIM}Full docs:${RESET}  ${INSTALL_DIR}/INSTALL.md
 EOF

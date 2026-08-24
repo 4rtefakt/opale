@@ -1,3 +1,6 @@
+# Stack du maintainer (API-only image + Ollama toujours actif). Ce fichier
+# N'EST PAS le chemin self-hosters : utilisez docker-compose.example.yml,
+# qui est la référence documentée dans README.md et INSTALL.md.
 services:
   api:
     build: { context: ., dockerfile: api/Dockerfile }

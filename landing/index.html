@@ -1467,7 +1467,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
         </div>
         <h3>Inventory &amp; monitoring</h3>
-        <p>The core that everything else hangs off. Populate it however suits you: manual entry, optional Microsoft Intune sync, or the optional cross-platform Go agent (Windows, macOS, Linux) for hardware, disk, network and bandwidth telemetry every 15&nbsp;minutes.</p>
+        <p>The core that everything else hangs off. Populate it however suits you: manual entry, optional Microsoft Intune sync, or the optional Go agent for hardware, disk, network and bandwidth telemetry every 15&nbsp;minutes. Full management is Windows-only today; Linux/macOS builds cover inventory &amp; metrics only.</p>
         <span class="tag">intune · agent · ed25519 · all opt-in</span>
       </article>
 
@@ -1611,10 +1611,10 @@
       <div class="arch-box">
         <div class="label">Endpoints · optional</div>
         <div class="title">Endpoint agent</div>
-        <div class="sub">Optional Go service for richer telemetry. Checks in every 15&nbsp;min, ed25519-signed auto-update. Windows, macOS and Linux &mdash; amd64 and arm64. Skip it entirely if Intune or manual entry is enough.</div>
+        <div class="sub">Optional Go service for richer telemetry. Checks in every 15&nbsp;min, ed25519-signed auto-update. Windows today for full management (scripts, LAPS, console); Linux/macOS binaries exist but cover inventory &amp; metrics only. Skip it entirely if Intune or manual entry is enough.</div>
         <div style="margin-top: 14px;">
           <span class="arch-pill">go</span>
-          <span class="arch-pill">cross-platform</span>
+          <span class="arch-pill">windows · full</span>
           <span class="arch-pill">ed25519</span>
         </div>
       </div>
@@ -1653,11 +1653,11 @@
       <div class="arch-box">
         <div class="label">Identity</div>
         <div class="title">Your identity provider</div>
-        <div class="sub">SSO via standard OIDC, JWT verified server-side via JWKS &mdash; works with any compliant IdP. Intune compliance sync and Graph group assignment are <strong>fully optional</strong> add-ons.</div>
+        <div class="sub">SSO via OIDC, JWT verified server-side via JWKS. <strong>Microsoft Entra ID is required today</strong> (no local password auth); generic-IdP support is the tracked path (label <code>auth-providers</code>). Intune compliance sync and Graph group assignment are optional add-ons.</div>
         <div style="margin-top: 14px;">
           <span class="arch-pill">oidc</span>
           <span class="arch-pill">jwks</span>
-          <span class="arch-pill">intune · opt.</span>
+          <span class="arch-pill">entra · required</span>
           <span class="arch-pill">graph · opt.</span>
         </div>
       </div>
@@ -1713,11 +1713,11 @@
       <div class="stack-row"><div class="k">backend</div><div class="v">Node · Fastify · ESM</div></div>
       <div class="stack-row"><div class="k">database</div><div class="v">PostgreSQL · raw SQL</div></div>
       <div class="stack-row"><div class="k">frontend</div><div class="v">Vanilla JS · no build step</div></div>
-      <div class="stack-row"><div class="k">auth</div><div class="v">OIDC · JWKS · any IdP</div></div>
+      <div class="stack-row"><div class="k">auth</div><div class="v">OIDC · JWKS · Entra ID (required today)</div></div>
       <div class="stack-row"><div class="k">remote shell</div><div class="v">WebSocket · ssh2 · xterm.js</div></div>
       <div class="stack-row"><div class="k">push</div><div class="v">Web Push · VAPID · SW</div></div>
       <div class="stack-row"><div class="k">mobile</div><div class="v">PWA · WebAuthn</div></div>
-      <div class="stack-row"><div class="k">agent</div><div class="v">Go · cross-platform · ed25519</div></div>
+      <div class="stack-row"><div class="k">agent</div><div class="v">Go · Windows (full) · ed25519</div></div>
       <div class="stack-row"><div class="k">cli</div><div class="v">Go · Cobra · PKCE</div></div>
       <div class="stack-row"><div class="k">packaging</div><div class="v">Docker Compose · single Dockerfile</div></div>
       <div class="stack-row"><div class="k">license</div><div class="v">AGPL-3.0</div></div>

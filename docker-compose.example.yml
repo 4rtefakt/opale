@@ -21,10 +21,21 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - "3010:3010"   # binder en 127.0.0.1:3010 si reverse proxy local
+      # La topologie documentée place toujours un reverse proxy TLS devant
+      # l'API — on ne bind donc que localhost. Pour exposer directement
+      # (déconseillé, pas de TLS) : "3010:3010".
+      - "127.0.0.1:3010:3010"
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      # /api/health répond 200 quand l'API et la DB sont opérationnelles.
+      test: ["CMD", "node", "-e",
+             "fetch('http://localhost:3010/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout:  5s
+      retries:  3
+      start_period: 30s
     volumes:
       # ─ Front (HTML/JS/CSS + branding) ────────────────────────────────
       # Monté en lecture seule pour permettre le hot-update du front sans
@@ -43,9 +54,14 @@ services:
       #     openssl genrsa -out agent-go/keys/laps.key 4096
       #     openssl rsa -in agent-go/keys/laps.key -pubout > agent-go/keys/laps.pub
       #   Puis (re)compilez l'agent : node agent-go/build.js --token … --url …
+      #   NB : setup.sh génère ces clés automatiquement si absentes.
       - ./agent-go/dist:/app/agent-go/dist:ro
       - ./agent-go/keys/signing.key:/app/agent-go/keys/signing.key:ro
       - ./agent-go/keys/laps.key:/app/agent-go/keys/laps.key:ro
+
+      # ─ Pièces jointes tickets : volume persistant, sinon les fichiers
+      #   sont perdus à chaque rebuild du conteneur.
+      - attachments_data:/app/data/ticket-attachments
 
   db:
     image: postgres:16-alpine
@@ -58,8 +74,9 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       # 001 est appliqué automatiquement par l'image Postgres au premier
-      # démarrage. Les migrations 002+ sont appliquées manuellement,
-      # cf. INSTALL.md §5.
+      # démarrage (DB vide). L'API applique ensuite TOUTES les migrations
+      # au boot (runner intégré, table schema_migrations) — plus aucune
+      # application manuelle nécessaire. Cf. api/migrations/MIGRATIONS.md.
       - ./api/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
@@ -157,6 +174,7 @@ services:
 
 volumes:
   pgdata:
+  attachments_data:
   # ollama_models:    # décommenter si le profile email-bridge est utilisé
   # caddy_data:
   # caddy_config:
