@@ -349,6 +349,7 @@ export default {
   'prio.critical': 'Critique',
 
   'btn.cancel':  'Annuler',
+  'btn.retry': 'Réessayer',
   'btn.create':  'Créer',
   'btn.close':   'Fermer',
   'common.loading': 'Chargement',

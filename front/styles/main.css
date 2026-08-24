@@ -9,14 +9,21 @@
   --text-tertiary:  #888780;
   --border:    rgba(0,0,0,0.12);
   --border-md: rgba(0,0,0,0.20);
+  --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --accent:    #185FA5;
+  --bg-hover:  rgba(0,0,0,.05);
+  --shadow-menu: 0 8px 24px rgba(0,0,0,.15);
   --green:      #1D9E75;
   --green-bg:   #E1F5EE;
   --green-text: #0F6E56;
   --amber:      #BA7517;
   --amber-bg:   #FAEEDA;
   --amber-text: #854F0B;
+  --orange:      #C96A15;
+  --orange-bg:   #FBEBDB;
+  --orange-text: #8F4A08;
   --red:        #E24B4A;
   --red-bg:     #FCEBEB;
   --red-text:   #A32D2D;
@@ -43,6 +50,11 @@
     --green-text: #9FE1CB;
     --amber-bg:   #412402;
     --amber-text: #FAC775;
+    --orange-bg:   #43260A;
+    --orange-text: #F5BE83;
+    --accent:      #5D9BD8;
+    --bg-hover:    rgba(255,255,255,.06);
+    --shadow-menu: 0 8px 24px rgba(0,0,0,.4);
     --red-bg:     #501313;
     --red-text:   #F7C1C1;
     --blue-bg:    #042C53;
@@ -147,11 +159,11 @@ body {
   cursor: pointer; user-select: none;
   transition: background .15s;
 }
-.sidebar-footer:hover { background: var(--bg-hover, rgba(255,255,255,.06)); }
+.sidebar-footer:hover { background: var(--bg-hover); }
 .user-menu {
   position: absolute; bottom: calc(100% - 4px); left: 8px; right: 8px;
   background: var(--bg-primary); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  border-radius: 10px; box-shadow: var(--shadow-menu);
   z-index: 200; overflow: hidden;
   /* ancré sur la sidebar-footer via position:relative sur .sidebar-footer */
 }
@@ -1150,6 +1162,7 @@ kbd {
 .badge-red   { background: var(--red-bg);   color: var(--red-text); }
 .badge-amber { background: var(--amber-bg); color: var(--amber-text); }
 .badge-blue  { background: var(--blue-bg);  color: var(--blue-text); }
+.badge-orange{ background: var(--orange-bg);color: var(--orange-text); }
 
 /* Compliance bars */
 .compliance-grid { padding: 14px 16px; display: flex; flex-direction: column; gap: 11px; }

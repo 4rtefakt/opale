@@ -28,7 +28,7 @@ export async function renderParametres(container) {
   window.showNewSSHKeyModal  = showNewSSHKeyModal
   window.addSSHKey           = addSSHKey
   window.deleteSSHKey        = deleteSSHKey
-  window.syncIntune          = syncIntune
+  window.settingsSyncIntune          = settingsSyncIntune
   window.syncAllUsers        = syncAllUsers
   window.revokeCliToken      = revokeCliToken
   window.revokeAdmin         = revokeAdmin
@@ -188,7 +188,7 @@ function render() {
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px">
         <p style="font-size:12px;color:var(--text-tertiary);margin:0">${t('settings.intune.desc')}</p>
         <div style="display:flex;gap:12px;align-items:center">
-          <button class="btn btn-primary" id="btn-sync-intune" onclick="syncIntune()">
+          <button class="btn btn-primary" id="btn-sync-intune" onclick="settingsSyncIntune()">
             <i class="ti ti-cloud-download"></i> ${t('settings.intune.btn')}
           </button>
           <span id="sync-result" style="font-size:12px;color:var(--text-tertiary)"></span>
@@ -501,7 +501,7 @@ async function deleteSSHKey(id, label) {
   } catch { showToast(t('error.generic'), 'error') }
 }
 
-async function syncIntune() {
+async function settingsSyncIntune() {
   const btn = document.getElementById('btn-sync-intune')
   btn.disabled = true
   btn.innerHTML = `<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i> ${t('settings.intune.syncing')}`

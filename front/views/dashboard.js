@@ -5,7 +5,8 @@ export async function renderDashboard(container) {
         <span class="page-title">${t('dashboard.title')}</span>
       </div>
       <div class="topbar-right">
-        <button class="notif-btn" title="${t('dashboard.notifications.title')}" id="notif-btn">
+        <button class="notif-btn" title="${t('dashboard.notifications.title')}" id="notif-btn"
+                onclick="navigateTo('/alertes')">
           <i class="ti ti-bell"></i>
         </button>
         <button class="btn" onclick="reloadDash()">

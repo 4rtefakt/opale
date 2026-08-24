@@ -161,6 +161,7 @@ export default {
   'prio.critical': 'Critical',
 
   'btn.cancel':  'Cancel',
+  'btn.retry': 'Retry',
   'btn.create':  'Create',
   'btn.close':   'Close',
   'common.loading': 'Loading',

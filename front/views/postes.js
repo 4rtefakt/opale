@@ -44,7 +44,7 @@ export async function renderPostes(container) {
       </div>
       <div class="topbar-right">
         <button class="btn" onclick="exportCSV()"><i class="ti ti-download"></i> Exporter CSV</button>
-        <button class="btn" id="btn-sync-inv" onclick="syncIntune()" title="Importer les postes depuis Intune MDM"><i class="ti ti-refresh"></i> Sync Intune</button>
+        <button class="btn" id="btn-sync-inv" onclick="postesSyncIntune()" title="Importer les postes depuis Intune MDM"><i class="ti ti-refresh"></i> Sync Intune</button>
         <button class="btn btn-primary" onclick="navigateTo('/onboarding')"><i class="ti ti-plus"></i> Ajouter</button>
       </div>
     </div>
@@ -54,7 +54,6 @@ export async function renderPostes(container) {
       <i class="ti ti-checkbox" style="font-size:16px;color:var(--blue-text)"></i>
       <span class="bulk-count" id="bulk-count">0 postes sélectionnés</span>
       <div class="bulk-actions">
-        <button class="btn"><i class="ti ti-terminal-2"></i> SSH groupé</button>
         <button class="btn" onclick="bulkRunScript()"><i class="ti ti-player-play"></i> Lancer script</button>
         <button class="btn" onclick="bulkForceCheckin()"><i class="ti ti-refresh"></i> Forcer sync</button>
         <button class="btn" onclick="bulkForceSync()"><i class="ti ti-brand-azure"></i> Sync Intune</button>
@@ -116,10 +115,9 @@ export async function renderPostes(container) {
       </table>
     </div>
 
-    <!-- PAGINATION -->
+    <!-- Compteur de résultats (la liste complète est chargée, filtres côté client) -->
     <div class="pagination">
       <span id="paginfo" style="color:var(--text-tertiary)">Chargement…</span>
-      <div class="page-btns" id="page-btns"></div>
     </div>`
 
   // Exposer les handlers globalement pour les handlers inline
@@ -130,7 +128,7 @@ export async function renderPostes(container) {
   window.postesToggleRow    = postesToggleRow
   window.clearSelection     = clearSelection
   window.exportCSV          = exportCSV
-  window.syncIntune         = syncIntune
+  window.postesSyncIntune         = postesSyncIntune
   window.bulkRunScript        = bulkRunScript
   window.bulkRunScriptConfirm = bulkRunScriptConfirm
   window.bulkForceSync        = bulkForceSync
@@ -141,9 +139,18 @@ export async function renderPostes(container) {
 
 async function loadDevices() {
   try {
-    const data = await window.api.getDevices({ limit: 200 })
-    _devices = data.devices
-    if (data.thresholds) _thresholds = data.thresholds
+    // Charge la flotte entière par pages : le cap silencieux à 200 faisait
+    // disparaître des postes au-delà (filtres/tri sont côté client).
+    let all = [], offset = 0, total = Infinity
+    while (all.length < total) {
+      const data = await window.api.getDevices({ limit: 500, offset })
+      all = all.concat(data.devices)
+      total = data.total
+      if (data.thresholds) _thresholds = data.thresholds
+      if (!data.devices.length) break
+      offset += data.devices.length
+    }
+    _devices = all
     updateSummary()
     renderTable()
   } catch (err) {
@@ -208,7 +215,9 @@ function renderTable() {
 
   const devices = sortDevices(getFiltered())
   document.getElementById('paginfo').textContent =
-    `Affichage 1–${devices.length} sur ${devices.length}`
+    devices.length === _devices.length
+      ? `${_devices.length} postes`
+      : `${devices.length} postes filtrés sur ${_devices.length}`
 
   if (devices.length === 0) {
     tbody.innerHTML = `<tr><td colspan="11"><div class="empty-state" style="padding:2rem"><i class="ti ti-device-laptop"></i><p>Aucun poste trouvé</p></div></td></tr>`
@@ -404,7 +413,7 @@ function exportCSV() {
   URL.revokeObjectURL(url)
 }
 
-async function syncIntune() {
+async function postesSyncIntune() {
   const btn = document.getElementById('btn-sync-inv')
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i> Sync…' }
   try {

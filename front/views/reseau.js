@@ -99,6 +99,15 @@ export async function renderReseau(container) {
 }
 
 async function reseauRefresh() {
+  // Auto-clear si la vue n'est plus affichée : sans ce garde, le timer
+  // d'auto-refresh survivait à la navigation et continuait à poller
+  // getTopNetwork toutes les 30s — chaque appel écrivant une entrée
+  // network_view_accessed dans l'audit (pollution du journal).
+  if (!document.getElementById('reseau-tbody')) {
+    if (_autoRefreshTimer) { clearInterval(_autoRefreshTimer); _autoRefreshTimer = null }
+    _autoRefreshOn = false
+    return
+  }
   try {
     const data = await window.api.getTopNetwork({ period: _period, sort: _sort, limit: _limit })
     _rows = data.rows || []

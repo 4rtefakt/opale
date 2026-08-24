@@ -6,7 +6,9 @@ const QUICK_CMDS = [
   { label: 'services',     cmd: 'Get-Service | Where-Object {$_.Status -eq "Stopped"} | Format-Table -AutoSize' },
   { label: 'disk',         cmd: 'Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize' },
   { label: 'processes',    cmd: 'Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 | Format-Table -AutoSize' },
-  { label: 'restart',      cmd: 'Restart-Computer -Force' },
+  // destructive : confirmation obligatoire — un fat-finger sur mobile ne
+  // doit pas redémarrer le poste d'un utilisateur.
+  { label: 'restart',      cmd: 'Restart-Computer -Force', destructive: true },
   { label: 'hostname',     cmd: 'hostname' },
   { label: 'uptime',       cmd: '(Get-Date) - (gcim Win32_OperatingSystem).LastBootUpTime' },
 ]
@@ -61,7 +63,10 @@ export function renderSSH(el, id) {
 
   document.getElementById('m-ssh-quick-row')?.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-idx]')
-    if (btn) mSSHExec(QUICK_CMDS[+btn.dataset.idx].cmd)
+    if (!btn) return
+    const qc = QUICK_CMDS[+btn.dataset.idx]
+    if (qc.destructive && !confirm(`Exécuter « ${qc.cmd} » sur ce poste ?`)) return
+    mSSHExec(qc.cmd)
   })
 
   window.mSSHDisconnect  = () => {
@@ -79,10 +84,60 @@ export function renderSSH(el, id) {
   connectSSH(id)
 }
 
+// promptReason — même exigence RGPD/audit que le desktop : le serveur
+// valide strictement { category, note } (cf. api/lib/remote-reason.js).
+// Sans ce sheet, le grant mobile partait sans motif → 400 systématique.
+function promptReason() {
+  return new Promise(resolve => {
+    const CATS = ['maintenance', 'troubleshoot', 'audit', 'incident', 'other']
+    const last = localStorage.getItem('remote-reason-last-category') || 'troubleshoot'
+    window.mShowSheet(`
+      <div class="m-sheet-title"><i class="ti ti-shield-lock"></i> Motif d'accès SSH</div>
+      <div style="padding:0 16px 16px;display:flex;flex-direction:column;gap:10px">
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
+          Cet accès est journalisé (RGPD). Indiquez la raison de la session.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${CATS.map(c => `
+            <label style="display:flex;align-items:center;gap:10px;font-size:14px;min-height:32px">
+              <input type="radio" name="m-rr-cat" value="${c}" ${c === last ? 'checked' : ''}> ${c}
+            </label>`).join('')}
+        </div>
+        <textarea id="m-rr-note" rows="2" maxlength="500" placeholder="Note (min. 5 caractères)…"
+          style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);
+                 background:var(--bg-primary);color:var(--text-primary);font-size:14px;box-sizing:border-box"></textarea>
+        <div id="m-rr-err" style="display:none;color:var(--red);font-size:12px"></div>
+        <button id="m-rr-ok" class="m-btn-primary" style="min-height:44px;border-radius:10px;border:none;
+                background:var(--accent,#5D9BD8);color:#fff;font-size:15px;font-weight:600">Ouvrir la session</button>
+        <button id="m-rr-cancel" style="min-height:44px;border-radius:10px;border:none;background:none;
+                color:var(--text-secondary);font-size:14px">Annuler</button>
+      </div>`)
+    const done = (val) => { window.mCloseSheet(); resolve(val) }
+    document.getElementById('m-rr-cancel').onclick = () => done(null)
+    document.getElementById('m-rr-ok').onclick = () => {
+      const category = document.querySelector('input[name="m-rr-cat"]:checked')?.value || last
+      const note = document.getElementById('m-rr-note').value.trim()
+      if (note.length < 5) {
+        const err = document.getElementById('m-rr-err')
+        err.textContent = 'Note trop courte (min. 5 caractères)'
+        err.style.display = 'block'
+        return
+      }
+      try { localStorage.setItem('remote-reason-last-category', category) } catch {}
+      done({ category, note })
+    }
+  })
+}
+
 async function connectSSH(id) {
+  const reason = await promptReason()
+  if (!reason) {
+    window.location.hash = '#/poste/' + id
+    return
+  }
   let nonce
   try {
-    ({ nonce } = await window.api.requestSshGrant(id))
+    ({ nonce } = await window.api.requestSshGrant(id, reason))
   } catch (err) {
     setStatus('Erreur autorisation', false)
     appendOutput('\n⚠ ' + (err.message || 'Refus autorisation SSH') + '\n')

@@ -14,12 +14,22 @@ export async function renderDashboard(el) {
     </div>`
 
   try {
-    const [devices, alerts] = await Promise.all([
-      window.api.getDevices({ limit: 200 }),
+    // Toute la flotte, par pages — un cap fixe faussait les KPI au-delà.
+    const fetchAllDevices = async () => {
+      let all = [], offset = 0, total = Infinity
+      while (all.length < total) {
+        const page = await window.api.getDevices({ limit: 500, offset })
+        all = all.concat(page.devices || [])
+        total = page.total ?? all.length
+        if (!page.devices?.length) break
+        offset += page.devices.length
+      }
+      return all
+    }
+    const [all, alerts] = await Promise.all([
+      fetchAllDevices(),
       window.api.getAlerts().catch(() => ({ counts: {}, active: [] }))
     ])
-
-    const all      = devices.devices || []
     const online   = all.filter(d => d.status === 'online').length
     const offline  = all.filter(d => d.status === 'offline').length
     const critical = all.filter(d => d.status === 'critical' || d.status === 'warn').length

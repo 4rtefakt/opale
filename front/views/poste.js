@@ -20,7 +20,7 @@ export async function renderPosteDetail(container, id) {
         <button class="btn btn-sm" id="btn-force-checkin" onclick="forceCheckin()" title="Forcer un checkin immédiat">
           <i class="ti ti-refresh"></i> Forcer sync
         </button>
-        <button class="btn btn-sm" id="btn-sync-intune" onclick="syncIntune()" title="Déclencher une sync Intune">
+        <button class="btn btn-sm" id="btn-sync-intune" onclick="posteSyncIntune()" title="Déclencher une sync Intune">
           <i class="ti ti-cloud-download"></i> Sync Intune
         </button>
         ${window.OPALE.moduleEnabled('tickets') ? `
@@ -59,15 +59,20 @@ export async function renderPosteDetail(container, id) {
   window.lapsViewPassword        = lapsViewPassword
   window.lapsRequestRotation     = lapsRequestRotation
   window.forceCheckin            = forceCheckin
-  window.syncIntune              = syncIntune
+  window.posteSyncIntune              = posteSyncIntune
 
+  window.posteRetryLoad = () => renderPosteDetail(container, id)
   try {
     _device = await window.api.getDevice(id)
     renderBody()
     loadExecHistory()
     loadDeviceCompliance(id)
     if (window.appState?.user?.isAdmin && window.OPALE.moduleEnabled('remote')) loadRemoteSessionsHistory()
-  } catch {
+  } catch (err) {
+    // État d'erreur explicite : un toast seul laissait le spinner tourner
+    // pour toujours, sans moyen de réessayer.
+    const body = document.getElementById('pd-body')
+    if (body) body.innerHTML = window.errorBox(err?.message || t('error.generic'), 'posteRetryLoad')
     showToast(t('error.generic'), 'error')
   }
 }
@@ -1816,7 +1821,7 @@ async function forceCheckin() {
   }
 }
 
-async function syncIntune() {
+async function posteSyncIntune() {
   if (!_device) return
   const btn = document.getElementById('btn-sync-intune')
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i>' }

@@ -179,7 +179,17 @@ async function deleteScript(id) {
 
 async function openRunModal(id) {
   let devices = [], groups = []
-  try { devices = (await window.api.getDevices({ limit: 200 }))?.devices || [] } catch {}
+  try {
+    // Flotte complète par pages (le cap 200 tronquait le sélecteur de postes)
+    let offset = 0, total = Infinity
+    while (devices.length < total) {
+      const page = await window.api.getDevices({ limit: 500, offset })
+      devices = devices.concat(page?.devices || [])
+      total = page?.total ?? devices.length
+      if (!page?.devices?.length) break
+      offset += page.devices.length
+    }
+  } catch {}
   try { groups  = await window.api.getGroups() } catch {}
 
   const online = devices.filter(d => d.ip_netbird && d.status !== 'offline')

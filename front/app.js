@@ -74,6 +74,17 @@ window.showToast = (msg, type = 'info') => {
   el._timer = setTimeout(() => { el.className = 'toast hidden' }, 3500)
 }
 
+// errorBox — état d'erreur réutilisable avec bouton réessayer (pendant du
+// mErrorBox mobile). retryFnName = nom d'une fonction exposée sur window ;
+// à injecter dans le conteneur de la vue au lieu de laisser le spinner
+// tourner indéfiniment.
+window.errorBox = (msg, retryFnName) => `
+  <div class="empty-state" style="padding:2rem;text-align:center">
+    <i class="ti ti-alert-triangle" style="font-size:28px;color:var(--red)"></i>
+    <p style="margin:10px 0;color:var(--text-secondary)">${esc(msg)}</p>
+    ${retryFnName ? `<button class="btn" onclick="${retryFnName}()"><i class="ti ti-refresh"></i> ${esc(t('btn.retry'))}</button>` : ''}
+  </div>`
+
 window.showModal = (html) => {
   document.getElementById('modal-content').innerHTML = html
   document.getElementById('modal-overlay').classList.remove('hidden')
