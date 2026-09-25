@@ -689,6 +689,89 @@ test('POST /exchange-token — relance après install interrompue (token jamais 
   assert.equal(third.statusCode, 409)
 })
 
+// ─── POST /checkin — token non lié (Paramètres → Tokens + install.ps1) ───────
+
+async function checkinWith(secret, payload) {
+  return fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(secret),
+    payload,
+  })
+}
+
+async function tokenDevice(tokenId) {
+  const { rows: [t] } = await db.query(`SELECT device_id FROM agent_tokens WHERE id = $1`, [tokenId])
+  return t.device_id
+}
+
+test('POST /checkin — token non lié, nouveau hostname → device créé et token lié', { skip: SKIP }, async () => {
+  const t = await seedAgentToken(db, { label: 'unbound-new' })
+  const res = await checkinWith(t.secret, { hostname: 'PC-UNBOUND-NEW', serial: 'SN-UNBOUND-NEW' })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  assert.equal(res.json().new, true)
+  assert.equal(await tokenDevice(t.id), res.json().device_id)
+})
+
+test('POST /checkin — token non lié, poste pré-synchronisé (série concordante, sans token) → lié', { skip: SKIP }, async () => {
+  // install.ps1 manuel sur un PC déjà remonté par la sync Intune.
+  const device = await seedDeviceWithSerial(db, 'PC-UNBOUND-PRESYNC', 'SN-UNBOUND-PRESYNC')
+  const t = await seedAgentToken(db, { label: 'unbound-presync' })
+  const res = await checkinWith(t.secret, { hostname: 'PC-UNBOUND-PRESYNC', serial: 'SN-UNBOUND-PRESYNC' })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  assert.equal(res.json().device_id, device.id)
+  assert.equal(await tokenDevice(t.id), device.id)
+})
+
+test('POST /checkin — token non lié, poste existant sans série et sans token → lié', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-UNBOUND-NOSERIAL' })
+  const t = await seedAgentToken(db, { label: 'unbound-noserial' })
+  const res = await checkinWith(t.secret, { hostname: 'PC-UNBOUND-NOSERIAL', serial: 'SN-WHATEVER' })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  assert.equal(await tokenDevice(t.id), device.id)
+})
+
+test('POST /checkin — token non lié sur un poste déjà enrôlé → 409, aucun rattachement ni mutation, audit', { skip: SKIP }, async () => {
+  // Sécu : un token non lié fuité ne doit pas permettre d'usurper un poste
+  // existant (ni de recevoir ses scripts / déploiements).
+  const device = await seedDeviceWithSerial(db, 'PC-UNBOUND-VICTIM', 'SN-UNBOUND-VICTIM')
+  await seedUsedToken(device.id, 'victim-token')
+  await db.query(`UPDATE devices SET os = 'Windows 11 Pro' WHERE id = $1`, [device.id])
+  const t = await seedAgentToken(db, { label: 'unbound-attacker' })
+
+  const res = await checkinWith(t.secret, {
+    hostname: 'PC-UNBOUND-VICTIM', serial: 'SN-UNBOUND-VICTIM', os: 'Pwned OS',
+  })
+  assert.equal(res.statusCode, 409, `body: ${res.body}`)
+  assert.equal(await tokenDevice(t.id), null, 'le token reste non lié')
+  const { rows: [dev] } = await db.query(`SELECT os FROM devices WHERE id = $1`, [device.id])
+  assert.equal(dev.os, 'Windows 11 Pro', 'aucune mutation du device')
+
+  const { rows: [audit] } = await db.query(
+    `SELECT details FROM audit_logs WHERE action = 'agent_token_bind_refused' AND target = $1
+     ORDER BY created_at DESC LIMIT 1`,
+    [device.id]
+  )
+  assert.ok(audit, 'refus tracé dans audit_logs')
+  assert.equal(audit.details.reason, 'active_token')
+  assert.equal(audit.details.token_id, t.id)
+})
+
+test('POST /checkin — token non lié, poste existant avec une autre série → 403', { skip: SKIP }, async () => {
+  const device = await seedDeviceWithSerial(db, 'PC-UNBOUND-OTHER', 'SN-UNBOUND-REAL')
+  const t = await seedAgentToken(db, { label: 'unbound-other-serial' })
+  const res = await checkinWith(t.secret, { hostname: 'PC-UNBOUND-OTHER', serial: 'SN-UNBOUND-FAKE' })
+  assert.equal(res.statusCode, 403, `body: ${res.body}`)
+  assert.equal(await tokenDevice(t.id), null)
+  const { rows: [{ n }] } = await db.query(
+    `SELECT count(*)::int AS n FROM devices WHERE hostname = 'PC-UNBOUND-OTHER'`
+  )
+  assert.equal(n, 1, 'pas de device dupliqué')
+  const { rows: [{ bound }] } = await db.query(
+    `SELECT count(*)::int AS bound FROM agent_tokens WHERE device_id = $1`, [device.id]
+  )
+  assert.equal(bound, 0, 'aucun token rattaché au poste')
+})
+
 // ─── POST /rotate-token ────────────────────────────────────────────────────
 
 test('POST /rotate-token — sans Bearer → 401', { skip: SKIP }, async () => {

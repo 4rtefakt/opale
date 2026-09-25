@@ -641,11 +641,11 @@ export default async function agentRoute(fastify) {
     // → fail unique constraint sur hostname. Avec le fallback, on tombe
     // sur la row Intune et on l'UPDATE normalement.
     let lookup = serial
-      ? await fastify.db.query(`SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE serial = $1`, [serial])
-      : await fastify.db.query(`SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`, [hostname])
+      ? await fastify.db.query(`SELECT id, serial, source, disk_used_pct, compliance_state FROM devices WHERE serial = $1`, [serial])
+      : await fastify.db.query(`SELECT id, serial, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`, [hostname])
     if (serial && !lookup.rows.length) {
       lookup = await fastify.db.query(
-        `SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`,
+        `SELECT id, serial, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`,
         [hostname]
       )
     }
@@ -656,6 +656,40 @@ export default async function agentRoute(fastify) {
     // l'état du device d'origine.
     if (token.device_id && lookup.rows[0] && lookup.rows[0].id !== token.device_id) {
       return reply.code(403).send({ error: 'Token lié à un autre device' })
+    }
+
+    // Token non lié (créé dans Paramètres → Tokens pour install.ps1) qui se
+    // présente pour un poste DÉJÀ connu : il ne s'y rattache que selon les
+    // règles d'enrôlement de /exchange-token (série concordante si le device
+    // en a une, aucun token actif déjà utilisé — cf. lib/device-claim.js).
+    // Sinon un token non lié fuité usurperait n'importe quel poste existant.
+    // Nouveau hostname : inchangé (création du device + rattachement).
+    if (!token.device_id && lookup.rows[0]) {
+      const refusal = await checkDeviceClaim(fastify.db, {
+        device: lookup.rows[0], serial, excludeTokenId: token.id,
+      })
+      if (refusal) {
+        fastify.log.warn(
+          { hostname, device_id: lookup.rows[0].id, token_id: token.id, reason: refusal.reason },
+          'checkin refusé : token non lié sur un poste existant non revendicable'
+        )
+        await logAudit(fastify.db, fastify.log, {
+          action:  'agent_token_bind_refused',
+          byUser:  String(hostname).slice(0, 255),
+          target:  lookup.rows[0].id,
+          details: {
+            level:       'warn',
+            reason:      refusal.reason,
+            token_id:    token.id,
+            token_label: token.label,
+            serial:      serial ? String(serial).slice(0, 100) : null,
+            ...(refusal.token_id ? { active_token_id: refusal.token_id } : {}),
+          },
+        })
+        return reply
+          .code(refusal.reason === 'active_token' ? 409 : 403)
+          .send({ error: CLAIM_REFUSAL_MESSAGES[refusal.reason] })
+      }
     }
 
     const mainDisk = disks.find(d => d.letter === 'C:') || disks[0]
