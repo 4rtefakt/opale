@@ -234,6 +234,9 @@ async function runAuto(obId, checkId) {
   btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i>'
   try {
     const { result } = await window.api.runAutoCheck(obId, checkId)
+    // Affiché avant tout re-fetch : si celui-ci échoue, le mot de passe
+    // (non stocké côté serveur) ne doit pas être perdu.
+    if (result?.temporaryPassword) showTempPassword(result)
     showToast(t('onboarding.toast.auto_ok'), 'success')
     const ob = await window.api.getOnboarding(obId)
     const idx = _items.findIndex(i => i.id === obId)
@@ -243,7 +246,6 @@ async function runAuto(obId, checkId) {
       renderList()
     }
     renderDetail(ob)
-    if (result?.temporaryPassword) showTempPassword(result)
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
     const ob = await window.api.getOnboarding(obId)
