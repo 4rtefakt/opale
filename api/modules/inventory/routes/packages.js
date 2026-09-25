@@ -52,8 +52,9 @@ export default async function packagesRoute(fastify) {
     reply.send(rows)
   })
 
-  // POST /api/packages — créer un package (draft)
-  fastify.post('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // POST /api/packages — créer un package (draft). Admin requis : le contenu
+  // (scripts PowerShell) finit exécuté en SYSTEM sur les postes.
+  fastify.post('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
     if (!name) return reply.code(400).send({ error: 'name requis' })
     if (type === 'winget' && !winget_id) return reply.code(400).send({ error: 'winget_id requis pour type=winget' })
@@ -202,8 +203,9 @@ export default async function packagesRoute(fastify) {
     reply.send({ id: rows[0].id, status: 'cancelled' })
   })
 
-  // PATCH /api/packages/:id — modifier (repasse en draft si approuvé)
-  fastify.patch('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // PATCH /api/packages/:id — modifier (repasse en draft si approuvé).
+  // Admin requis (scripts exécutés en SYSTEM).
+  fastify.patch('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: [existing] } = await fastify.db.query(`SELECT * FROM packages WHERE id = $1`, [req.params.id])
     if (!existing) return reply.code(404).send({ error: 'Package introuvable' })
 
@@ -235,8 +237,8 @@ export default async function packagesRoute(fastify) {
     reply.send(rows[0])
   })
 
-  // DELETE /api/packages/:id — supprimer (bloqué si déploiements actifs)
-  fastify.delete('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // DELETE /api/packages/:id — supprimer (bloqué si déploiements actifs). Admin requis.
+  fastify.delete('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: active } = await fastify.db.query(`
       SELECT id FROM deployments WHERE package_id = $1 AND status IN ('pending','running') LIMIT 1
     `, [req.params.id])
