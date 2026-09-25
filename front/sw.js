@@ -1,4 +1,4 @@
-const CACHE_NAME = 'opale-v4'
+const CACHE_NAME = 'opale-v5'
 
 // Charge window/self.ENV pour récupérer le branding (fallback titre push).
 // importScripts est synchrone et ne bloque pas l'install si l'endpoint échoue.
@@ -6,6 +6,7 @@ try { importScripts('/env.js') } catch { /* env indispo : on tombera sur les fal
 const PRECACHE = [
   '/mobile.html',
   '/mobile-app.js',
+  '/escape.js',
   '/styles/mobile.css',
   '/auth.js',
   '/api.js',

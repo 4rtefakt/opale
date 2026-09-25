@@ -1,3 +1,4 @@
+import '/escape.js'  // window.esc / window.jsArg (voir escape.js)
 import { initI18n, setLocale, getLocale, t } from '/i18n.js'
 window.setLocale = setLocale
 window.getLocale = getLocale
@@ -7,23 +8,8 @@ import '/api.js'
 window.t = t
 
 // ─── Utilitaires globaux ───
-// Échappe les 5 caractères dangereux pour insertion HTML (body, attributs,
-// y compris dans un attribut onclick="fn('${esc(x)}')" — l'échappement de
-// l'apostrophe ferme la classe de bugs où une valeur user-controlled
-// casserait l'argument JS).
-window.esc = (s) => String(s ?? '')
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;')
-
-// jsArg : pour passer une string en argument à un onclick="fn(…)" inline.
-// JSON.stringify("foo'bar") → "foo'bar" mais inséré dans onclick="fn(\"foo'bar\")"
-// les guillemets cassent l'attribut. On remplace les `"` par l'entité HTML
-// `&quot;` qui est valide dans un attribut et redevient `"` à l'évaluation JS.
-// À utiliser quand l'argument vient d'une source non-contrôlée (nom de
-// groupe Entra, nom de package, hostname renommable, message d'alerte, etc.).
-// `esc()` n'est PAS suffisant : il échappe pour innerHTML, pas pour onclick attr.
-window.jsArg = (v) => JSON.stringify(String(v ?? '')).replace(/"/g, '&quot;')
+// esc() (HTML) et jsArg() (argument de handler inline onclick="…") sont
+// définis dans escape.js : esc() ne protège PAS une chaîne JS dans un handler.
 
 window.navigateTo = (hash) => { window.location.hash = hash }
 

@@ -1,3 +1,4 @@
+import '/escape.js'  // window.esc / window.jsArg (voir escape.js)
 import { initI18n, t } from '/i18n.js'
 import '/auth.js'
 import '/api.js'
@@ -9,19 +10,8 @@ window.bio = bio
 window.t = t
 
 // ── Globals ──────────────────────────────────────────────────────────────────
-// Échappe les 5 caractères dangereux pour insertion HTML (body, attributs,
-// y compris dans un attribut onclick="fn('${esc(x)}')" — l'échappement de
-// l'apostrophe ferme la classe de bugs où une valeur user-controlled
-// casserait l'argument JS).
-window.esc = (s) => String(s ?? '')
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;')
-
-// jsArg : pour passer une string en argument à un onclick="fn(…)" inline.
-// `esc()` ne suffit pas car il échappe pour innerHTML, pas pour un attribut
-// HTML qui contient du JS literal. JSON.stringify produit `"foo"` qui casse
-// l'attribut → on remplace `"` par `&quot;` qui décode à l'évaluation.
-window.jsArg = (v) => JSON.stringify(String(v ?? '')).replace(/"/g, '&quot;')
+// esc() (HTML) et jsArg() (argument de handler inline onclick="…") sont
+// définis dans escape.js : esc() ne protège PAS une chaîne JS dans un handler.
 
 window.formatRelative = (iso) => {
   if (!iso) return 'jamais'
