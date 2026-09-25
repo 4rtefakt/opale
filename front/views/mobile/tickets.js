@@ -577,7 +577,7 @@ function renderActiveChips() {
 
 function advChip(label, key) {
   return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-secondary);font-size:11px;padding:2px 8px;border-radius:10px">
-    ${esc(label)} <span style="cursor:pointer;opacity:0.7;padding:8px;margin:-8px -4px -8px 0" onclick="mTkRemoveChip('${esc(key)}')">×</span>
+    ${esc(label)} <span style="cursor:pointer;opacity:0.7;padding:8px;margin:-8px -4px -8px 0" onclick="mTkRemoveChip(${mJsArg(key)})">×</span>
   </span>`
 }
 
