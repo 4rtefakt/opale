@@ -12,6 +12,7 @@ import {
   isGraphUserId, isGraphGuid,
   getUserPhoto, disableEntraUser, revokeUserSessions, addUserToGroup,
   syncIntuneDevice, getGroupDeviceHostnames, getGroupUserIds,
+  getIntuneDeviceBySerial,
 } from '../../modules/core/lib/graph.js'
 
 const GUID = '0f8fad5b-d9cb-469f-a165-70867728950e'
@@ -49,4 +50,25 @@ test('fonctions Graph : id injecté → refus sans aucun fetch', async () => {
   } finally {
     mock.restore()
   }
+})
+
+test('getIntuneDeviceBySerial : apostrophe du serial doublée dans le littéral OData', async () => {
+  const calls = []
+  const original = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const s = String(url)
+    calls.push(s)
+    if (/login\.microsoftonline\.com.*token/.test(s)) {
+      return { ok: true, status: 200, json: async () => ({ access_token: 'tok', expires_in: 3600 }) }
+    }
+    return { ok: true, status: 200, json: async () => ({ value: [] }) }
+  }
+  try {
+    await getIntuneDeviceBySerial({ log: { warn() {} } }, "X' or startswith(deviceName,'A")
+  } finally {
+    globalThis.fetch = original
+  }
+  const graphCall = calls.find(u => u.startsWith('https://graph.microsoft.com/'))
+  const filter = decodeURIComponent(graphCall.split('$filter=')[1].split('&')[0])
+  assert.equal(filter, "serialNumber eq 'X'' or startswith(deviceName,''A'")
 })

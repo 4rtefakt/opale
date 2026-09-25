@@ -212,7 +212,9 @@ export async function revokeUserSessions(userId) {
 
 export async function getIntuneDeviceBySerial(fastify, serial) {
   try {
-    const encoded = encodeURIComponent(serial)
+    // Serial remonté par l'agent : apostrophes doublées (littéral OData, cf.
+    // getUserFilter) AVANT l'encodage URL, qui ne touche pas à `'`.
+    const encoded = encodeURIComponent(String(serial).replace(/'/g, "''"))
     const res = await graphGet(
       `/deviceManagement/managedDevices?$filter=serialNumber eq '${encoded}'` +
       `&$select=id,deviceName,userId,userDisplayName,userPrincipalName&$top=1`
