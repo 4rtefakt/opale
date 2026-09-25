@@ -4,6 +4,10 @@
 # Lignes vides et commentaires ignorés.
 # Fichier vide / pas de ligne valide ⇒ pinning désactivé (fallback CA standard).
 #
+# Le pin doit correspondre à un certificat de la chaîne VALIDÉE par l'agent
+# (feuille, intermédiaire ou racine de confiance). Un certificat envoyé par le
+# serveur mais hors de cette chaîne n'est pas pris en compte.
+#
 # Procédure de rotation :
 # 1. Avant renouvellement du cert : ajouter le NOUVEAU pin ici (en gardant l'ancien)
 # 2. Build + déploiement de l'agent via auto-update (ancien cert toujours actif)
@@ -14,3 +18,6 @@
 #   echo | openssl s_client -servername <host> -connect <host>:443 2>/dev/null \
 #     | openssl x509 -pubkey -noout | openssl pkey -pubin -outform DER \
 #     | openssl dgst -sha256 -hex | awk '{print $NF}'
+#
+# Pin de l'intermédiaire (2e cert de la chaîne, survit au renouvellement de la
+# feuille) : même pipeline sur le 2e bloc PEM de `openssl s_client -showcerts`.
