@@ -22,6 +22,13 @@ import { REGISTRY } from './registry.js'
 
 const TEXT_MAX = 200
 
+// Lookup de registre par clé venant du LLM : propriété PROPRE uniquement.
+// `defs[name]` seul résolvait aussi `__proto__`, `constructor`, `toString`…
+// via la chaîne de prototypes (valeur truthy → contrôle contourné).
+function ownEntry(obj, key) {
+  return obj && typeof key === 'string' && Object.hasOwn(obj, key) ? obj[key] : undefined
+}
+
 function coerceNumber(v) {
   if (typeof v === 'number' && Number.isFinite(v)) return v
   if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v)
@@ -46,7 +53,7 @@ function validateFilterGroup(input, defs, errors, groupLabel) {
   }
 
   for (const [name, rawValue] of Object.entries(input)) {
-    const def = defs[name]
+    const def = ownEntry(defs, name)
     if (!def) {
       errors.push(`${groupLabel} inconnu : « ${name} »`)
       continue
@@ -103,7 +110,7 @@ export function validateQuerySpec(raw) {
   }
 
   const resource = raw.resource
-  const res = REGISTRY[resource]
+  const res = ownEntry(REGISTRY, resource)
   if (!res) {
     return { ok: false, errors: [`resource inconnue : « ${resource} » (attendu : ${Object.keys(REGISTRY).join(', ')})`] }
   }
@@ -116,7 +123,7 @@ export function validateQuerySpec(raw) {
   if (raw.sort != null) {
     const field = typeof raw.sort === 'string' ? raw.sort : raw.sort?.field
     const dir   = typeof raw.sort === 'object' ? raw.sort?.dir : undefined
-    if (!field || !res.sort[field]) {
+    if (!field || !ownEntry(res.sort, field)) {
       errors.push(`sort.field inconnu : « ${field} » (triables : ${Object.keys(res.sort).join(', ')})`)
     } else {
       const d = dir === 'desc' ? 'desc' : 'asc'

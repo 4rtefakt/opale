@@ -85,3 +85,13 @@ test('compliance : rule + status, total fenêtré présent', () => {
   assert.ok(params.includes('bitlocker_c_active'))
   assert.ok(params.includes('fail'))
 })
+
+test('compile : resource héritée du prototype (__proto__, constructor) → erreur explicite', () => {
+  for (const k of ['__proto__', 'constructor', 'toString']) {
+    assert.throws(
+      () => compile({ resource: k, filters: {}, cross: {}, sort: { field: 'x', dir: 'asc' }, limit: 1 }),
+      /resource inconnue/,
+      k,
+    )
+  }
+})
