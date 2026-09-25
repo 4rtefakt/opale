@@ -280,18 +280,33 @@ export default async function settingsRoute(fastify) {
     const { is_admin } = req.body || {}
     if (typeof is_admin !== 'boolean') return reply.code(400).send({ error: 'is_admin (bool) requis' })
     const { displayName } = fastify.getUserIdentity(req)
+    // Retrait du flag admin → révocation de tous ses tokens CLI, dans la même
+    // instruction (atomique). Les tokens CLI ne sont émis qu'aux admins
+    // (POST /api/auth/cli-token) : sinon ils resteraient utilisables sur les
+    // routes non-admin et redeviendraient pleinement valides si le flag était
+    // ré-accordé plus tard.
     const { rows } = await fastify.db.query(`
-      UPDATE users_cache SET is_admin = $1 WHERE entra_id = $2 RETURNING entra_id, display_name, is_admin
+      WITH u AS (
+        UPDATE users_cache SET is_admin = $1 WHERE entra_id = $2
+        RETURNING entra_id, display_name, is_admin
+      ), revoked AS (
+        UPDATE cli_tokens SET revoked_at = now()
+        WHERE NOT $1::boolean AND revoked_at IS NULL
+          AND entra_id IN (SELECT entra_id FROM u)
+        RETURNING id
+      )
+      SELECT u.*, (SELECT COUNT(*)::int FROM revoked) AS cli_tokens_revoked FROM u
     `, [is_admin, req.params.entraId])
     if (!rows.length) return reply.code(404).send({ error: 'Utilisateur introuvable' })
+    const { cli_tokens_revoked, ...user } = rows[0]
 
     await logAudit(fastify.db, fastify.log, {
       action:  is_admin ? 'admin_granted' : 'admin_revoked',
       byUser:  displayName,
-      target:  rows[0].display_name,
-      details: { entra_id: req.params.entraId },
+      target:  user.display_name,
+      details: { entra_id: req.params.entraId, ...(cli_tokens_revoked ? { cli_tokens_revoked } : {}) },
     })
-    reply.send(rows[0])
+    reply.send(user)
   })
 
   // POST /api/settings/sync-intune — sync complète depuis Intune
