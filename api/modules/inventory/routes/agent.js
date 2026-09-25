@@ -6,6 +6,7 @@ import { sendPushToAll } from '../../core/routes/push.js'
 import { makeAgentConn, WS_FRAME_MAX_BYTES, WS_CLOSE, wsReasonFromCode } from '../lib/agent-ws.js'
 import { evaluateAndPersist as evaluateCompliance } from '../../monitoring/lib/compliance.js'
 import { logAudit } from '../../core/lib/audit.js'
+import { SNAPSHOT_COLUMNS, snapshotSelect } from '../lib/deployment-snapshots.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -854,10 +855,16 @@ export default async function agentRoute(fastify) {
     //   - group: device membre du groupe (cf. device_group_memberships)
     //   - user : device dont assigned_user_id matche le user du job (réassign
     //            d'un user à un nouveau PC redéclenche ses packages)
+    // Seuls les jobs de packages approuvés sont matérialisés, avec leur
+    // snapshot de contenu dans la même requête (cf. lib/deployment-snapshots.js).
+    // Un job dont le package est en draft sera matérialisé à un checkin
+    // ultérieur, une fois le package ré-approuvé.
     await fastify.db.query(`
+      WITH ins AS (
       INSERT INTO deployments (package_id, device_id, deployed_by, job_id)
       SELECT j.package_id, $1, j.deployed_by, j.id
       FROM deployment_jobs j
+      JOIN packages jp ON jp.id = j.package_id AND jp.status = 'approved'
       WHERE j.status = 'active'
         AND NOT EXISTS (
           SELECT 1 FROM deployments d WHERE d.job_id = j.id AND d.device_id = $1
@@ -875,6 +882,13 @@ export default async function agentRoute(fastify) {
           ))
         )
       ON CONFLICT DO NOTHING
+      RETURNING id, package_id
+      )
+      INSERT INTO deployment_snapshots (${SNAPSHOT_COLUMNS})
+      SELECT ${snapshotSelect('ins', 'p')}
+      FROM ins
+      JOIN packages p ON p.id = ins.package_id
+      WHERE p.status = 'approved'
     `, [deviceId])
 
     // ── Déploiements de packages en attente ────────────────────────────────
@@ -884,13 +898,31 @@ export default async function agentRoute(fastify) {
     // Seuls les packages approuvés sont distribués : un package modifié
     // (repassé en draft) ne part plus en SYSTEM tant qu'un admin ne l'a
     // pas ré-approuvé — ses déploiements restent 'pending' en attendant.
-    const pendingDeployments = inMaintWindow ? await fastify.db.query(`
-      SELECT d.id AS deployment_id, p.type, p.winget_id, p.install_script, p.post_install_script, p.detection_script, p.name
+    // Le contenu envoyé est le SNAPSHOT figé à la mise en file (ou à la
+    // dernière ré-approbation / au retry), jamais le contenu courant de
+    // `packages`. Un 'pending' sans snapshot (créé hors API, ou par l'ancien
+    // code entre la migration 071 et le redémarrage) n'est PAS distribué :
+    // log + reste 'pending' (l'admin l'annule puis le rejoue, ce qui refait
+    // un snapshot). Tri : les distribuables d'abord, pour qu'un lot de
+    // lignes sans snapshot ne bloque jamais les autres.
+    const pendingRows = inMaintWindow ? (await fastify.db.query(`
+      SELECT d.id AS deployment_id, (s.deployment_id IS NOT NULL) AS has_snapshot,
+             s.type, s.winget_id, s.install_script, s.post_install_script, s.detection_script, s.name
       FROM deployments d
       JOIN packages p ON p.id = d.package_id
+      LEFT JOIN deployment_snapshots s ON s.deployment_id = d.id
       WHERE d.device_id = $1 AND d.status = 'pending' AND p.status = 'approved'
-      ORDER BY d.queued_at ASC LIMIT 10
-    `, [deviceId]) : { rows: [] }
+      ORDER BY (s.deployment_id IS NULL), d.queued_at ASC LIMIT 10
+    `, [deviceId])).rows : []
+
+    const missingSnapshot = pendingRows.filter(r => !r.has_snapshot)
+    if (missingSnapshot.length) {
+      fastify.log.warn(
+        { device_id: deviceId, deployment_ids: missingSnapshot.map(r => r.deployment_id) },
+        'checkin: déploiement pending sans snapshot — non distribué (annuler puis rejouer pour le re-figer)'
+      )
+    }
+    const pendingDeployments = { rows: pendingRows.filter(r => r.has_snapshot) }
 
     if (pendingDeployments.rows.length) {
       await fastify.db.query(`

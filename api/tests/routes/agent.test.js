@@ -227,6 +227,18 @@ async function insertScriptPackage(db, { name, status, installScript }) {
   return pkg
 }
 
+// Déploiement pending + snapshot du contenu courant du package, comme le
+// fait POST /api/packages/:id/deploy (cf. lib/deployment-snapshots.js).
+async function insertSnapshottedDeployment(db, { packageId, deviceId }) {
+  const dep = await insertDeployment(db, { packageId, deviceId })
+  await db.query(`
+    INSERT INTO deployment_snapshots (deployment_id, name, type, winget_id, install_script, post_install_script, detection_script)
+    SELECT $1, p.name, p.type, p.winget_id, p.install_script, p.post_install_script, p.detection_script
+    FROM packages p WHERE p.id = $2
+  `, [dep.id, packageId])
+  return dep
+}
+
 test('POST /checkin — un déploiement pending d\'un package draft n\'est pas distribué', { skip: SKIP }, async () => {
   // Sécu : un package repassé en draft (modifié, non ré-approuvé) ne doit
   // jamais partir en SYSTEM sur un poste. Le déploiement reste pending.
@@ -255,7 +267,7 @@ test('POST /checkin — un déploiement pending d\'un package approuvé est dist
   const pkg = await insertScriptPackage(db, {
     name: 'Pkg Approved Dispatch', status: 'approved', installScript: 'Write-Output ok',
   })
-  const dep = await insertDeployment(db, { packageId: pkg.id, deviceId: device.id })
+  const dep = await insertSnapshottedDeployment(db, { packageId: pkg.id, deviceId: device.id })
 
   const res = await fastify.inject({
     method: 'POST', url: '/api/agent/checkin',
@@ -275,6 +287,99 @@ test('POST /checkin — un déploiement pending d\'un package approuvé est dist
 
   const { rows: [row] } = await db.query(`SELECT status FROM deployments WHERE id = $1`, [dep.id])
   assert.equal(row.status, 'running')
+})
+
+test('POST /checkin — envoie le contenu figé du snapshot, pas le contenu courant du package', { skip: SKIP }, async () => {
+  // Sécu : le contenu parti en SYSTEM est celui figé à la mise en file,
+  // même si `packages` est modifié ensuite sans repasser par l'approbation.
+  const device = await seedDevice(db, { hostname: 'PC-DEP-SNAP' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const pkg = await insertScriptPackage(db, {
+    name: 'Pkg Snapshot', status: 'approved', installScript: 'Write-Output v1',
+  })
+  const dep = await insertSnapshottedDeployment(db, { packageId: pkg.id, deviceId: device.id })
+  await db.query(
+    `UPDATE packages SET install_script = 'Write-Output pwned', detection_script = 'exit 0', name = 'Renamed' WHERE id = $1`,
+    [pkg.id]
+  )
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(secret),
+    payload: { hostname: device.hostname },
+  })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  const deps = res.json().deployments
+  assert.equal(deps.length, 1)
+  assert.equal(deps[0].deployment_id, dep.id)
+  assert.equal(deps[0].install_script, 'Write-Output v1')
+  assert.equal(deps[0].detection_script, null)
+  assert.equal(deps[0].name, 'Pkg Snapshot')
+})
+
+test('POST /checkin — un pending sans snapshot n\'est pas distribué (reste pending)', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-DEP-NOSNAP' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const pkg = await insertScriptPackage(db, {
+    name: 'Pkg No Snapshot', status: 'approved', installScript: 'Write-Output legacy',
+  })
+  // Ligne créée hors API (ou par l'ancien code) : pas de snapshot.
+  const orphan = await insertDeployment(db, { packageId: pkg.id, deviceId: device.id })
+  const other = await insertScriptPackage(db, {
+    name: 'Pkg With Snapshot', status: 'approved', installScript: 'Write-Output ok',
+  })
+  const good = await insertSnapshottedDeployment(db, { packageId: other.id, deviceId: device.id })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(secret),
+    payload: { hostname: device.hostname },
+  })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  assert.deepEqual(res.json().deployments.map(d => d.deployment_id), [good.id])
+
+  const { rows: [row] } = await db.query(`SELECT status FROM deployments WHERE id = $1`, [orphan.id])
+  assert.equal(row.status, 'pending')
+})
+
+test('POST /checkin — fan-out d\'un job : snapshot créé, package draft ignoré', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-DEP-FANOUT' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const approved = await insertScriptPackage(db, {
+    name: 'Pkg Fanout Approved', status: 'approved', installScript: 'Write-Output fanout',
+  })
+  const draft = await insertScriptPackage(db, {
+    name: 'Pkg Fanout Draft', status: 'draft', installScript: 'Write-Output draft',
+  })
+  await db.query(
+    `INSERT INTO deployment_jobs (package_id, scope) VALUES ($1, 'all'), ($2, 'all')`,
+    [approved.id, draft.id]
+  )
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(secret),
+    payload: { hostname: device.hostname },
+  })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  const deps = res.json().deployments
+  assert.equal(deps.length, 1)
+  assert.equal(deps[0].install_script, 'Write-Output fanout')
+
+  const { rows: snaps } = await db.query(`
+    SELECT s.install_script FROM deployment_snapshots s
+    JOIN deployments d ON d.id = s.deployment_id
+    WHERE d.device_id = $1 AND d.package_id = $2
+  `, [device.id, approved.id])
+  assert.equal(snaps.length, 1)
+  assert.equal(snaps[0].install_script, 'Write-Output fanout')
+
+  // Job d'un package draft : aucune ligne créée tant qu'il n'est pas approuvé.
+  const { rows: draftDeps } = await db.query(
+    `SELECT count(*)::int AS n FROM deployments WHERE device_id = $1 AND package_id = $2`,
+    [device.id, draft.id]
+  )
+  assert.equal(draftDeps[0].n, 0)
 })
 
 // ─── POST /exchange-token ──────────────────────────────────────────────────

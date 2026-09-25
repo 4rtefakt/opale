@@ -1,3 +1,5 @@
+import { SNAPSHOT_COLUMNS, SNAPSHOT_UPSERT, snapshotSelect } from '../lib/deployment-snapshots.js'
+
 // Suivi des déploiements de packages
 export default async function deploymentsRoute(fastify) {
 
@@ -84,7 +86,8 @@ export default async function deploymentsRoute(fastify) {
 
   // POST /api/deployments/retry-bulk — rejoue plusieurs déploiements
   // failed/cancelled. Skip ceux qui ont déjà un pending pour le même
-  // couple (package, device) — évite les doublons.
+  // couple (package, device) — évite les doublons — et ceux dont le
+  // package n'est pas (ou plus) approuvé.
   // Body : { ids: [uuid, ...] }. Renvoie { retried, skipped }.
   fastify.post('/retry-bulk', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids : []
@@ -92,20 +95,34 @@ export default async function deploymentsRoute(fastify) {
     // Un seul UPDATE conditionnel : on n'autorise que failed/cancelled, et
     // on évite les doublons via NOT EXISTS sur un pending concurrent. Plus
     // efficace qu'une boucle par-id, et garde la cohérence transactionnelle.
+    // Le snapshot du contenu approuvé courant est (re)figé dans la même
+    // requête (cf. lib/deployment-snapshots.js).
     const { rows } = await fastify.db.query(`
-      UPDATE deployments d SET
-        status = 'pending', exit_code = NULL, output = NULL,
-        queued_at = now(), started_at = NULL, completed_at = NULL
-      WHERE d.id = ANY($1::uuid[])
-        AND d.status IN ('failed', 'cancelled')
-        AND NOT EXISTS (
-          SELECT 1 FROM deployments c
-          WHERE c.package_id = d.package_id
-            AND c.device_id  = d.device_id
-            AND c.status     = 'pending'
-            AND c.id        != d.id
-        )
-      RETURNING id
+      WITH upd AS (
+        UPDATE deployments d SET
+          status = 'pending', exit_code = NULL, output = NULL,
+          queued_at = now(), started_at = NULL, completed_at = NULL
+        FROM packages p
+        WHERE d.id = ANY($1::uuid[])
+          AND d.status IN ('failed', 'cancelled')
+          AND p.id = d.package_id
+          AND p.status = 'approved'
+          AND NOT EXISTS (
+            SELECT 1 FROM deployments c
+            WHERE c.package_id = d.package_id
+              AND c.device_id  = d.device_id
+              AND c.status     = 'pending'
+              AND c.id        != d.id
+          )
+        RETURNING d.id, d.package_id
+      ), snap AS (
+        INSERT INTO deployment_snapshots (${SNAPSHOT_COLUMNS})
+        SELECT ${snapshotSelect('upd', 'p')}
+        FROM upd
+        JOIN packages p ON p.id = upd.package_id
+        ${SNAPSHOT_UPSERT}
+      )
+      SELECT id FROM upd
     `, [ids])
     reply.send({ retried: rows.length, skipped: ids.length - rows.length })
   })
@@ -124,13 +141,27 @@ export default async function deploymentsRoute(fastify) {
     `, [existing.package_id, existing.device_id])
     if (conflict.length) return reply.code(409).send({ error: 'Un déploiement pending existe déjà pour ce poste' })
 
+    // Rejouer = redistribuer le contenu approuvé COURANT du package : refus si
+    // le package a été modifié depuis (draft) et pas encore ré-approuvé. Le
+    // snapshot est (re)figé dans la même requête que la remise en file.
     const { rows } = await fastify.db.query(`
-      UPDATE deployments SET
-        status = 'pending', exit_code = NULL, output = NULL,
-        queued_at = now(), started_at = NULL, completed_at = NULL
-      WHERE id = $1
-      RETURNING *
+      WITH upd AS (
+        UPDATE deployments d SET
+          status = 'pending', exit_code = NULL, output = NULL,
+          queued_at = now(), started_at = NULL, completed_at = NULL
+        FROM packages p
+        WHERE d.id = $1 AND p.id = d.package_id AND p.status = 'approved'
+        RETURNING d.*
+      ), snap AS (
+        INSERT INTO deployment_snapshots (${SNAPSHOT_COLUMNS})
+        SELECT ${snapshotSelect('upd', 'p')}
+        FROM upd
+        JOIN packages p ON p.id = upd.package_id
+        ${SNAPSHOT_UPSERT}
+      )
+      SELECT * FROM upd
     `, [req.params.id])
+    if (!rows.length) return reply.code(409).send({ error: 'Le package doit être approuvé avant de rejouer ce déploiement' })
 
     reply.send(rows[0])
   })
