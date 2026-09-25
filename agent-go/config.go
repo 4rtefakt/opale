@@ -108,7 +108,9 @@ func agentNewName() string {
 	return branding.BinName + ".new"
 }
 
-// Save écrit la config sur disque atomiquement (fichier .new + rename).
+// Save écrit la config sur disque atomiquement (temporaire + fsync +
+// rename, cf. writeFileAtomic) : une coupure pendant la rotation du token
+// ne doit jamais laisser un config.json vide (agent orphelin).
 // Permissions strictes 0600 — Windows ignore le mode mais l'ACL du dossier
 // data dir reste SYSTEM-only via install.ps1.
 func (c *Config) Save() error {
@@ -116,13 +118,8 @@ func (c *Config) Save() error {
 	if err != nil {
 		return fmt.Errorf("marshal : %w", err)
 	}
-	tmp := configPath() + ".new"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write %s : %w", tmp, err)
-	}
-	if err := os.Rename(tmp, configPath()); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename : %w", err)
+	if err := writeFileAtomic(configPath(), data, 0o600); err != nil {
+		return fmt.Errorf("écriture %s : %w", configPath(), err)
 	}
 	return nil
 }

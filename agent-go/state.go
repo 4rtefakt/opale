@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -59,13 +61,78 @@ func LoadState() *State {
 	return &s
 }
 
-func (s *State) Save() {
+// Save persiste le state de façon atomique (cf. writeFileAtomic). L'erreur
+// est loggée ET retournée : la plupart des appelants l'ignorent (best
+// effort), mais la LAPS en a besoin pour ne pas envoyer un mot de passe
+// dont elle ne garderait aucune trace sur disque.
+func (s *State) Save() error {
 	raw, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		logf("state marshal err : %v", err)
-		return
+		return err
 	}
-	if err := os.WriteFile(statePath(), raw, 0o600); err != nil {
+	if err := writeFileAtomic(statePath(), raw, 0o600); err != nil {
 		logf("state write err : %v", err)
+		return err
 	}
+	return nil
+}
+
+// writeFileAtomic écrit data dans path sans jamais exposer de fichier
+// partiel : fichier temporaire au nom aléatoire dans le MÊME dossier (le
+// rename n'est atomique que sur un même volume), fsync, puis rename sur la
+// cible (MoveFileEx REPLACE_EXISTING sous Windows, rename(2) ailleurs).
+// Un crash ou une coupure de courant laisse l'ancienne ou la nouvelle
+// version, jamais un fichier tronqué. Le temporaire hérite de l'ACL du
+// data dir (SYSTEM + Administrateurs sous Windows).
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	fail := func(err error) error {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := f.Chmod(perm); err != nil && runtime.GOOS != "windows" {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := renameWithRetry(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	// Persistance du rename lui-même (POSIX). Sans effet sous Windows, où
+	// l'ouverture d'un dossier en écriture n'est pas supportée : ignoré.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
+// renameWithRetry — sous Windows, un rename vers un fichier ouvert sans
+// FILE_SHARE_DELETE (antivirus, indexeur) échoue transitoirement : on
+// réessaie brièvement avant d'abandonner (l'ancien fichier reste intact).
+func renameWithRetry(from, to string) error {
+	var err error
+	for attempt := 1; attempt <= 5; attempt++ {
+		if err = os.Rename(from, to); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+	}
+	return err
 }
