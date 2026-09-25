@@ -141,7 +141,7 @@ func postAdminCredential(ctx context.Context, cfg *Config, username string, encr
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.token())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent())
 

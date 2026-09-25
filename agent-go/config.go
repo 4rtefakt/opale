@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/4rtefakt/opale/agent-go/branding"
 )
@@ -15,6 +16,11 @@ import (
 // Config — contenu du config.json (chemin retourné par configPath()).
 // Ce fichier est lu au démarrage et après chaque rotation de token.
 type Config struct {
+	// mu protège Token : la rotation (goroutine de checkin) le réécrit
+	// pendant que la goroutine WS et les requêtes HTTP le lisent. Toujours
+	// passer par token() / setToken() hors chargement initial.
+	mu sync.RWMutex
+
 	Token string `json:"token"`
 	URL   string `json:"url"`
 
@@ -26,6 +32,28 @@ type Config struct {
 	// "Administrator" ou un compte existant pour éviter tout lockout.
 	// Créé automatiquement par l'agent à la première rotation.
 	LAPSUser string `json:"laps_user,omitempty"`
+}
+
+// token — lecture du token courant, sûre en concurrence avec la rotation.
+func (c *Config) token() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Token
+}
+
+// tokenOrEmpty — comme token() mais tolère un cfg nil.
+func (c *Config) tokenOrEmpty() string {
+	if c == nil {
+		return ""
+	}
+	return c.token()
+}
+
+// setToken — remplace le token en mémoire (rotation / rollback).
+func (c *Config) setToken(t string) {
+	c.mu.Lock()
+	c.Token = t
+	c.mu.Unlock()
 }
 
 // lapsUser — wrapper qui délègue à ResolveLAPSUser : valeur runtime servie
@@ -114,7 +142,9 @@ func agentNewName() string {
 // Permissions strictes 0600 — Windows ignore le mode mais l'ACL du dossier
 // data dir reste SYSTEM-only via install.ps1.
 func (c *Config) Save() error {
+	c.mu.RLock()
 	data, err := json.MarshalIndent(c, "", "  ")
+	c.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshal : %w", err)
 	}

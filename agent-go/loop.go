@@ -31,7 +31,7 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 	// Rafraîchissement du cache runtime-config si TTL expiré (no-op
 	// sinon). Garantit que les changements UI Paramètres sont vus au
 	// cycle suivant sans attendre une rotation LAPS (30j).
-	GetRuntimeConfig(httpClient, cfg.URL, cfg.Token)
+	GetRuntimeConfig(httpClient, cfg.URL, cfg.token())
 	// Rotation token éventuelle (toutes les 30j). Non bloquante.
 	MaybeRotateToken(ctx, cfg, st)
 	// Rotation mdp admin local (LAPS-like, opt-in via cfg.LAPSEnabled).

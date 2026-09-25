@@ -206,7 +206,7 @@ func downloadBinary(ctx context.Context, cfg *Config, upd *AgentUpdate) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.token())
 	req.Header.Set("User-Agent", userAgent())
 
 	resp, err := httpClient.Do(req)
