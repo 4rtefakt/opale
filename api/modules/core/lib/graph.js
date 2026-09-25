@@ -1,3 +1,5 @@
+import { randomInt } from 'node:crypto'
+
 let appToken = null
 let tokenExpiresAt = 0
 
@@ -154,9 +156,30 @@ async function graphDelete(path) {
   return null
 }
 
-function tempPassword() {
-  const pool = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$'
-  return Array.from({ length: 14 }, () => pool[Math.floor(Math.random() * pool.length)]).join('')
+// Mot de passe temporaire d'un nouveau compte Entra. Même alphabet et même
+// longueur qu'avant (14 caractères, sans caractères ambigus I/O/i/l/o/0/1),
+// mais tirage CSPRNG (crypto.randomInt, jamais Math.random) et au moins un
+// caractère de chaque catégorie : Entra exige 3 catégories sur 4, un tirage
+// purement aléatoire pouvait sortir sans chiffre ni symbole (~4 % des cas).
+const PWD_CLASSES = [
+  'ABCDEFGHJKLMNPQRSTUVWXYZ',
+  'abcdefghjkmnpqrstuvwxyz',
+  '23456789',
+  '!@#$',
+]
+const PWD_POOL   = PWD_CLASSES.join('')
+const PWD_LENGTH = 14
+
+export function tempPassword() {
+  const pick = (set) => set[randomInt(set.length)]
+  const chars = PWD_CLASSES.map(pick)
+  while (chars.length < PWD_LENGTH) chars.push(pick(PWD_POOL))
+  // Fisher-Yates : les caractères imposés ne restent pas en tête.
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1)
+    ;[chars[i], chars[j]] = [chars[j], chars[i]]
+  }
+  return chars.join('')
 }
 
 export async function createEntraUser({ displayName, userPrincipalName, jobTitle, department }) {
