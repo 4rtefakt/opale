@@ -420,6 +420,84 @@ test('POST /checkin — fan-out d\'un job : snapshot créé, package draft ignor
   assert.equal(draftDeps[0].n, 0)
 })
 
+// ─── POST /checkin — validation des champs remontés par l'agent ──────────────
+
+async function deviceNetbird(id) {
+  const { rows: [d] } = await db.query(`SELECT ip_netbird FROM devices WHERE id = $1`, [id])
+  return d.ip_netbird
+}
+
+test('POST /checkin — ip_netbird : seule une IPv4 de 100.64.0.0/10 est stockée', { skip: SKIP }, async () => {
+  // Sécu : ip_netbird est la cible des connexions SSH / scripts lancées par
+  // l'API. Un agent (ou token) compromis ne doit pas pouvoir la pointer vers
+  // une autre machine (127.0.0.1, LAN serveur, Internet…).
+  const device = await seedDevice(db, { hostname: 'PC-NETBIRD', ipNetbird: '100.64.0.9' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const send = (ip_netbird) => fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(secret),
+    payload: { hostname: device.hostname, ...(ip_netbird === undefined ? {} : { ip_netbird }) },
+  })
+
+  // Valeurs légitimes (bords de la plage inclus).
+  for (const ok of ['100.64.0.1', '100.127.255.254', '100.100.3.7']) {
+    const res = await send(ok)
+    assert.equal(res.statusCode, 200, `body: ${res.body}`)
+    assert.equal(await deviceNetbird(device.id), ok)
+  }
+
+  // Champ absent (agent sans Netbird, omitempty) → valeur conservée.
+  assert.equal((await send(undefined)).statusCode, 200)
+  assert.equal(await deviceNetbird(device.id), '100.100.3.7')
+
+  // Hors plage / invalide → checkin accepté, IP stockée NULL.
+  for (const bad of ['10.0.0.5', '127.0.0.1', '100.128.0.1', '100.63.255.255', '192.168.1.10',
+    '::1', 'evil.example.com', '100.64.0.1; rm -rf /', '100.064.0.1']) {
+    await db.query(`UPDATE devices SET ip_netbird = '100.64.0.9' WHERE id = $1`, [device.id])
+    const res = await send(bad)
+    assert.equal(res.statusCode, 200, `body: ${res.body}`)
+    assert.equal(await deviceNetbird(device.id), null, `${bad} doit être rejetée`)
+  }
+})
+
+test('POST /checkin — ip_netbird invalide sur un nouveau device → NULL', { skip: SKIP }, async () => {
+  const t = await seedAgentToken(db, { label: 'netbird-new-device' })
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(t.secret),
+    payload: { hostname: 'PC-NETBIRD-NEW', ip_netbird: '10.1.2.3' },
+  })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  assert.equal(await deviceNetbird(res.json().device_id), null)
+})
+
+test('POST /checkin — type d\'interface : liste blanche (eth|wifi|netbird), absent → eth, inconnu → NULL', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-IFACE-TYPE' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(secret),
+    payload: {
+      hostname: device.hostname,
+      network: [
+        // Format exact de l'agent Go (NetIface) : type toujours envoyé.
+        { mac: '00:11:22:33:44:01', ip: '192.168.1.20', adapter: 'Ethernet',  type: 'eth' },
+        { mac: '00:11:22:33:44:02', ip: '192.168.1.21', adapter: 'Wi-Fi',     type: 'wifi' },
+        { mac: '00:11:22:33:44:03', ip: '100.64.0.20',  adapter: 'wt0',       type: 'netbird' },
+        { mac: '00:11:22:33:44:04', ip: '192.168.1.22', adapter: 'Legacy' },
+        { mac: '00:11:22:33:44:05', ip: '192.168.1.23', adapter: 'Evil', type: '<img src=x onerror=alert(1)>' },
+        { mac: '00:11:22:33:44:06', ip: '192.168.1.24', adapter: 'Obj',  type: { toString: 'x' } },
+        null,
+      ],
+    },
+  })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  const { rows } = await db.query(
+    `SELECT mac, type FROM network_interfaces WHERE device_id = $1 ORDER BY mac`, [device.id]
+  )
+  assert.deepEqual(rows.map(r => r.type), ['eth', 'wifi', 'netbird', 'eth', null, null])
+})
+
 // ─── POST /exchange-token ──────────────────────────────────────────────────
 
 test('POST /exchange-token — sans Bearer → 401', { skip: SKIP }, async () => {

@@ -27,8 +27,8 @@ const FAKE_SERIALS = new Set([
 
 // Série normalisée pour comparaison, ou null si absente / bidon.
 export function normalizeSerial(serial) {
-  if (serial === null || serial === undefined) return null
-  const v = String(serial).trim()
+  if (typeof serial !== 'string') return null
+  const v = serial.trim()
   if (!v || FAKE_SERIALS.has(v.toLowerCase())) return null
   return v.toUpperCase()
 }

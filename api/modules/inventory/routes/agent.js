@@ -8,6 +8,7 @@ import { evaluateAndPersist as evaluateCompliance } from '../../monitoring/lib/c
 import { logAudit } from '../../core/lib/audit.js'
 import { SNAPSHOT_COLUMNS, snapshotSelect } from '../lib/deployment-snapshots.js'
 import { checkDeviceClaim, CLAIM_REFUSAL_MESSAGES } from '../lib/device-claim.js'
+import { isNetbirdIp, normalizeIfaceType, clipStr } from '../lib/checkin-validation.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -675,14 +676,14 @@ export default async function agentRoute(fastify) {
         )
         await logAudit(fastify.db, fastify.log, {
           action:  'agent_token_bind_refused',
-          byUser:  String(hostname).slice(0, 255),
+          byUser:  clipStr(hostname, 255),
           target:  lookup.rows[0].id,
           details: {
             level:       'warn',
             reason:      refusal.reason,
             token_id:    token.id,
             token_label: token.label,
-            serial:      serial ? String(serial).slice(0, 100) : null,
+            serial:      clipStr(serial, 100),
             ...(refusal.token_id ? { active_token_id: refusal.token_id } : {}),
           },
         })
@@ -697,6 +698,14 @@ export default async function agentRoute(fastify) {
     const healthJSON = health && typeof health === 'object' ? JSON.stringify(health) : null
     const sysInfoJSON = system_info && typeof system_info === 'object' ? JSON.stringify(system_info) : null
 
+    // ip_netbird sert de cible aux connexions SSH / scripts lancées par
+    // l'API : seule une IPv4 de la plage Netbird 100.64.0.0/10 est acceptée.
+    // Absente → valeur stockée conservée (comportement historique) ;
+    // présente mais invalide → stockée NULL + log.
+    const ipNetbirdSent   = ip_netbird !== undefined && ip_netbird !== null && ip_netbird !== ''
+    const ipNetbird       = ipNetbirdSent && isNetbirdIp(ip_netbird) ? ip_netbird : null
+    const ipNetbirdReject = ipNetbirdSent && !ipNetbird
+
     let deviceId
     if (lookup.rows.length) {
       deviceId = lookup.rows[0].id
@@ -708,7 +717,7 @@ export default async function agentRoute(fastify) {
           ram_gb            = COALESCE($4, ram_gb),
           disk_used_pct     = COALESCE($5, disk_used_pct),
           disk_total_gb     = COALESCE($6, disk_total_gb),
-          ip_netbird        = COALESCE($7, ip_netbird),
+          ip_netbird        = CASE WHEN $12::boolean THEN NULL ELSE COALESCE($7, ip_netbird) END,
           agent_version     = COALESCE($8, agent_version),
           health_signals    = COALESCE($10::jsonb, health_signals),
           health_updated_at = CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE health_updated_at END,
@@ -723,11 +732,12 @@ export default async function agentRoute(fastify) {
         ram_gb        || null,
         mainDisk?.used_pct  ?? null,
         mainDisk?.size_gb   ?? null,
-        ip_netbird    || null,
+        ipNetbird,
         agent_version || null,
         deviceId,
         healthJSON,
         sysInfoJSON,
+        ipNetbirdReject,
       ])
     } else {
       const res = await fastify.db.query(`
@@ -750,12 +760,19 @@ export default async function agentRoute(fastify) {
         ram_gb        || null,
         mainDisk?.used_pct ?? null,
         mainDisk?.size_gb  ?? null,
-        ip_netbird    || null,
+        ipNetbird,
         agent_version || null,
         healthJSON,
         sysInfoJSON,
       ])
       deviceId = res.rows[0].id
+    }
+
+    if (ipNetbirdReject) {
+      fastify.log.warn(
+        { device_id: deviceId, hostname, ip_netbird: clipStr(ip_netbird, 64) },
+        'checkin : ip_netbird hors 100.64.0.0/10 — ignorée, stockée NULL'
+      )
     }
 
     // ── Upsert partitions ───────────────────────────────────────────────────
@@ -776,11 +793,20 @@ export default async function agentRoute(fastify) {
     if (network.length > 0) {
       await fastify.db.query(`DELETE FROM network_interfaces WHERE device_id = $1`, [deviceId])
       for (const iface of network) {
-        if (!iface.mac) continue
+        if (!iface?.mac) continue
+        // Type : liste blanche (eth | wifi | netbird), absent → 'eth',
+        // valeur inconnue → NULL (non stockée).
+        const type = normalizeIfaceType(iface.type)
+        if (type === null) {
+          fastify.log.debug(
+            { device_id: deviceId, type: clipStr(iface.type, 32) },
+            'checkin : type d\'interface inconnu ignoré'
+          )
+        }
         await fastify.db.query(`
           INSERT INTO network_interfaces (device_id, mac, ip, adapter, type)
           VALUES ($1, $2, $3, $4, $5)
-        `, [deviceId, iface.mac, iface.ip || null, iface.adapter || null, iface.type || 'eth'])
+        `, [deviceId, iface.mac, iface.ip || null, iface.adapter || null, type])
       }
     }
 
@@ -1084,7 +1110,7 @@ export default async function agentRoute(fastify) {
       action:  'agent_checkin',
       byUser:  hostname,
       target:  deviceId,
-      details: { level: 'info', disks: disks.length, ip_netbird: ip_netbird || null, new: !lookup.rows.length, agent_version: agent_version || null },
+      details: { level: 'info', disks: disks.length, ip_netbird: ipNetbird, new: !lookup.rows.length, agent_version: agent_version || null },
     })
 
     reply.send({

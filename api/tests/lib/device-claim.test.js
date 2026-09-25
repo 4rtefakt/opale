@@ -13,7 +13,8 @@ test('normalizeSerial — trim + insensible à la casse', () => {
 
 test('normalizeSerial — absent ou bidon → null', () => {
   for (const v of [null, undefined, '', '   ', 'To be filled by O.E.M.', 'System Serial Number',
-    'SystemSerialNumber', 'Default string', 'N/A', 'none', 'unknown', '0', ' TO BE FILLED ']) {
+    'SystemSerialNumber', 'Default string', 'N/A', 'none', 'unknown', '0', ' TO BE FILLED ',
+    42, {}, { toString: 'x' }, ['SN']]) {
     assert.equal(normalizeSerial(v), null, JSON.stringify(v))
   }
 })
