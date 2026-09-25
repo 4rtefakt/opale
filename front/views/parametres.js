@@ -233,7 +233,7 @@ function render() {
                   title="${esc(k.public_key)}">${esc(k.public_key)}</td>
               <td style="font-size:12px;color:var(--text-tertiary)">${formatRelative(k.created_at)}${k.created_by ? ` · ${esc(k.created_by)}` : ''}</td>
               <td style="text-align:right">
-                <button class="btn btn-sm" onclick="deleteSSHKey('${k.id}','${esc(k.label)}')"
+                <button class="btn btn-sm" onclick="deleteSSHKey('${k.id}',${jsArg(k.label)})"
                   style="color:var(--red)">
                   <i class="ti ti-trash"></i>
                 </button>
@@ -298,7 +298,7 @@ function render() {
                 : `<span class="badge badge-green">${t('settings.tokens.active')}</span>`}</td>
               <td style="text-align:right">
                 ${!tk.revoked_at ? `
-                  <button class="btn btn-sm" onclick="revokeToken('${tk.id}','${esc(tk.label)}')"
+                  <button class="btn btn-sm" onclick="revokeToken('${tk.id}',${jsArg(tk.label)})"
                     style="color:var(--red)">
                     <i class="ti ti-ban"></i> ${t('settings.tokens.btn.revoke')}
                   </button>` : ''}
@@ -335,7 +335,7 @@ function render() {
                 : `<span class="badge badge-green">${t('settings.tokens.active')}</span>`}</td>
               <td style="text-align:right">
                 ${!tk.revoked_at ? `
-                  <button class="btn btn-sm" onclick="revokeCliToken('${tk.id}','${esc(tk.label)}')"
+                  <button class="btn btn-sm" onclick="revokeCliToken('${tk.id}',${jsArg(tk.label)})"
                     style="color:var(--red)">
                     <i class="ti ti-ban"></i> ${t('settings.tokens.btn.revoke')}
                   </button>` : ''}
@@ -570,7 +570,7 @@ async function createToken() {
             <i class="ti ti-key" style="color:var(--orange)"></i>
             <span style="font-size:12px;font-weight:500;color:var(--orange)">${t('settings.tokens.copy_once')}</span>
             <code id="plain-token" style="font-family:monospace;font-size:12px;background:var(--bg-tertiary);padding:4px 8px;border-radius:4px;word-break:break-all;flex:1">${esc(tk.token)}</code>
-            <button class="btn btn-sm" onclick="navigator.clipboard.writeText('${esc(tk.token)}').then(()=>showToast('Copié','success'))">
+            <button class="btn btn-sm" onclick="navigator.clipboard.writeText(${jsArg(tk.token)}).then(()=>showToast('Copié','success'))">
               <i class="ti ti-copy"></i>
             </button>
           </div>

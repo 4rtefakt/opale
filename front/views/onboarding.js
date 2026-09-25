@@ -377,7 +377,7 @@ async function searchManager(q) {
       drop.style.display = 'block'
       drop.innerHTML = users.map(u => `
         <div style="padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:0.5px solid var(--border)"
-          onmousedown="pickManager('${esc(u.entra_id)}','${esc(u.display_name)}')"
+          onmousedown="pickManager('${esc(u.entra_id)}',${jsArg(u.display_name)})"
           onmouseover="this.style.background='var(--bg-secondary)'"
           onmouseout="this.style.background=''">
           <div style="font-weight:500">${esc(u.display_name)}</div>

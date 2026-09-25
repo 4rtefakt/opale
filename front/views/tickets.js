@@ -1794,8 +1794,8 @@ function renderAdvancedPanel() {
       <div>
         <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:4px">${t('tickets.filters.assignee')}</div>
         <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-sm ${_filters.assigned_to==='me'?'btn-primary':''}" onclick="tkSetAssignedFilter('me','${esc(t('tickets.filters.assignee_me'))}')">${t('tickets.filters.assignee_me')}</button>
-          <button class="btn btn-sm ${_filters.assigned_to==='unassigned'?'btn-primary':''}" onclick="tkSetAssignedFilter('unassigned','${esc(t('tickets.filters.assignee_unassigned'))}')">${t('tickets.filters.assignee_unassigned')}</button>
+          <button class="btn btn-sm ${_filters.assigned_to==='me'?'btn-primary':''}" onclick="tkSetAssignedFilter('me',${jsArg(t('tickets.filters.assignee_me'))})">${t('tickets.filters.assignee_me')}</button>
+          <button class="btn btn-sm ${_filters.assigned_to==='unassigned'?'btn-primary':''}" onclick="tkSetAssignedFilter('unassigned',${jsArg(t('tickets.filters.assignee_unassigned'))})">${t('tickets.filters.assignee_unassigned')}</button>
           <button class="btn btn-sm" onclick="tkOpenAssignedPicker()">
             ${_filters.assigned_to && _filters.assigned_to!=='me' && _filters.assigned_to!=='unassigned'
               ? `${t('tickets.filters.assignee_user')}: ${esc(_filters.assigned_label || _filters.assigned_to)}`
