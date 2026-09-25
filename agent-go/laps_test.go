@@ -1,0 +1,472 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// --- Fakes ------------------------------------------------------------------
+
+// lapsFake enregistre la séquence des appels (escrow / apply / save) pour
+// vérifier l'ordre imposé par la machine à états.
+type lapsFake struct {
+	mu        sync.Mutex
+	calls     []string
+	escrowed  []string // "user:ciphertext" dans l'ordre des POST
+	escrowErr []error  // erreurs à renvoyer, consommées dans l'ordre (nil = OK)
+	applyRes  lapsApplyResult
+	applied   []string // "user:password"
+	saveErr   error
+	saves     []State // copie du state à chaque save
+	st        *State
+	pwSeq     int
+	now       time.Time
+	username  string
+}
+
+func (f *lapsFake) record(c string) {
+	f.mu.Lock()
+	f.calls = append(f.calls, c)
+	f.mu.Unlock()
+}
+
+func (f *lapsFake) apply(username, password string) lapsApplyResult {
+	f.record("apply")
+	f.applied = append(f.applied, username+":"+password)
+	return f.applyRes
+}
+
+func (f *lapsFake) rotator() *lapsRotator {
+	return &lapsRotator{
+		escrow: func(ctx context.Context, username string, enc []byte) error {
+			f.record("escrow")
+			f.escrowed = append(f.escrowed, username+":"+string(enc))
+			if len(f.escrowErr) > 0 {
+				err := f.escrowErr[0]
+				f.escrowErr = f.escrowErr[1:]
+				return err
+			}
+			return nil
+		},
+		accounts: f,
+		// Chiffrement factice lisible : permet de relier escrow et apply.
+		encrypt: func(plain string) ([]byte, error) { return []byte("enc(" + plain + ")"), nil },
+		genPassword: func() (string, error) {
+			f.pwSeq++
+			return "pw" + string(rune('0'+f.pwSeq)), nil
+		},
+		save: func() error {
+			f.record("save")
+			if f.st != nil {
+				cp := *f.st
+				if f.st.PendingAdminCred != nil {
+					p := *f.st.PendingAdminCred
+					cp.PendingAdminCred = &p
+				}
+				f.saves = append(f.saves, cp)
+			}
+			return f.saveErr
+		},
+		now:      func() time.Time { return f.now },
+		username: func() string { return f.username },
+	}
+}
+
+func newLAPSFake(st *State) *lapsFake {
+	return &lapsFake{
+		st:       st,
+		now:      time.Date(2026, 9, 1, 3, 0, 0, 0, time.UTC),
+		username: "opale-recovery",
+		applyRes: lapsApplyResult{Outcome: lapsSetOK, SID: "S-1-5-21-1-2-3-1001"},
+	}
+}
+
+func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+func indexOf(calls []string, name string, nth int) int {
+	seen := 0
+	for i, c := range calls {
+		if c == name {
+			if seen == nth {
+				return i
+			}
+			seen++
+		}
+	}
+	return -1
+}
+
+// --- Ordre nominal ----------------------------------------------------------
+
+// Le mot de passe est persisté (stash) PUIS escrowé PUIS appliqué
+// localement ; le stash n'est effacé qu'après application réussie.
+func TestLAPS_EscrowBeforeLocalSet(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.rotator().run(context.Background(), st)
+
+	iSave := indexOf(f.calls, "save", 0)
+	iEscrow := indexOf(f.calls, "escrow", 0)
+	iApply := indexOf(f.calls, "apply", 0)
+	if !(iSave >= 0 && iSave < iEscrow && iEscrow < iApply) {
+		t.Fatalf("ordre attendu save < escrow < apply, reçu %v", f.calls)
+	}
+	if f.saves[0].PendingAdminCred == nil || f.saves[0].PendingAdminCred.Phase != lapsPhasePrepared {
+		t.Fatalf("1er save : stash 'prepared' attendu, reçu %+v", f.saves[0].PendingAdminCred)
+	}
+	if got, want := f.escrowed[0], "opale-recovery:enc(pw1)"; got != want {
+		t.Fatalf("escrow = %q, attendu %q", got, want)
+	}
+	if got, want := f.applied[0], "opale-recovery:pw1"; got != want {
+		t.Fatalf("apply = %q, attendu %q (même mdp que l'escrow)", got, want)
+	}
+	if st.PendingAdminCred != nil {
+		t.Fatalf("stash non effacé après succès : %+v", st.PendingAdminCred)
+	}
+	if !st.LastAdminRotation.Equal(f.now) {
+		t.Fatalf("LastAdminRotation = %v, attendu %v", st.LastAdminRotation, f.now)
+	}
+	if st.CurrentAdminCred == nil || st.CurrentAdminCred.EncB64 != b64("enc(pw1)") {
+		t.Fatalf("CurrentAdminCred = %+v", st.CurrentAdminCred)
+	}
+	last := f.saves[len(f.saves)-1]
+	if last.PendingAdminCred != nil || last.LastAdminRotation.IsZero() {
+		t.Fatalf("état final non persisté : %+v", last)
+	}
+}
+
+func TestLAPS_NotDue_NoAction(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	st.LastAdminRotation = f.now.Add(-24 * time.Hour)
+	f.rotator().run(context.Background(), st)
+	if len(f.calls) != 0 {
+		t.Fatalf("aucune action attendue avant l'échéance, reçu %v", f.calls)
+	}
+}
+
+// --- Échecs avant l'application locale ---------------------------------------
+
+func TestLAPS_StashSaveFailure_NoEscrowNoSet(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.saveErr = errors.New("disque plein")
+	f.rotator().run(context.Background(), st)
+	if indexOf(f.calls, "escrow", 0) >= 0 || indexOf(f.calls, "apply", 0) >= 0 {
+		t.Fatalf("aucun escrow/apply sans stash persisté, reçu %v", f.calls)
+	}
+	if st.PendingAdminCred != nil {
+		t.Fatalf("stash en mémoire non restauré : %+v", st.PendingAdminCred)
+	}
+	if st.LAPSRetryAfter.IsZero() {
+		t.Fatal("backoff attendu après échec")
+	}
+}
+
+func TestLAPS_EscrowFailure_LocalPasswordUntouched(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.escrowErr = []error{errors.New("HTTP 500")}
+	f.rotator().run(context.Background(), st)
+	if indexOf(f.calls, "apply", 0) >= 0 {
+		t.Fatalf("apply ne doit pas être appelé si l'escrow échoue : %v", f.calls)
+	}
+	if st.PendingAdminCred == nil || st.PendingAdminCred.Phase != lapsPhasePrepared {
+		t.Fatalf("stash 'prepared' attendu, reçu %+v", st.PendingAdminCred)
+	}
+	if !st.LastAdminRotation.IsZero() {
+		t.Fatal("LastAdminRotation ne doit pas avancer")
+	}
+	if want := f.now.Add(lapsBackoffBase); !st.LAPSRetryAfter.Equal(want) {
+		t.Fatalf("LAPSRetryAfter = %v, attendu %v", st.LAPSRetryAfter, want)
+	}
+}
+
+// --- Échecs de l'application locale après escrow ------------------------------
+
+// Mot de passe local inchangé : on réaligne le serveur sur le mot de passe
+// en place (CurrentAdminCred) et le stash est effacé.
+func TestLAPS_SetUnchanged_RestoresPreviousEscrow(t *testing.T) {
+	st := &State{CurrentAdminCred: &AdminCredRecord{Username: "opale-recovery", EncB64: b64("enc(old)")}}
+	f := newLAPSFake(st)
+	f.applyRes = lapsApplyResult{Outcome: lapsSetUnchanged, Err: errors.New("politique de mdp")}
+	f.rotator().run(context.Background(), st)
+
+	if len(f.escrowed) != 2 || f.escrowed[0] != "opale-recovery:enc(pw1)" || f.escrowed[1] != "opale-recovery:enc(old)" {
+		t.Fatalf("escrows attendus [nouveau, ancien], reçu %v", f.escrowed)
+	}
+	if st.PendingAdminCred != nil {
+		t.Fatalf("stash doit être effacé après restauration : %+v", st.PendingAdminCred)
+	}
+	if st.CurrentAdminCred.EncB64 != b64("enc(old)") {
+		t.Fatalf("CurrentAdminCred ne doit pas changer : %+v", st.CurrentAdminCred)
+	}
+	if !st.LastAdminRotation.IsZero() || st.LAPSRetryAfter.IsZero() {
+		t.Fatalf("rotation à retenter après backoff : last=%v retry=%v", st.LastAdminRotation, st.LAPSRetryAfter)
+	}
+}
+
+// Pas d'ancien ciphertext connu (1er cycle après mise à jour depuis 2.14) :
+// impossible de restaurer → stash "escrowed" conservé → roll-forward.
+func TestLAPS_SetUnchanged_NoPrevious_KeepsEscrowedStash(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.applyRes = lapsApplyResult{Outcome: lapsSetUnchanged, Err: errors.New("KO")}
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 1 {
+		t.Fatalf("un seul escrow attendu, reçu %v", f.escrowed)
+	}
+	if st.PendingAdminCred == nil || st.PendingAdminCred.Phase != lapsPhaseEscrowed {
+		t.Fatalf("stash 'escrowed' attendu, reçu %+v", st.PendingAdminCred)
+	}
+}
+
+// Issue incertaine : on ne restaure JAMAIS l'ancien escrow (il pourrait ne
+// plus être le bon).
+func TestLAPS_SetUncertain_NoRestore(t *testing.T) {
+	st := &State{CurrentAdminCred: &AdminCredRecord{Username: "opale-recovery", EncB64: b64("enc(old)")}}
+	f := newLAPSFake(st)
+	f.applyRes = lapsApplyResult{Outcome: lapsSetUncertain, Err: errors.New("timeout")}
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 1 {
+		t.Fatalf("pas de restauration attendue, escrows : %v", f.escrowed)
+	}
+	if st.PendingAdminCred == nil || st.PendingAdminCred.Phase != lapsPhaseEscrowed {
+		t.Fatalf("stash 'escrowed' attendu, reçu %+v", st.PendingAdminCred)
+	}
+}
+
+// Mot de passe changé mais activation/groupe en échec : serveur et poste
+// sont alignés → CurrentAdminCred mis à jour, rotation retentée plus tard.
+func TestLAPS_ChangedPartial_RecordsCurrent(t *testing.T) {
+	st := &State{CurrentAdminCred: &AdminCredRecord{Username: "opale-recovery", EncB64: b64("enc(old)")}}
+	f := newLAPSFake(st)
+	f.applyRes = lapsApplyResult{Outcome: lapsSetChangedPartial, Err: errors.New("groupe")}
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 1 {
+		t.Fatalf("pas de restauration attendue, escrows : %v", f.escrowed)
+	}
+	if st.CurrentAdminCred.EncB64 != b64("enc(pw1)") || st.PendingAdminCred != nil {
+		t.Fatalf("état attendu aligné sur le nouveau mdp : cur=%+v pending=%+v", st.CurrentAdminCred, st.PendingAdminCred)
+	}
+	if !st.LastAdminRotation.IsZero() || st.LAPSRetryAfter.IsZero() {
+		t.Fatal("rotation complète à retenter après backoff")
+	}
+}
+
+// --- Reprise après crash / rotation interrompue --------------------------------
+
+// Crash entre escrow et application (ou entre application et effacement du
+// stash) : phase "escrowed" → nouvelle rotation immédiate même si
+// l'intervalle n'est pas échu, sans restaurer l'ancien escrow.
+func TestLAPS_EscrowedStashAfterCrash_RollsForward(t *testing.T) {
+	st := &State{CurrentAdminCred: &AdminCredRecord{Username: "opale-recovery", EncB64: b64("enc(old)")}}
+	f := newLAPSFake(st)
+	st.LastAdminRotation = f.now.Add(-time.Hour) // pas échu
+	st.PendingAdminCred = &PendingAdminCred{Username: "opale-recovery", EncB64: b64("enc(lost)"), StashedAt: f.now.Add(-time.Minute), Phase: lapsPhaseEscrowed}
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 1 || f.escrowed[0] != "opale-recovery:enc(pw1)" {
+		t.Fatalf("roll-forward attendu sans restauration, escrows : %v", f.escrowed)
+	}
+	if st.PendingAdminCred != nil || st.CurrentAdminCred.EncB64 != b64("enc(pw1)") {
+		t.Fatalf("rotation complète attendue : %+v / %+v", st.PendingAdminCred, st.CurrentAdminCred)
+	}
+}
+
+// Phase "prepared" après redémarrage : le poste a toujours l'ancien mdp ;
+// le serveur est réaligné dessus avant la nouvelle rotation.
+func TestLAPS_PreparedStashAfterRestart_RestoresThenRollsForward(t *testing.T) {
+	st := &State{CurrentAdminCred: &AdminCredRecord{Username: "opale-recovery", EncB64: b64("enc(old)")}}
+	f := newLAPSFake(st)
+	st.LastAdminRotation = f.now.Add(-time.Hour)
+	st.PendingAdminCred = &PendingAdminCred{Username: "opale-recovery", EncB64: b64("enc(unsent)"), StashedAt: f.now.Add(-time.Minute), Phase: lapsPhasePrepared}
+	f.rotator().run(context.Background(), st)
+	want := []string{"opale-recovery:enc(old)", "opale-recovery:enc(pw1)"}
+	if strings.Join(f.escrowed, ",") != strings.Join(want, ",") {
+		t.Fatalf("escrows = %v, attendu %v", f.escrowed, want)
+	}
+	if st.PendingAdminCred != nil {
+		t.Fatalf("stash non effacé : %+v", st.PendingAdminCred)
+	}
+}
+
+func TestLAPS_BackoffRespected(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	st.LAPSRetryAfter = f.now.Add(time.Minute)
+	f.rotator().run(context.Background(), st)
+	if len(f.calls) != 0 {
+		t.Fatalf("aucune action pendant le backoff, reçu %v", f.calls)
+	}
+}
+
+// Échéance de backoff aberrante (horloge corrigée en arrière) : ignorée.
+func TestLAPS_BackoffBeyondMaxIgnored(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	st.LAPSRetryAfter = f.now.Add(30 * 24 * time.Hour)
+	f.rotator().run(context.Background(), st)
+	if indexOf(f.calls, "apply", 0) < 0 {
+		t.Fatalf("rotation attendue malgré un backoff aberrant, reçu %v", f.calls)
+	}
+}
+
+func TestLAPSBackoff_Schedule(t *testing.T) {
+	cases := map[int]time.Duration{
+		1: 15 * time.Minute, 2: 30 * time.Minute, 3: time.Hour, 7: 16 * time.Hour, 8: 24 * time.Hour, 50: 24 * time.Hour,
+	}
+	for n, want := range cases {
+		if got := lapsBackoff(n); got != want {
+			t.Errorf("lapsBackoff(%d) = %v, attendu %v", n, got, want)
+		}
+	}
+}
+
+// --- Stash legacy (agent ≤ 2.14 : mdp appliqué, POST échoué) --------------------
+
+func TestLAPS_LegacyStashResentBeforeRotation(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	st.PendingAdminCred = &PendingAdminCred{Username: "old-user", EncB64: b64("enc(live)"), StashedAt: f.now.Add(-48 * time.Hour)}
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 1 || f.escrowed[0] != "old-user:enc(live)" {
+		t.Fatalf("renvoi du stash legacy attendu, escrows : %v", f.escrowed)
+	}
+	if indexOf(f.calls, "apply", 0) >= 0 {
+		t.Fatalf("pas de rotation dans le même cycle : %v", f.calls)
+	}
+	if st.PendingAdminCred != nil || st.CurrentAdminCred == nil || st.CurrentAdminCred.Username != "old-user" {
+		t.Fatalf("stash non soldé : pending=%+v cur=%+v", st.PendingAdminCred, st.CurrentAdminCred)
+	}
+	if !st.LastAdminRotation.Equal(f.now) {
+		t.Fatalf("LastAdminRotation = %v", st.LastAdminRotation)
+	}
+}
+
+func TestLAPS_LegacyStashResendFailure_BlocksRotation(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.escrowErr = []error{errors.New("HTTP 503")}
+	st.PendingAdminCred = &PendingAdminCred{Username: "old-user", EncB64: b64("enc(live)"), StashedAt: f.now.Add(-48 * time.Hour)}
+	f.rotator().run(context.Background(), st)
+	if indexOf(f.calls, "apply", 0) >= 0 || len(f.escrowed) != 1 {
+		t.Fatalf("aucune rotation tant que le stash legacy n'est pas escrowé : %v", f.calls)
+	}
+	if st.PendingAdminCred == nil || st.PendingAdminCred.Phase != "" {
+		t.Fatalf("stash legacy doit être conservé : %+v", st.PendingAdminCred)
+	}
+}
+
+// Stash legacy antérieur à une rotation escrowée avec succès : périmé, le
+// renvoyer écraserait le bon mot de passe côté serveur.
+func TestLAPS_StaleLegacyStashDiscarded(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	st.LastAdminRotation = f.now.Add(-time.Hour)
+	st.PendingAdminCred = &PendingAdminCred{Username: "old-user", EncB64: b64("enc(stale)"), StashedAt: f.now.Add(-48 * time.Hour)}
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 0 {
+		t.Fatalf("stash périmé ne doit pas être envoyé : %v", f.escrowed)
+	}
+	if st.PendingAdminCred != nil {
+		t.Fatal("stash périmé doit être supprimé")
+	}
+}
+
+// Hors Windows (pas de comptes gérés) : jamais de rotation ni d'escrow.
+func TestLAPS_NoAccountStore_NoRotation(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	r := f.rotator()
+	r.accounts = nil
+	r.run(context.Background(), st)
+	if len(f.escrowed) != 0 {
+		t.Fatalf("aucun escrow attendu sans comptes locaux : %v", f.escrowed)
+	}
+}
+
+// --- Interprétation du script PowerShell ----------------------------------------
+
+func TestClassifyLAPSApplyExit(t *testing.T) {
+	cases := []struct {
+		started, timedOut bool
+		code              int
+		want              lapsSetOutcome
+	}{
+		{false, false, -1, lapsSetUnchanged},
+		{true, false, 0, lapsSetOK},
+		{true, false, 11, lapsSetUnchanged},
+		{true, false, 12, lapsSetChangedPartial},
+		{true, false, 1, lapsSetUncertain},
+		{true, true, 0, lapsSetUncertain},
+		{true, true, 1, lapsSetUncertain},
+	}
+	for _, c := range cases {
+		if got := classifyLAPSApplyExit(c.started, c.code, c.timedOut); got != c.want {
+			t.Errorf("classify(started=%v code=%d timeout=%v) = %v, attendu %v", c.started, c.code, c.timedOut, got, c.want)
+		}
+	}
+}
+
+func TestParseLAPSSID(t *testing.T) {
+	if got := parseLAPSSID("noise\r\nSID=S-1-5-21-1-2-3-1001\r\n"); got != "S-1-5-21-1-2-3-1001" {
+		t.Fatalf("got %q", got)
+	}
+	if got := parseLAPSSID("rien"); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// --- Bout en bout via MaybeRotateAdminPassword --------------------------------
+
+// Un stash écrit par un agent ≤ 2.14 (mdp déjà appliqué, POST échoué) doit
+// être renvoyé tel quel au serveur, au format historique du POST.
+func TestMaybeRotateAdminPassword_ResendsLegacyStash(t *testing.T) {
+	if lapsPubKey == nil {
+		t.Skip("clé publique LAPS absente")
+	}
+	t.Setenv("RMM_DATA_DIR", t.TempDir())
+	var mu sync.Mutex
+	var bodies []map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/admin-credential" || r.Header.Get("Authorization") != "Bearer tok" {
+			http.Error(w, "unexpected", http.StatusNotFound)
+			return
+		}
+		var b map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		mu.Lock()
+		bodies = append(bodies, b)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{Token: "tok", URL: srv.URL, LAPSEnabled: true}
+	stashed := time.Now().UTC().Add(-2 * time.Hour)
+	st := &State{
+		LastAdminRotation: time.Now().UTC().Add(-40 * 24 * time.Hour),
+		PendingAdminCred:  &PendingAdminCred{Username: "opale-recovery", EncB64: b64("ciphertext-2.14"), StashedAt: stashed},
+	}
+	MaybeRotateAdminPassword(context.Background(), cfg, st)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("stash legacy jamais renvoyé : %d POST admin-credential", len(bodies))
+	}
+	if bodies[0]["username"] != "opale-recovery" || bodies[0]["encrypted_password"] != b64("ciphertext-2.14") {
+		t.Fatalf("corps POST inattendu : %v", bodies[0])
+	}
+	if st.PendingAdminCred != nil {
+		t.Fatalf("stash non effacé : %+v", st.PendingAdminCred)
+	}
+}

@@ -33,16 +33,35 @@ type State struct {
 
 	// LAPS : timestamp de la dernière rotation du mdp admin local.
 	LastAdminRotation time.Time         `json:"last_admin_rotation,omitempty"`
-	// PendingAdminCred : ciphertext stash si le POST au serveur a échoué
-	// après un set local. Re-envoyé au prochain checkin.
+	// PendingAdminCred : rotation en cours (cf. machine à états dans
+	// laps.go). Phase vide = stash écrit par un agent ≤ 2.14 (mdp appliqué
+	// localement, POST échoué) : renvoyé tel quel au prochain cycle.
 	PendingAdminCred  *PendingAdminCred `json:"pending_admin_cred,omitempty"`
+	// CurrentAdminCred : ciphertext du dernier mdp appliqué localement ET
+	// escrowé. Sert à réaligner le serveur si une rotation échoue après
+	// l'escrow. Jamais de mot de passe en clair sur disque.
+	CurrentAdminCred *AdminCredRecord `json:"current_admin_cred,omitempty"`
+	// Backoff après échec de rotation LAPS.
+	LAPSFailures   int       `json:"laps_failures,omitempty"`
+	LAPSRetryAfter time.Time `json:"laps_retry_after,omitempty"`
 }
 
-// PendingAdminCred — ciphertext en attente d'envoi au serveur.
+// PendingAdminCred — ciphertext d'une rotation LAPS en cours.
 type PendingAdminCred struct {
 	Username  string    `json:"username"`
 	EncB64    string    `json:"enc_b64"`
 	StashedAt time.Time `json:"stashed_at"`
+	// Phase : "" (legacy ≤ 2.14), "prepared" (persisté, escrow non
+	// confirmé, mdp local inchangé) ou "escrowed" (escrow confirmé,
+	// application locale non confirmée).
+	Phase string `json:"phase,omitempty"`
+}
+
+// AdminCredRecord — ciphertext d'un mdp appliqué et escrowé.
+type AdminCredRecord struct {
+	Username string    `json:"username"`
+	EncB64   string    `json:"enc_b64"`
+	At       time.Time `json:"at"`
 }
 
 func LoadState() *State {
