@@ -148,19 +148,26 @@ function defaultFilters() {
 
 // ─── Hash sync ───────────────────────────────────────────────────────────────
 
+// Le hash est contrôlable par un tiers (lien piégé envoyé à un admin) : on ne
+// garde que des valeurs connues avant qu'elles n'atteignent le rendu.
+const HASH_STATUSES   = ['all', 'open', 'in_progress', 'auto', 'resolved', 'closed']
+const HASH_PRIORITIES = ['low', 'normal', 'high', 'critical']
+const UUID_RE         = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const DATE_RE         = /^\d{4}-\d{2}-\d{2}$/
+
 function readFiltersFromHash() {
   const hash = window.location.hash || ''
   const qIdx = hash.indexOf('?')
   if (qIdx === -1) return defaultFilters()
   const sp = new URLSearchParams(hash.slice(qIdx + 1))
   const f = defaultFilters()
-  if (sp.get('status'))       f.status   = sp.get('status')
-  if (sp.get('priority'))     f.priority = sp.get('priority').split(',').filter(Boolean)
-  if (sp.get('tag'))          f.tag      = sp.get('tag').split(',').filter(Boolean)
+  if (HASH_STATUSES.includes(sp.get('status'))) f.status = sp.get('status')
+  if (sp.get('priority'))     f.priority = sp.get('priority').split(',').filter(p => HASH_PRIORITIES.includes(p))
+  if (sp.get('tag'))          f.tag      = sp.get('tag').split(',').filter(id => UUID_RE.test(id))
   if (sp.get('assigned_to'))  f.assigned_to = sp.get('assigned_to')
   if (sp.get('assigned_label'))  f.assigned_label = sp.get('assigned_label')
-  if (sp.get('created_from')) f.created_from = sp.get('created_from')
-  if (sp.get('created_to'))   f.created_to   = sp.get('created_to')
+  if (DATE_RE.test(sp.get('created_from') || '')) f.created_from = sp.get('created_from')
+  if (DATE_RE.test(sp.get('created_to')   || '')) f.created_to   = sp.get('created_to')
   return f
 }
 
@@ -1942,7 +1949,7 @@ function renderActiveChips() {
 function chipHtml(label, key) {
   return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-tertiary);color:var(--text-primary);padding:2px 8px;border-radius:10px;font-size:11px">
     ${esc(label)}
-    <span style="cursor:pointer;opacity:0.7" onclick="tkRemoveChip('${key}')">×</span>
+    <span style="cursor:pointer;opacity:0.7" onclick="tkRemoveChip(${jsArg(key)})">×</span>
   </span>`
 }
 
