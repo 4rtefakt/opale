@@ -80,9 +80,20 @@ export function renderSSH(el, id) {
 }
 
 async function connectSSH(id) {
+  // Motif obligatoire (RGPD / traçabilité) : POST /api/ssh/grant répond 400
+  // sans { category, note }. Annulation → retour à la fiche poste.
+  let host = ''
+  try { host = (await window.api.getDevice(id))?.hostname || '' } catch {}
+  const reason = await mPromptRemoteReason(host)
+  if (!reason) {
+    // Pas de redirection si l'utilisateur a déjà quitté cet écran SSH.
+    if (_deviceId === id && window.location.hash.startsWith('#/ssh/')) window.mSSHDisconnect()
+    return
+  }
+
   let nonce
   try {
-    ({ nonce } = await window.api.requestSshGrant(id))
+    ({ nonce } = await window.api.requestSshGrant(id, reason))
   } catch (err) {
     setStatus('Erreur autorisation', false)
     appendOutput('\n⚠ ' + (err.message || 'Refus autorisation SSH') + '\n')
@@ -109,6 +120,68 @@ async function connectSSH(id) {
   }
   _ws.onclose = () => { setStatus('Déconnecté', false); appendOutput('\n[Connexion fermée]\n') }
   _ws.onerror = () => setStatus('Erreur WebSocket', false)
+}
+
+// Saisie du motif d'ouverture de session : même contrat, mêmes libellés et
+// même mémorisation de la catégorie que promptRemoteReason() du desktop
+// (views/poste.js), présentés dans la feuille mobile. Résout
+// { category, note } si validé, null si annulé (bouton ou tap hors feuille).
+const REASON_CATEGORIES  = ['maintenance', 'troubleshoot', 'audit', 'incident', 'other']
+const REASON_STORAGE_KEY = 'remote-reason-last-category'
+
+function mPromptRemoteReason(hostname) {
+  return new Promise(resolve => {
+    let lastCat = 'troubleshoot'
+    try { lastCat = localStorage.getItem(REASON_STORAGE_KEY) || lastCat } catch {}
+    window.mShowSheet(`
+      <div class="m-sheet-title"><i class="ti ti-shield-lock" style="margin-right:6px"></i>${esc(t('remote.reason.title_ssh', { host: hostname }))}</div>
+      <div style="display:flex;flex-direction:column;gap:12px;padding:0 4px">
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">${esc(t('remote.reason.warn_ssh'))}</div>
+        <div>
+          <div class="m-label">${esc(t('remote.reason.category_label'))}</div>
+          <select class="m-input" id="m-rr-cat">
+            ${REASON_CATEGORIES.map(c => `<option value="${c}" ${c === lastCat ? 'selected' : ''}>${esc(t('remote.reason.cat.' + c))}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <div class="m-label">${esc(t('remote.reason.note_label'))}</div>
+          <textarea class="m-input" id="m-rr-note" rows="3" maxlength="500" style="resize:none"
+            placeholder="${esc(t('remote.reason.note_placeholder'))}"></textarea>
+          <div id="m-rr-err" style="color:var(--red);font-size:11px;margin-top:4px;display:none"></div>
+        </div>
+        <button class="m-btn-primary" id="m-rr-ok">${esc(t('remote.reason.open'))}</button>
+        <button id="m-rr-cancel" style="width:100%;padding:10px;border-radius:10px;font-size:13px;font-weight:500;background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer">
+          ${esc(t('btn.cancel'))}
+        </button>
+      </div>`)
+
+    const overlay = document.getElementById('m-sheet-overlay')
+    let done = false
+    const finish = (val) => {
+      if (done) return
+      done = true
+      obs.disconnect()
+      resolve(val)
+    }
+    // La feuille se ferme aussi sur tap hors de celle-ci (mCloseSheet) : vaut annulation.
+    const obs = new MutationObserver(() => { if (!overlay.classList.contains('open')) finish(null) })
+    obs.observe(overlay, { attributes: true, attributeFilter: ['class'] })
+
+    document.getElementById('m-rr-cancel').onclick = () => { finish(null); window.mCloseSheet() }
+    document.getElementById('m-rr-ok').onclick = () => {
+      const category = document.getElementById('m-rr-cat').value
+      const note     = document.getElementById('m-rr-note').value.trim()
+      if (note.length < 5) {
+        const err = document.getElementById('m-rr-err')
+        err.textContent   = t('remote.reason.err_too_short')
+        err.style.display = 'block'
+        return
+      }
+      try { localStorage.setItem(REASON_STORAGE_KEY, category) } catch {}
+      finish({ category, note })
+      window.mCloseSheet()
+    }
+  })
 }
 
 function mSSHSend() {
