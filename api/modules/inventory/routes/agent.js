@@ -175,6 +175,10 @@ function hashToken(t) {
 // Filtre les tokens révoqués et les tokens dont l'expiration programmée
 // (rotation) est dépassée — sans toucher revoked_at, qui reste réservé
 // à la révocation explicite par admin.
+// Un bootstrap token (partagé par N PCs, embarqué dans le script Intune)
+// n'est JAMAIS accepté ici : il ne sert qu'à /exchange-token. Sinon il
+// permettait de checkin (et de se lier) comme n'importe quel poste, ou
+// d'obtenir via /rotate-token un token perso non lié.
 async function authToken(fastify, req) {
   const auth = req.headers.authorization || ''
   if (!auth.startsWith('Bearer ')) return null
@@ -183,6 +187,7 @@ async function authToken(fastify, req) {
   const { rows } = await fastify.db.query(
     `SELECT * FROM agent_tokens
        WHERE token_hash = $1
+         AND is_bootstrap = FALSE
          AND revoked_at IS NULL
          AND (expires_at IS NULL OR expires_at > now())`,
     [hash]

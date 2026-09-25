@@ -112,6 +112,44 @@ test('POST /checkin — token expiré (rotation grace passée) → 401', { skip:
   assert.equal(res.statusCode, 401)
 })
 
+test('bootstrap token refusé sur toutes les routes agent authentifiées → 401', { skip: SKIP }, async () => {
+  // Sécu : le bootstrap (partagé par toute la flotte via Intune) ne sert qu'à
+  // /exchange-token. Avant : il passait authToken → checkin comme n'importe
+  // quel hostname (et se liait au device), ou /rotate-token → token perso
+  // non lié réutilisable pour usurper un poste.
+  const device = await seedDevice(db, { hostname: 'PC-BOOTSTRAP-TARGET' })
+  const bootstrap = await seedAgentToken(db, {
+    label: 'bootstrap-authtoken',
+    isBootstrap: true,
+    bootstrapMaxRedeems: 100,
+  })
+  const calls = [
+    { method: 'POST', url: '/api/agent/checkin',          payload: { hostname: device.hostname } },
+    { method: 'POST', url: '/api/agent/rotate-token' },
+    { method: 'POST', url: '/api/agent/result',           payload: { execution_id: '00000000-0000-0000-0000-000000000000', exit_code: 0 } },
+    { method: 'POST', url: '/api/agent/admin-credential', payload: { username: 'x', encrypted_password: 'x' } },
+    { method: 'GET',  url: '/api/agent/version' },
+    { method: 'GET',  url: '/api/agent/runtime-config' },
+    { method: 'GET',  url: '/api/agent/binary/meta?arch=amd64' },
+    { method: 'GET',  url: '/api/agent/binary?arch=amd64' },
+  ]
+  for (const c of calls) {
+    const res = await fastify.inject({ ...c, headers: bearer(bootstrap.secret) })
+    assert.equal(res.statusCode, 401, `${c.method} ${c.url} → ${res.statusCode} ${res.body}`)
+  }
+
+  // Aucun effet de bord : le bootstrap reste non lié, aucun token créé.
+  const { rows: [bs] } = await db.query(
+    `SELECT device_id, last_used_at FROM agent_tokens WHERE id = $1`, [bootstrap.id]
+  )
+  assert.equal(bs.device_id, null)
+  assert.equal(bs.last_used_at, null)
+  const { rows: [{ n }] } = await db.query(
+    `SELECT count(*)::int AS n FROM agent_tokens WHERE created_by = 'agent-rotation' AND device_id IS NULL`
+  )
+  assert.equal(n, 0)
+})
+
 // ─── POST /checkin — validation body ────────────────────────────────────────
 
 test('POST /checkin — hostname manquant → 400', { skip: SKIP }, async () => {
