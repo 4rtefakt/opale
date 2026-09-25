@@ -243,11 +243,27 @@ async function runAuto(obId, checkId) {
       renderList()
     }
     renderDetail(ob)
+    if (result?.temporaryPassword) showTempPassword(result)
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
     const ob = await window.api.getOnboarding(obId)
     renderDetail(ob)
   }
+}
+
+// Mot de passe temporaire (create_account) : renvoyé UNE seule fois par l'API
+// et jamais stocké côté serveur → affiché ici, à noter avant de fermer.
+function showTempPassword(result) {
+  showModal(`
+    <div class="modal-title">${t('onboarding.info.entra')}</div>
+    <div style="display:flex;flex-direction:column;gap:8px;font-size:13px">
+      <div>${esc(result.userPrincipalName || '')}</div>
+      <div style="color:var(--text-secondary)">Mot de passe temporaire — affiché une seule fois, non conservé :</div>
+      <code style="font-family:monospace;font-size:14px;background:var(--bg-tertiary);padding:6px 10px;border-radius:4px;user-select:all;word-break:break-all">${esc(result.temporaryPassword)}</code>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal()">${t('btn.close')}</button>
+    </div>`)
 }
 
 async function markDone(id) {

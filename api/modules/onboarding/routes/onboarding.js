@@ -7,7 +7,8 @@ import {
 export default async function onboardingRoute(fastify) {
 
   // GET /api/onboarding?kind=&status=
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // Admin-only : données RH (contrats, dates, responsables, notes).
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { kind, status } = req.query
     const conds = []; const params = []; let i = 1
     if (kind)   { conds.push(`kind = $${i++}`);   params.push(kind) }
@@ -65,8 +66,8 @@ export default async function onboardingRoute(fastify) {
     reply.code(201).send(onboarding)
   })
 
-  // GET /api/onboarding/:id
-  fastify.get('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // GET /api/onboarding/:id — admin-only (cf. GET /)
+  fastify.get('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows } = await fastify.db.query(
       'SELECT * FROM onboardings WHERE id = $1', [req.params.id]
     )
@@ -147,15 +148,18 @@ export default async function onboardingRoute(fastify) {
     try {
       result = await runAutomation(check.step_id, ob, fastify)
 
-      // Sauvegarder le résultat éventuel (ex: mot de passe temporaire)
+      // Sauvegarder le résultat éventuel (id du compte créé)
       if (result?.id && check.step_id === 'create_account') {
         await fastify.db.query(
           'UPDATE onboardings SET entra_id_created = $1, updated_at = now() WHERE id = $2',
           [result.id, ob.id]
         )
       }
+      // Le mot de passe temporaire n'est JAMAIS stocké (ni notes, ni
+      // auto_result) : il est renvoyé une seule fois dans la réponse de
+      // cette action, à l'admin qui l'a déclenchée.
       if (result?.temporaryPassword) {
-        const note = `Compte créé : ${result.userPrincipalName}\nMot de passe temporaire : ${result.temporaryPassword}`
+        const note = `Compte créé : ${result.userPrincipalName}`
         await fastify.db.query(
           'UPDATE onboardings SET notes = COALESCE(notes || E\'\\n\', \'\') || $1 WHERE id = $2',
           [note, ob.id]
@@ -172,14 +176,24 @@ export default async function onboardingRoute(fastify) {
           auto_result = $4, auto_error = $5, updated_at = now()
       WHERE id = $6 RETURNING *
     `, [!error, error ? null : new Date(), displayName,
-        error ? null : JSON.stringify(result), error,
+        error ? null : JSON.stringify(withoutSecrets(result)), error,
         req.params.checkId])
 
     await updateOnboardingStatus(fastify, req.params.id)
 
     if (error) return reply.code(500).send({ error, check: updated[0] })
+    // Réponse porteuse du mot de passe temporaire : jamais mise en cache.
+    reply.header('Cache-Control', 'no-store')
     reply.send({ check: updated[0], result })
   })
+}
+
+// Copie du résultat d'automatisation sans le mot de passe temporaire, pour
+// persistance dans onboarding_checks.auto_result.
+function withoutSecrets(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+  const { temporaryPassword: _, ...rest } = result
+  return rest
 }
 
 async function runAutomation(stepId, ob, fastify) {

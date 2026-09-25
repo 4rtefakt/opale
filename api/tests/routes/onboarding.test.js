@@ -14,6 +14,9 @@
 
 import { test, before, after, mock } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
@@ -220,7 +223,10 @@ test('GET /:id — retourne onboarding + checks', { skip: SKIP }, async () => {
   assert.equal(first.done, false)
 })
 
-test('GET /:id — non-admin peut lire (route ouverte aux authentifiés)', { skip: SKIP }, async () => {
+// Sécu : l'onboarding contient des données RH (et historiquement le mot de
+// passe temporaire du nouveau compte). Ce test assertait l'inverse (route
+// ouverte aux authentifiés) — il vérifie désormais le refus aux non-admins.
+test('GET /:id — non-admin → 403 (données RH réservées aux admins)', { skip: SKIP }, async () => {
   const adminTok = await adminToken('oid-ob-get-nonadmin-setup')
   const created = (await createOnboarding(adminTok, { person_name: 'Readable' })).json()
   const token = await userToken('oid-ob-get-nonadmin')
@@ -228,7 +234,18 @@ test('GET /:id — non-admin peut lire (route ouverte aux authentifiés)', { ski
     method: 'GET', url: `/api/onboarding/${created.id}`,
     headers: { authorization: `Bearer ${token}` },
   })
-  assert.equal(res.statusCode, 200)
+  assert.equal(res.statusCode, 403)
+})
+
+test('GET / — non-admin → 403', { skip: SKIP }, async () => {
+  const adminTok = await adminToken('oid-ob-list-nonadmin-setup')
+  await createOnboarding(adminTok, { person_name: 'Listed' })
+  const token = await userToken('oid-ob-list-nonadmin')
+  const res = await fastify.inject({
+    method: 'GET', url: '/api/onboarding/',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
 })
 
 // ─── PATCH /:id — update ─────────────────────────────────────────────────────
@@ -410,3 +427,127 @@ test('POST /:id/checks/:checkId/auto — check inexistant → 404', { skip: SKIP
 // un mock de module ESM (lib/graph.js) non supporté nativement par node:test
 // sans instrumentation supplémentaire. À tester en E2E ou via un refactor
 // qui injecte les fonctions Graph comme dépendances.
+
+// ─── create_account : mot de passe temporaire jamais stocké ──────────────────
+// createEntraUser (lib/graph.js) passe par globalThis.fetch : on le stubbe
+// (token OAuth + POST /users) plutôt que de mocker le module ESM.
+
+function mockGraphCreateUser(user) {
+  const calls = []
+  const original = globalThis.fetch
+  globalThis.fetch = async (url, opts) => {
+    const s = String(url)
+    calls.push({ url: s, opts })
+    if (/login\.microsoftonline\.com.*token/.test(s)) {
+      return { ok: true, status: 200, json: async () => ({ access_token: 'tok', expires_in: 3600 }) }
+    }
+    if (s === 'https://graph.microsoft.com/v1.0/users' && opts?.method === 'POST') {
+      return { ok: true, status: 201, json: async () => ({ '@odata.context': 'ctx', ...user }) }
+    }
+    throw new Error(`fetch inattendu : ${s}`)
+  }
+  return { calls, restore: () => { globalThis.fetch = original } }
+}
+
+test('POST auto create_account — mot de passe renvoyé une fois, jamais stocké (notes, auto_result, GET)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-auto-create')
+  const created = (await createOnboarding(token, {
+    person_name: 'Nouvelle Recrue', email: 'nouvelle.recrue@contoso.fr', notes: 'Arrivée lundi',
+  })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  const entraId = '3c4d5e6f-0000-4000-8000-000000000042'
+  const mock = mockGraphCreateUser({ id: entraId, userPrincipalName: 'nouvelle.recrue@contoso.fr' })
+
+  let res
+  try {
+    res = await fastify.inject({
+      method: 'POST', url: `/api/onboarding/${created.id}/checks/${check.id}/auto`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+  } finally {
+    mock.restore()
+  }
+  assert.equal(res.statusCode, 200)
+  const body = res.json()
+  const pwd = body.result?.temporaryPassword
+  assert.ok(pwd && pwd.length === 14, 'le mot de passe est renvoyé une fois dans la réponse')
+  assert.equal(res.headers['cache-control'], 'no-store')
+  // Le mot de passe envoyé à Graph est bien celui renvoyé à l'admin.
+  const post = mock.calls.find(c => c.opts?.method === 'POST' && c.url.endsWith('/users'))
+  assert.equal(JSON.parse(post.opts.body).passwordProfile.password, pwd)
+
+  assert.ok(!JSON.stringify(body.check).includes(pwd), 'check renvoyé sans mot de passe')
+
+  const { rows: [ob] } = await db.query('SELECT notes, entra_id_created FROM onboardings WHERE id = $1', [created.id])
+  assert.equal(ob.entra_id_created, entraId)
+  assert.ok(!ob.notes.includes(pwd), 'notes sans mot de passe')
+  assert.match(ob.notes, /Compte créé : nouvelle\.recrue@contoso\.fr/)
+  assert.match(ob.notes, /^Arrivée lundi\n/)
+
+  const { rows: [chk] } = await db.query('SELECT auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  assert.ok(!chk.auto_result.includes(pwd), 'auto_result sans mot de passe')
+  assert.ok(!chk.auto_result.includes('temporaryPassword'))
+  assert.equal(JSON.parse(chk.auto_result).id, entraId)
+
+  const detail = await fastify.inject({
+    method: 'GET', url: `/api/onboarding/${created.id}`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.ok(!detail.body.includes(pwd), 'GET /:id ne ré-expose jamais le mot de passe')
+})
+
+// ─── Migration 075 : purge des mots de passe déjà stockés ────────────────────
+// On reproduit EXACTEMENT les écritures de l'ancien code (même UPDATE notes,
+// même JSON.stringify pour auto_result) puis on rejoue le fichier SQL.
+
+const MIGRATION_075 = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../migrations/075_strip_onboarding_temp_passwords.sql'
+)
+
+test('Migration 075 : retire uniquement le mot de passe des notes et de auto_result (idempotente)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-mig075')
+  const created = (await createOnboarding(token, { person_name: 'Legacy Pwd', notes: 'Bureau 12' })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  const pwd = 'aB3$xY7!kLm9@Q'
+  const upn = 'legacy.pwd@contoso.fr'
+
+  // Écritures de l'ancien code (onboarding.js avant correctif).
+  const note = `Compte créé : ${upn}\nMot de passe temporaire : ${pwd}`
+  await db.query(
+    'UPDATE onboardings SET notes = COALESCE(notes || E\'\\n\', \'\') || $1 WHERE id = $2',
+    [note, created.id]
+  )
+  await db.query('UPDATE onboardings SET notes = notes || E\'\\n\' || $1 WHERE id = $2', ['Badge remis', created.id])
+  const legacyResult = {
+    '@odata.context': 'https://graph.microsoft.com/v1.0/$metadata#users/$entity',
+    id: '4d5e6f70-0000-4000-8000-000000000075', displayName: 'Legacy Pwd',
+    userPrincipalName: upn, temporaryPassword: pwd,
+  }
+  await db.query('UPDATE onboarding_checks SET auto_result = $1 WHERE id = $2',
+    [JSON.stringify(legacyResult), check.id])
+  // Ligne témoin sans mot de passe : ne doit pas bouger.
+  const other = (await createOnboarding(token, { person_name: 'Sans Pwd', notes: 'RAS' })).json()
+
+  const sql = await fs.readFile(MIGRATION_075, 'utf8')
+  await db.query(sql)
+
+  const { rows: [ob] } = await db.query('SELECT notes FROM onboardings WHERE id = $1', [created.id])
+  assert.equal(ob.notes, `Bureau 12\nCompte créé : ${upn}\nMot de passe temporaire : [supprimé]\nBadge remis`)
+  const { rows: [chk] } = await db.query('SELECT auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  const { temporaryPassword: _, ...expected } = legacyResult
+  assert.deepEqual(JSON.parse(chk.auto_result), expected)
+  const { rows: [untouched] } = await db.query('SELECT notes FROM onboardings WHERE id = $1', [other.id])
+  assert.equal(untouched.notes, 'RAS')
+
+  // Idempotence (CI rejoue chaque migration deux fois).
+  await db.query(sql)
+  const { rows: [ob2] } = await db.query('SELECT notes FROM onboardings WHERE id = $1', [created.id])
+  assert.equal(ob2.notes, ob.notes)
+  const { rows: [chk2] } = await db.query('SELECT auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  assert.equal(chk2.auto_result, chk.auto_result)
+})
