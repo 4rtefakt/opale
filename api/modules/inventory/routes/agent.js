@@ -881,11 +881,14 @@ export default async function agentRoute(fastify) {
     // Gated par la fenêtre de maintenance : hors fenêtre, on n'envoie
     // pas les deployments pour éviter de les passer en 'running' alors
     // que l'agent n'aurait pas le droit de les exécuter.
+    // Seuls les packages approuvés sont distribués : un package modifié
+    // (repassé en draft) ne part plus en SYSTEM tant qu'un admin ne l'a
+    // pas ré-approuvé — ses déploiements restent 'pending' en attendant.
     const pendingDeployments = inMaintWindow ? await fastify.db.query(`
       SELECT d.id AS deployment_id, p.type, p.winget_id, p.install_script, p.post_install_script, p.detection_script, p.name
       FROM deployments d
       JOIN packages p ON p.id = d.package_id
-      WHERE d.device_id = $1 AND d.status = 'pending'
+      WHERE d.device_id = $1 AND d.status = 'pending' AND p.status = 'approved'
       ORDER BY d.queued_at ASC LIMIT 10
     `, [deviceId]) : { rows: [] }
 

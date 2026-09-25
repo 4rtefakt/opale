@@ -27,6 +27,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { buildApp } from '../helpers/build-app.js'
 import { seedDevice } from '../fixtures/devices.js'
 import { seedAgentToken } from '../fixtures/agent-tokens.js'
+import { insertPackage, insertDeployment } from '../fixtures/packages.js'
 
 import agentRoute from '../../modules/inventory/routes/agent.js'
 
@@ -215,6 +216,65 @@ test('POST /checkin — lookup serial 0 row → fallback hostname résout sans c
     `SELECT count(*)::int AS n FROM devices WHERE hostname = 'PC-FALLBACK'`
   )
   assert.equal(rows[0].n, 1, 'pas de duplication, fallback a fait UPDATE')
+})
+
+// ─── POST /checkin — distribution des déploiements ─────────────────────────
+
+// Package script avec un install_script donné (insertPackage ne gère que winget).
+async function insertScriptPackage(db, { name, status, installScript }) {
+  const pkg = await insertPackage(db, { name, type: 'script', wingetId: null, status })
+  await db.query(`UPDATE packages SET install_script = $1 WHERE id = $2`, [installScript, pkg.id])
+  return pkg
+}
+
+test('POST /checkin — un déploiement pending d\'un package draft n\'est pas distribué', { skip: SKIP }, async () => {
+  // Sécu : un package repassé en draft (modifié, non ré-approuvé) ne doit
+  // jamais partir en SYSTEM sur un poste. Le déploiement reste pending.
+  const device = await seedDevice(db, { hostname: 'PC-DEP-DRAFT' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const draft = await insertScriptPackage(db, {
+    name: 'Pkg Draft Dispatch', status: 'draft', installScript: 'Write-Output draft',
+  })
+  const dep = await insertDeployment(db, { packageId: draft.id, deviceId: device.id })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(secret),
+    payload: { hostname: device.hostname },
+  })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  assert.deepEqual(res.json().deployments, [])
+
+  const { rows: [row] } = await db.query(`SELECT status FROM deployments WHERE id = $1`, [dep.id])
+  assert.equal(row.status, 'pending', 'le déploiement reste en attente de ré-approbation')
+})
+
+test('POST /checkin — un déploiement pending d\'un package approuvé est distribué (format inchangé)', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-DEP-OK' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const pkg = await insertScriptPackage(db, {
+    name: 'Pkg Approved Dispatch', status: 'approved', installScript: 'Write-Output ok',
+  })
+  const dep = await insertDeployment(db, { packageId: pkg.id, deviceId: device.id })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(secret),
+    payload: { hostname: device.hostname },
+  })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  const deps = res.json().deployments
+  assert.equal(deps.length, 1)
+  // Forme exacte attendue par les agents déployés (agent-go/types.go Deployment).
+  assert.deepEqual(Object.keys(deps[0]).sort(), [
+    'deployment_id', 'detection_script', 'install_script', 'name',
+    'post_install_script', 'type', 'winget_id',
+  ])
+  assert.equal(deps[0].deployment_id, dep.id)
+  assert.equal(deps[0].install_script, 'Write-Output ok')
+
+  const { rows: [row] } = await db.query(`SELECT status FROM deployments WHERE id = $1`, [dep.id])
+  assert.equal(row.status, 'running')
 })
 
 // ─── POST /exchange-token ──────────────────────────────────────────────────
