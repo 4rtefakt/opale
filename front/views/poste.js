@@ -1151,12 +1151,27 @@ async function connectSSH() {
 
   _term.onData((data) => {
     if (_ws.readyState === WebSocket.OPEN)
-      _ws.send(JSON.stringify({ type: 'input', data: btoa(data) }))
+      _ws.send(JSON.stringify({ type: 'input', data: utf8ToB64(data) }))
   })
 
   fitTerminal()
   const ro = new ResizeObserver(() => fitTerminal())
   ro.observe(mount)
+}
+
+// Entrée xterm (chaîne JS) → base64 des octets UTF-8 : /api/ssh et
+// /api/console décodent le base64 et écrivent les octets tels quels dans le
+// flux SSH / le ConPTY de l'agent, qui attendent de l'UTF-8. btoa(data)
+// envoyait du Latin-1 pour é, ü… et levait une exception au-delà de U+00FF
+// (frappe perdue). Identique à btoa(data) pour l'ASCII. Même approche que
+// le terminal mobile, par blocs pour supporter les gros collages.
+function utf8ToB64(str) {
+  const bytes = new TextEncoder().encode(str)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(bin)
 }
 
 function disconnectSSH() {
@@ -1319,7 +1334,7 @@ async function connectConsole(takeover = false, reason = null) {
 
   _term.onData((data) => {
     if (_ws.readyState === WebSocket.OPEN)
-      _ws.send(JSON.stringify({ type: 'input', data: btoa(data) }))
+      _ws.send(JSON.stringify({ type: 'input', data: utf8ToB64(data) }))
   })
 
   fitTerminal()
