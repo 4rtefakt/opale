@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
-import { seedAdmin } from '../fixtures/users.js'
+import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 
 import dashboardRoute from '../../modules/core/routes/dashboard.js'
 
@@ -54,6 +54,16 @@ async function adminToken(entraId = 'oid-dash-admin') {
 test('GET / — sans Bearer → 401', { skip: SKIP }, async () => {
   const res = await fastify.inject({ method: 'GET', url: '/api/dashboard/' })
   assert.equal(res.statusCode, 401)
+})
+
+test('GET / — non-admin → 403', { skip: SKIP }, async () => {
+  const u = await seedNonAdmin(db, { entraId: 'oid-dash-na', email: 'oid-dash-na@x' })
+  const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const res = await fastify.inject({
+    method: 'GET', url: '/api/dashboard/',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
 })
 
 // ─── Payload shape ───────────────────────────────────────────────────────────

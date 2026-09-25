@@ -2,7 +2,8 @@
 // Aucun chiffre temps réel ici : c'est le rôle du Dashboard.
 
 export default async function rapportsRoute(fastify) {
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // Admin-only : KPI parc, conformité, activité et coûts.
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
 
     // Settings : taux horaire direct (défaut 32500 / 1442 ≈ 22.54 €/h).
     const settingsRow = await fastify.db.query(

@@ -83,7 +83,7 @@ test('GET / — sans Bearer → 401', { skip: SKIP }, async () => {
 
 test('GET /:id — non-admin → 403', { skip: SKIP }, async () => {
   // GET /:id est admin-only (retourne des données détaillées sensibles).
-  // GET /  (liste) est ouvert aux non-admins, mais filtré côté query.
+  // GET /  (liste) l'est aussi (cf. test suivant).
   const u = await seedNonAdmin(db, { entraId: 'oid-dev-na' })
   const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
   const deviceId = await insertDevice({ hostname: 'PC-X' })
@@ -92,6 +92,18 @@ test('GET /:id — non-admin → 403', { skip: SKIP }, async () => {
     headers: { authorization: `Bearer ${token}` },
   })
   assert.equal(res.statusCode, 403)
+})
+
+test('GET / — non-admin → 403 (liste des postes réservée aux admins)', { skip: SKIP }, async () => {
+  const u = await seedNonAdmin(db, { entraId: 'oid-dev-list-na' })
+  const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  await insertDevice({ hostname: 'PC-LIST-NA' })
+  const res = await fastify.inject({
+    method: 'GET', url: '/api/devices/',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
+  assert.doesNotMatch(res.body, /PC-LIST-NA/)
 })
 
 // ─── GET / — structure et thresholds ────────────────────────────────────────

@@ -61,6 +61,32 @@ test('POST /api/stock — sans JWT → 401', { skip: SKIP }, async () => {
   assert.equal(res.statusCode, 401)
 })
 
+// Écritures admin-only ; la lecture du catalogue reste ouverte aux
+// utilisateurs authentifiés.
+test('écritures stock — non-admin → 403 (POST, PATCH, mouvements), quantité inchangée', { skip: SKIP }, async () => {
+  const u = await seedNonAdmin(db, { entraId: 'oid-stock-na', email: 'oid-stock-na@x' })
+  const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const item = await seedStockItem(db, { name: 'Article NA', quantity: 5 })
+  const headers = { authorization: `Bearer ${token}` }
+
+  const create = await fastify.inject({ method: 'POST', url: '/api/stock/', headers, payload: { name: 'Pirate' } })
+  assert.equal(create.statusCode, 403)
+  const patch = await fastify.inject({ method: 'PATCH', url: `/api/stock/${item.id}`, headers, payload: { name: 'Renommé' } })
+  assert.equal(patch.statusCode, 403)
+  const mvt = await fastify.inject({
+    method: 'POST', url: `/api/stock/${item.id}/movements`, headers, payload: { type: 'out', quantity: 5 },
+  })
+  assert.equal(mvt.statusCode, 403)
+
+  const { rows } = await db.query('SELECT name, quantity FROM stock_items WHERE id = $1', [item.id])
+  assert.deepEqual(rows[0], { name: 'Article NA', quantity: 5 })
+  const { rows: pirates } = await db.query(`SELECT 1 FROM stock_items WHERE name = 'Pirate'`)
+  assert.equal(pirates.length, 0)
+
+  const list = await fastify.inject({ method: 'GET', url: '/api/stock/', headers })
+  assert.equal(list.statusCode, 200)
+})
+
 // ─── GET / — liste ────────────────────────────────────────────────────────────
 
 test('GET /api/stock — retourne la liste avec article créé', { skip: SKIP }, async () => {

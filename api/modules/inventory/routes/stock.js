@@ -1,4 +1,6 @@
 export default async function stockRoute(fastify) {
+  // Écritures (articles, mouvements) réservées aux admins ; lecture du
+  // catalogue ouverte aux utilisateurs authentifiés.
 
   // GET /api/stock?q=&category=
   fastify.get('/', {
@@ -32,7 +34,7 @@ export default async function stockRoute(fastify) {
 
   // POST /api/stock
   fastify.post('/', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       body: {
         type: 'object',
@@ -61,7 +63,7 @@ export default async function stockRoute(fastify) {
 
   // PATCH /api/stock/:id
   fastify.patch('/:id', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       params: {
         type: 'object',
@@ -110,7 +112,7 @@ export default async function stockRoute(fastify) {
 
   // POST /api/stock/:id/movements
   fastify.post('/:id/movements', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       params: {
         type: 'object',
