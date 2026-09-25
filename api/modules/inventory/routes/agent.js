@@ -7,6 +7,7 @@ import { makeAgentConn, WS_FRAME_MAX_BYTES, WS_CLOSE, wsReasonFromCode } from '.
 import { evaluateAndPersist as evaluateCompliance } from '../../monitoring/lib/compliance.js'
 import { logAudit } from '../../core/lib/audit.js'
 import { SNAPSHOT_COLUMNS, snapshotSelect } from '../lib/deployment-snapshots.js'
+import { checkDeviceClaim, CLAIM_REFUSAL_MESSAGES } from '../lib/device-claim.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -212,6 +213,12 @@ export default async function agentRoute(fastify) {
   //   - Au runtime, chaque PC appelle ce endpoint avec son hostname/serial.
   //   - On crée (ou retrouve) le device, on génère un token perso, on le retourne.
   //   - Le bootstrap reste valide pour d'autres exchanges jusqu'à expires_at.
+  // Hostname déjà connu (cas normal pour un poste pré-créé par la sync
+  // Intune) : règles de lib/device-claim.js — série concordante si le device
+  // en a une, et aucun token actif déjà utilisé. Sinon refus (403/409) +
+  // audit `agent_bootstrap_exchange_refused` pour revue admin. Les tokens
+  // jamais utilisés du device (install précédente interrompue) sont révoqués
+  // à l'émission du nouveau : un seul credential vivant par poste.
   // Body  : { hostname (req), serial? }
   // Reply : { token, device_id, hostname }
   fastify.post('/exchange-token', {
@@ -231,6 +238,7 @@ export default async function agentRoute(fastify) {
     // le check de quota et dépasser bootstrap_max_redeems.
     const client = await fastify.db.connect()
     let result
+    let refused = null
     try {
       await client.query('BEGIN')
 
@@ -250,13 +258,29 @@ export default async function agentRoute(fastify) {
         return reply.code(401).send({ error: 'Bootstrap invalide, expiré, révoqué ou quota atteint' })
       }
 
-      // Trouver ou créer le device par hostname
+      // Trouver ou créer le device par hostname. FOR UPDATE : sérialise deux
+      // exchanges concurrents sur le même poste (check + émission atomiques).
       let deviceId
+      let revokedUnused = 0
       const { rows: dev } = await client.query(
-        'SELECT id FROM devices WHERE hostname = $1', [hostname]
+        'SELECT id, serial FROM devices WHERE hostname = $1 FOR UPDATE', [hostname]
       )
       if (dev[0]) {
-        deviceId = dev[0].id
+        const refusal = await checkDeviceClaim(client, { device: dev[0], serial })
+        if (refusal) {
+          refused = { ...refusal, deviceId: dev[0].id, bootstrapLabel: bs[0].label }
+        } else {
+          deviceId = dev[0].id
+          const { rowCount } = await client.query(
+            `UPDATE agent_tokens SET revoked_at = now()
+               WHERE device_id = $1
+                 AND is_bootstrap = FALSE
+                 AND revoked_at IS NULL
+                 AND last_used_at IS NULL`,
+            [deviceId]
+          )
+          revokedUnused = rowCount
+        }
       } else {
         const { rows: nd } = await client.query(
           `INSERT INTO devices (hostname, serial, source, last_seen)
@@ -267,27 +291,32 @@ export default async function agentRoute(fastify) {
         deviceId = nd[0].id
       }
 
-      // Token perso (sans expiration — survit à la révocation du bootstrap)
-      const newToken = crypto.randomBytes(32).toString('hex')
-      const newHash  = hashToken(newToken)
-      const label    = `auto-${hostname}-${new Date().toISOString().slice(0, 10)}`
+      if (refused) {
+        // Pas de token émis, quota du bootstrap non consommé.
+        await client.query('ROLLBACK')
+      } else {
+        // Token perso (sans expiration — survit à la révocation du bootstrap)
+        const newToken = crypto.randomBytes(32).toString('hex')
+        const newHash  = hashToken(newToken)
+        const label    = `auto-${hostname}-${new Date().toISOString().slice(0, 10)}`
 
-      await client.query(
-        `INSERT INTO agent_tokens (label, token_hash, device_id, created_by)
-         VALUES ($1, $2, $3, $4)`,
-        [label, newHash, deviceId, `bootstrap:${bs[0].label}`]
-      )
+        await client.query(
+          `INSERT INTO agent_tokens (label, token_hash, device_id, created_by)
+           VALUES ($1, $2, $3, $4)`,
+          [label, newHash, deviceId, `bootstrap:${bs[0].label}`]
+        )
 
-      await client.query(
-        `UPDATE agent_tokens
-           SET bootstrap_redeemed_count = bootstrap_redeemed_count + 1,
-               bootstrap_redeemed_at    = now()
-           WHERE id = $1`,
-        [bs[0].id]
-      )
+        await client.query(
+          `UPDATE agent_tokens
+             SET bootstrap_redeemed_count = bootstrap_redeemed_count + 1,
+                 bootstrap_redeemed_at    = now()
+             WHERE id = $1`,
+          [bs[0].id]
+        )
 
-      await client.query('COMMIT')
-      result = { token: newToken, deviceId, bootstrapLabel: bs[0].label }
+        await client.query('COMMIT')
+        result = { token: newToken, deviceId, bootstrapLabel: bs[0].label, revokedUnused }
+      }
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {})
       fastify.log.error({ err: err.message }, 'exchange-token transaction failed')
@@ -296,11 +325,37 @@ export default async function agentRoute(fastify) {
       client.release()
     }
 
+    if (refused) {
+      fastify.log.warn(
+        { hostname, device_id: refused.deviceId, reason: refused.reason },
+        'exchange-token refusé : poste existant non revendicable'
+      )
+      await logAudit(fastify.db, fastify.log, {
+        action:  'agent_bootstrap_exchange_refused',
+        byUser:  hostname.slice(0, 255),
+        target:  refused.deviceId,
+        details: {
+          level:           'warn',
+          reason:          refused.reason,
+          bootstrap_label: refused.bootstrapLabel,
+          serial:          serial ? serial.slice(0, 100) : null,
+          ...(refused.token_id ? { active_token_id: refused.token_id } : {}),
+        },
+      })
+      return reply
+        .code(refused.reason === 'active_token' ? 409 : 403)
+        .send({ error: CLAIM_REFUSAL_MESSAGES[refused.reason] })
+    }
+
     logAudit(fastify.db, fastify.log, {
       action:  'agent_bootstrap_exchange',
       byUser:  hostname,
       target:  result.deviceId,
-      details: { bootstrap_label: result.bootstrapLabel, serial },
+      details: {
+        bootstrap_label: result.bootstrapLabel,
+        serial,
+        ...(result.revokedUnused ? { revoked_unused_tokens: result.revokedUnused } : {}),
+      },
     })
 
     reply.code(201).send({ token: result.token, device_id: result.deviceId, hostname })

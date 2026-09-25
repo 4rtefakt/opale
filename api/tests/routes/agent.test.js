@@ -505,6 +505,190 @@ test('POST /exchange-token — happy path : crée device, retourne token, incré
   assert.ok(bs[0].bootstrap_redeemed_at)
 })
 
+// ─── POST /exchange-token — poste déjà connu (règles d'enrôlement) ───────────
+
+// Device pré-créé (ex. sync Intune) avec un numéro de série.
+async function seedDeviceWithSerial(db, hostname, serial) {
+  const r = await db.query(
+    `INSERT INTO devices (hostname, serial, source, last_seen)
+     VALUES ($1, $2, 'intune', now()) RETURNING id, hostname`,
+    [hostname, serial]
+  )
+  return r.rows[0]
+}
+
+async function seedBootstrap(label) {
+  return seedAgentToken(db, { label, isBootstrap: true, bootstrapMaxRedeems: 100 })
+}
+
+// Token agent lié à `deviceId` qui a déjà servi (un agent a fait un checkin).
+async function seedUsedToken(deviceId, label = 'used') {
+  const t = await seedAgentToken(db, { deviceId, label })
+  await db.query(`UPDATE agent_tokens SET last_used_at = now() WHERE id = $1`, [t.id])
+  return t
+}
+
+async function exchange(bootstrapSecret, payload) {
+  return fastify.inject({
+    method: 'POST', url: '/api/agent/exchange-token',
+    headers: bearer(bootstrapSecret),
+    payload,
+  })
+}
+
+async function lastRefusal(deviceId) {
+  const { rows } = await db.query(
+    `SELECT by_user, details FROM audit_logs
+     WHERE action = 'agent_bootstrap_exchange_refused' AND target = $1
+     ORDER BY created_at DESC LIMIT 1`,
+    [deviceId]
+  )
+  return rows[0] || null
+}
+
+test('POST /exchange-token — poste pré-synchronisé, série concordante (normalisée), sans token → 201 lié au device existant', { skip: SKIP }, async () => {
+  const device = await seedDeviceWithSerial(db, 'PC-PRESYNC', 'SN-PRESYNC-1')
+  const bootstrap = await seedBootstrap('bs-presync')
+
+  // L'installeur envoie la série BIOS brute : casse / espaces peuvent différer.
+  const res = await exchange(bootstrap.secret, { hostname: 'PC-PRESYNC', serial: '  sn-presync-1 ' })
+  assert.equal(res.statusCode, 201, `body: ${res.body}`)
+  assert.equal(res.json().device_id, device.id)
+
+  const { rows: [{ n }] } = await db.query(
+    `SELECT count(*)::int AS n FROM devices WHERE hostname = 'PC-PRESYNC'`
+  )
+  assert.equal(n, 1, 'pas de nouveau device')
+
+  // Le token émis est utilisable pour le checkin du poste.
+  const checkin = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(res.json().token),
+    payload: { hostname: 'PC-PRESYNC', serial: 'SN-PRESYNC-1' },
+  })
+  assert.equal(checkin.statusCode, 200, `body: ${checkin.body}`)
+  assert.equal(checkin.json().device_id, device.id)
+})
+
+test('POST /exchange-token — poste pré-synchronisé sans série (NULL) et sans token → 201', { skip: SKIP }, async () => {
+  // Cas prod observé : Intune n'a pas toujours la série BIOS. Sans série de
+  // référence, seule la règle « aucun token actif déjà utilisé » s'applique.
+  const device = await seedDevice(db, { hostname: 'PC-PRESYNC-NOSERIAL' })
+  const bootstrap = await seedBootstrap('bs-presync-noserial')
+  const res = await exchange(bootstrap.secret, { hostname: 'PC-PRESYNC-NOSERIAL', serial: 'ANY-SERIAL' })
+  assert.equal(res.statusCode, 201, `body: ${res.body}`)
+  assert.equal(res.json().device_id, device.id)
+})
+
+test('POST /exchange-token — série bidon côté device (« To be filled by O.E.M. ») traitée comme absente → 201', { skip: SKIP }, async () => {
+  const device = await seedDeviceWithSerial(db, 'PC-FAKE-SERIAL', 'To be filled by O.E.M.')
+  const bootstrap = await seedBootstrap('bs-fake-serial')
+  const res = await exchange(bootstrap.secret, { hostname: 'PC-FAKE-SERIAL', serial: '' })
+  assert.equal(res.statusCode, 201, `body: ${res.body}`)
+  assert.equal(res.json().device_id, device.id)
+})
+
+test('POST /exchange-token — série différente → 403, aucun token émis, quota non consommé, audit', { skip: SKIP }, async () => {
+  // Sécu : un bootstrap fuité ne permet plus d'usurper un poste existant
+  // en envoyant simplement son hostname.
+  const device = await seedDeviceWithSerial(db, 'PC-VICTIM-SERIAL', 'SN-VICTIM')
+  const bootstrap = await seedBootstrap('bs-serial-mismatch')
+
+  const res = await exchange(bootstrap.secret, { hostname: 'PC-VICTIM-SERIAL', serial: 'SN-ATTACKER' })
+  assert.equal(res.statusCode, 403, `body: ${res.body}`)
+  assert.match(res.json().error, /série/)
+
+  const { rows: [{ n }] } = await db.query(
+    `SELECT count(*)::int AS n FROM agent_tokens WHERE device_id = $1`, [device.id]
+  )
+  assert.equal(n, 0, 'aucun token lié au device')
+  const { rows: [bs] } = await db.query(
+    `SELECT bootstrap_redeemed_count FROM agent_tokens WHERE id = $1`, [bootstrap.id]
+  )
+  assert.equal(bs.bootstrap_redeemed_count, 0)
+
+  const audit = await lastRefusal(device.id)
+  assert.ok(audit, 'refus tracé dans audit_logs')
+  assert.equal(audit.by_user, 'PC-VICTIM-SERIAL')
+  assert.equal(audit.details.reason, 'serial_mismatch')
+  assert.equal(audit.details.bootstrap_label, 'bs-serial-mismatch')
+  assert.equal(audit.details.serial, 'SN-ATTACKER')
+})
+
+test('POST /exchange-token — série absente alors que le device en a une → 403', { skip: SKIP }, async () => {
+  const device = await seedDeviceWithSerial(db, 'PC-NO-SERIAL-SENT', 'SN-KNOWN')
+  const bootstrap = await seedBootstrap('bs-serial-missing')
+  const res = await exchange(bootstrap.secret, { hostname: 'PC-NO-SERIAL-SENT' })
+  assert.equal(res.statusCode, 403)
+  assert.equal((await lastRefusal(device.id)).details.reason, 'serial_missing')
+})
+
+test('POST /exchange-token — token actif déjà utilisé sur le device → 409 (même série), audit', { skip: SKIP }, async () => {
+  // Poste déjà enrôlé : même avec la bonne série (ex. PC réinstallé), un
+  // admin doit d'abord révoquer l'ancien token.
+  const device = await seedDeviceWithSerial(db, 'PC-ENROLLED', 'SN-ENROLLED')
+  const active = await seedUsedToken(device.id, 'enrolled')
+  const bootstrap = await seedBootstrap('bs-active-token')
+
+  const res = await exchange(bootstrap.secret, { hostname: 'PC-ENROLLED', serial: 'SN-ENROLLED' })
+  assert.equal(res.statusCode, 409, `body: ${res.body}`)
+  assert.match(res.json().error, /révoquer/)
+  const audit = await lastRefusal(device.id)
+  assert.equal(audit.details.reason, 'active_token')
+  assert.equal(audit.details.active_token_id, active.id)
+  const { rows: [{ n }] } = await db.query(
+    `SELECT count(*)::int AS n FROM agent_tokens WHERE device_id = $1`, [device.id]
+  )
+  assert.equal(n, 1, 'aucun nouveau token')
+
+  // Réenrôlement après révocation admin de l'ancien token → OK.
+  await db.query(`UPDATE agent_tokens SET revoked_at = now() WHERE id = $1`, [active.id])
+  const again = await exchange(bootstrap.secret, { hostname: 'PC-ENROLLED', serial: 'SN-ENROLLED' })
+  assert.equal(again.statusCode, 201, `body: ${again.body}`)
+  assert.equal(again.json().device_id, device.id)
+})
+
+test('POST /exchange-token — ancien token expiré (grace de rotation passée) ne bloque pas', { skip: SKIP }, async () => {
+  const device = await seedDeviceWithSerial(db, 'PC-EXPIRED-TOKEN', 'SN-EXPIRED-TOKEN')
+  const old = await seedAgentToken(db, {
+    deviceId: device.id, expiresAt: new Date(Date.now() - 60_000).toISOString(),
+  })
+  await db.query(`UPDATE agent_tokens SET last_used_at = now() WHERE id = $1`, [old.id])
+  const bootstrap = await seedBootstrap('bs-expired-token')
+  const res = await exchange(bootstrap.secret, { hostname: 'PC-EXPIRED-TOKEN', serial: 'SN-EXPIRED-TOKEN' })
+  assert.equal(res.statusCode, 201, `body: ${res.body}`)
+})
+
+test('POST /exchange-token — relance après install interrompue (token jamais utilisé) → 201 et ancien token révoqué', { skip: SKIP }, async () => {
+  // L'installeur Intune échange le bootstrap PUIS télécharge le binaire :
+  // s'il échoue entre les deux, Intune le relance. Le token émis au premier
+  // essai n'a jamais servi à un checkin → il ne doit pas bloquer la relance,
+  // et il est révoqué (un seul credential vivant par poste).
+  const bootstrap = await seedBootstrap('bs-retry-install')
+  const first = await exchange(bootstrap.secret, { hostname: 'PC-RETRY-INSTALL', serial: 'SN-RETRY' })
+  assert.equal(first.statusCode, 201)
+  const second = await exchange(bootstrap.secret, { hostname: 'PC-RETRY-INSTALL', serial: 'SN-RETRY' })
+  assert.equal(second.statusCode, 201, `body: ${second.body}`)
+  assert.equal(second.json().device_id, first.json().device_id)
+
+  const oldUse = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(first.json().token),
+    payload: { hostname: 'PC-RETRY-INSTALL', serial: 'SN-RETRY' },
+  })
+  assert.equal(oldUse.statusCode, 401, 'le token du premier essai est révoqué')
+  const newUse = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(second.json().token),
+    payload: { hostname: 'PC-RETRY-INSTALL', serial: 'SN-RETRY' },
+  })
+  assert.equal(newUse.statusCode, 200, `body: ${newUse.body}`)
+
+  // Une fois l'agent enrôlé (checkin fait), une 3e tentative est refusée.
+  const third = await exchange(bootstrap.secret, { hostname: 'PC-RETRY-INSTALL', serial: 'SN-RETRY' })
+  assert.equal(third.statusCode, 409)
+})
+
 // ─── POST /rotate-token ────────────────────────────────────────────────────
 
 test('POST /rotate-token — sans Bearer → 401', { skip: SKIP }, async () => {
