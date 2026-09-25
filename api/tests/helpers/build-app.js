@@ -13,6 +13,10 @@ import Fastify from 'fastify'
 import authPlugin from '../../plugins/auth.js'
 
 export async function buildApp({ db, jwks, decorators = {}, registerAuth = true, routes } = {}) {
+  // plugins/auth.js refuse de s'enregistrer sans config Entra : mêmes
+  // valeurs par défaut que helpers/jwt.js (la CI les définit déjà).
+  if (!process.env.ENTRA_TENANT_ID) process.env.ENTRA_TENANT_ID = 'test-tenant'
+  if (!process.env.ENTRA_CLIENT_ID) process.env.ENTRA_CLIENT_ID = 'test-client'
   const fastify = Fastify({ logger: false })
   fastify.decorate('db', db)
   for (const [name, value] of Object.entries(decorators)) {

@@ -3,6 +3,13 @@ import fp from 'fastify-plugin'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
 
 async function authPlugin(fastify, opts = {}) {
+  // Sans ENTRA_CLIENT_ID, verifyToken passerait `audience: undefined` à
+  // jwtVerify, qui ne vérifie alors AUCUNE audience : tout token du tenant,
+  // émis pour n'importe quelle autre application, serait accepté. Sans
+  // ENTRA_TENANT_ID, aucun issuer ne correspondrait. On refuse de démarrer
+  // plutôt que de dégrader l'authentification en silence.
+  assertEntraConfig()
+
   // En prod opts.jwks est undefined → on construit un createRemoteJWKSet
   // qui hit login.microsoftonline.com (comportement historique inchangé).
   // En test on passe createLocalJWKSet pour éviter le fetch HTTPS et
@@ -24,6 +31,7 @@ async function authPlugin(fastify, opts = {}) {
   }
 
   async function verifyToken(token) {
+    assertEntraConfig()
     const clientId = process.env.ENTRA_CLIENT_ID
     const tenantId = process.env.ENTRA_TENANT_ID
     const issuers = [
@@ -152,6 +160,13 @@ async function authPlugin(fastify, opts = {}) {
       displayName: p.name
     }
   })
+}
+
+function assertEntraConfig() {
+  const missing = ['ENTRA_CLIENT_ID', 'ENTRA_TENANT_ID'].filter(k => !process.env[k]?.trim())
+  if (missing.length) {
+    throw new Error(`Configuration Entra incomplète : ${missing.join(', ')} requis (cf. .env.example)`)
+  }
 }
 
 export default fp(authPlugin)

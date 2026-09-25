@@ -14,9 +14,12 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 
+import Fastify from 'fastify'
+
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
+import authPlugin from '../../plugins/auth.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip auth suite'
 
@@ -373,3 +376,30 @@ test('getUserIdentity — fallback upn / email si preferred_username absent', { 
   })
   assert.equal(res.json().identity.email, 'e-upn@x')
 })
+
+// ─── Config Entra obligatoire au démarrage ──────────────────────────────────
+// Sans ENTRA_CLIENT_ID, jwtVerify recevait `audience: undefined` et
+// n'effectuait aucune vérification d'audience (tout token du tenant accepté).
+// Le plugin doit refuser de s'enregistrer. Pas besoin de PG ici.
+
+for (const key of ['ENTRA_CLIENT_ID', 'ENTRA_TENANT_ID']) {
+  test(`register — ${key} absent → refus de démarrer`, async () => {
+    const saved = { ENTRA_CLIENT_ID: process.env.ENTRA_CLIENT_ID, ENTRA_TENANT_ID: process.env.ENTRA_TENANT_ID }
+    process.env.ENTRA_CLIENT_ID = 'test-client-id'
+    process.env.ENTRA_TENANT_ID = 'test-tenant-id'
+    delete process.env[key]
+    const app = Fastify({ logger: false })
+    app.decorate('db', { query: async () => ({ rows: [] }) })
+    try {
+      await assert.rejects(async () => {
+        await app.register(authPlugin)
+        await app.ready()
+      }, new RegExp(key))
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v
+      }
+      await app.close().catch(() => {})
+    }
+  })
+}
