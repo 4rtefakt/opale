@@ -18,5 +18,5 @@ Les versions sont figées et chaque fichier est vérifié par SHA-256 : le
 script échoue si le contenu téléchargé ne correspond pas. Pour monter de
 version, changer l'URL et l'empreinte dans `setup.sh`, puis ce tableau.
 
-> En développement, le CSS Tabler est chargé depuis jsDelivr (voir `index.html`).
-> En production, remplacer par les fichiers self-hostés pour fonctionner hors réseau.
+> `index.html` et `mobile.html` chargent ces fichiers depuis `front/` (aucun
+> CDN au runtime) : lancer `setup.sh` aussi en développement.
