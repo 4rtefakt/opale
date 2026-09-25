@@ -1,4 +1,4 @@
-import { searchAADUsers, getAllAADUsers, getUserPhoto, getEntraUser } from '../lib/graph.js'
+import { searchAADUsers, getAllAADUsers, getUserPhoto, getEntraUser, isGraphUserId } from '../lib/graph.js'
 
 // Cache photos en mémoire 1h pour éviter de re-fetcher Graph à chaque affichage
 const photoCache = new Map()
@@ -61,6 +61,9 @@ export default async function usersRoute(fastify) {
   // GET /api/users/:id/photo — proxy photo Graph avec cache 1h
   fastify.get('/:id/photo', { preHandler: [fastify.authenticate] }, async (req, reply) => {
     const { id } = req.params
+    // GUID ou UPN uniquement : l'id est interpolé dans un path Graph appelé
+    // avec le token applicatif (cf. isGraphUserId dans lib/graph.js).
+    if (!isGraphUserId(id)) return reply.code(400).send({ error: 'Identifiant invalide' })
     let photo = getCachedPhoto(id)
     if (!photo) {
       photo = await getUserPhoto(id)
@@ -68,7 +71,8 @@ export default async function usersRoute(fastify) {
       setCachedPhoto(id, photo)
     }
     reply.header('Content-Type', photo.contentType)
-    reply.header('Cache-Control', 'public, max-age=3600')
+    reply.header('X-Content-Type-Options', 'nosniff')
+    reply.header('Cache-Control', 'private, max-age=3600')
     return reply.send(photo.buffer)
   })
 
@@ -104,6 +108,7 @@ export default async function usersRoute(fastify) {
   // historique devices/tickets). Le profil perso passe par /sync-me.
   fastify.get('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { id } = req.params
+    if (!isGraphUserId(id)) return reply.code(400).send({ error: 'Identifiant invalide' })
 
     const [aadUser, deviceRes, ticketsRes] = await Promise.all([
       getEntraUser(fastify, id),

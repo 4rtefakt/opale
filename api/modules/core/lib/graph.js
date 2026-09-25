@@ -10,6 +10,41 @@ function escapeODataSearchTerm(s) {
   return String(s ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
+// ── Identifiants interpolés dans un path Graph ───────────────────────────────
+// Une valeur venant d'une requête (param de route, body, colonne éditable) ne
+// doit JAMAIS être concaténée telle quelle dans un path Graph : Fastify décode
+// les params, donc `%2F`, `%3F`, `%23` deviennent `/`, `?`, `#` et réécrivent
+// l'URL vers n'importe quel endpoint accessible au token applicatif (ex:
+// /users/<x>/messages avec Mail.Read). On valide le format attendu (GUID Entra
+// ou UPN au jeu de caractères restreint) PUIS on encode le segment.
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+// UPN : local-part@domaine DNS. Pas de `/`, `?`, `#`, `%`, `\`, espace, etc.
+// Les UPN d'invités (`…#EXT#@…`) ne passent pas : utiliser leur GUID.
+const UPN_RE  = /^[A-Za-z0-9._'!^~+-]{1,113}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$/
+
+export function isGraphGuid(v) {
+  return typeof v === 'string' && GUID_RE.test(v)
+}
+
+// Identifiant utilisateur accepté par /users/{id} : GUID ou UPN.
+export function isGraphUserId(v) {
+  return typeof v === 'string' && v.length <= 256 && (GUID_RE.test(v) || UPN_RE.test(v))
+}
+
+function userSegment(userId) {
+  if (!isGraphUserId(userId)) throw new Error('Identifiant utilisateur Graph invalide')
+  return encodeURIComponent(userId)
+}
+
+function guidSegment(id, what) {
+  if (!isGraphGuid(id)) throw new Error(`Identifiant ${what} Graph invalide`)
+  return encodeURIComponent(id)
+}
+
+// Types d'image relayés par le proxy photo. SVG exclu (peut embarquer du
+// script s'il est ouvert directement sur l'origin de l'API).
+const PHOTO_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'])
+
 // ── Filtre utilisateurs runtime ───────────────────────────────────────────────
 // Les clés `users.filter_attribute` et `users.filter_value` permettent de
 // restreindre les listings Graph à un sous-ensemble (ex: salariés vs externes).
@@ -139,17 +174,17 @@ export async function createEntraUser({ displayName, userPrincipalName, jobTitle
 }
 
 export async function disableEntraUser(userId) {
-  return graphPatch(`/users/${userId}`, { accountEnabled: false })
+  return graphPatch(`/users/${userSegment(userId)}`, { accountEnabled: false })
 }
 
 export async function addUserToGroup(userId, groupId) {
-  return graphPost(`/groups/${groupId}/members/$ref`, {
-    '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${userId}`
+  return graphPost(`/groups/${guidSegment(groupId, 'de groupe')}/members/$ref`, {
+    '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${guidSegment(userId, 'utilisateur')}`
   })
 }
 
 export async function revokeUserSessions(userId) {
-  return graphPost(`/users/${userId}/revokeSignInSessions`, {})
+  return graphPost(`/users/${userSegment(userId)}/revokeSignInSessions`, {})
 }
 
 export async function getIntuneDeviceBySerial(fastify, serial) {
@@ -167,8 +202,10 @@ export async function getIntuneDeviceBySerial(fastify, serial) {
 }
 
 export async function getEntraUser(fastify, userId) {
+  // Id invalide : pas d'appel Graph (cf. userSegment), l'appelant répond 404.
+  if (!isGraphUserId(userId)) return null
   try {
-    return await graphGet(`/users/${userId}?$select=id,displayName,userPrincipalName,jobTitle,department`)
+    return await graphGet(`/users/${userSegment(userId)}?$select=id,displayName,userPrincipalName,jobTitle,department`)
   } catch (err) {
     fastify.log.warn({ err: err.message }, 'Graph: user lookup échoué')
     return null
@@ -198,18 +235,21 @@ export async function getAllAADUsers(db) {
 }
 
 export async function getUserPhoto(userId) {
+  if (!isGraphUserId(userId)) return null
   const token = await getAppToken()
-  const res = await fetch(`https://graph.microsoft.com/v1.0/users/${userId}/photo/$value`, {
+  const res = await fetch(`https://graph.microsoft.com/v1.0/users/${userSegment(userId)}/photo/$value`, {
     headers: { Authorization: `Bearer ${token}` }
   })
   if (!res.ok) return null
-  const contentType = res.headers.get('content-type') || 'image/jpeg'
+  // On ne relaie qu'une image : toute autre réponse (JSON, HTML…) est ignorée.
+  const contentType = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+  if (!PHOTO_CONTENT_TYPES.has(contentType)) return null
   const buffer = Buffer.from(await res.arrayBuffer())
   return { buffer, contentType }
 }
 
 export async function syncIntuneDevice(intuneDeviceId) {
-  return graphPost(`/deviceManagement/managedDevices/${intuneDeviceId}/syncDevice`, {})
+  return graphPost(`/deviceManagement/managedDevices/${guidSegment(intuneDeviceId, 'de device Intune')}/syncDevice`, {})
 }
 
 export async function searchAADGroups(query) {
@@ -231,7 +271,7 @@ export async function searchAADGroups(query) {
 // Utilisé à la création d'un déploiement scope=group et par le worker group-sync.
 export async function getGroupDeviceHostnames(groupId) {
   const items = []
-  let url = `https://graph.microsoft.com/v1.0/groups/${groupId}/members/microsoft.graph.device` +
+  let url = `https://graph.microsoft.com/v1.0/groups/${guidSegment(groupId, 'de groupe')}/members/microsoft.graph.device` +
     `?$select=displayName&$top=999`
   while (url) {
     const token = await getAppToken()
@@ -246,7 +286,7 @@ export async function getGroupDeviceHostnames(groupId) {
 
 export async function getGroupUserIds(groupId) {
   const items = []
-  let url = `https://graph.microsoft.com/v1.0/groups/${groupId}/members/microsoft.graph.user` +
+  let url = `https://graph.microsoft.com/v1.0/groups/${guidSegment(groupId, 'de groupe')}/members/microsoft.graph.user` +
     `?$select=id&$top=999`
   while (url) {
     const token = await getAppToken()

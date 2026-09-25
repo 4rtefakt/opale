@@ -2,7 +2,9 @@
 //
 // Endpoints Graph-dépendants (GET /, GET /:id, GET /search-aad, /:id/photo,
 // POST /sync-all) → auth-only (401 sans token). Mocker lib/graph.js au niveau
-// module est fragile en node:test ESM — on couvre uniquement le contrat auth.
+// module est fragile en node:test ESM — on couvre uniquement le contrat auth,
+// sauf pour /:id/photo et /:id où globalThis.fetch est stubbé (fin de fichier)
+// pour prouver qu'un id injecté n'atteint jamais Graph.
 //
 // Endpoints DB-only testés en intégration réelle :
 //   POST /sync-me  — upsert users_cache + retourne { entraId, isAdmin, … }
@@ -210,4 +212,103 @@ test('GET /search — matche par email ILIKE', { skip: SKIP }, async () => {
   const first = rows.find(r => r.entra_id === 'oid-search-email')
   assert.ok('display_name' in first)
   assert.ok('email' in first)
+})
+
+// ─── Proxy photo / détail : injection de path Graph ──────────────────────────
+// L'id de route est décodé par Fastify puis interpolé dans un path Graph
+// appelé avec le token applicatif (Mail.Read…). `%2F`, `%3F`, `%23` ne
+// doivent jamais atteindre fetch. On stubbe globalThis.fetch (graph.js
+// l'utilise pour le token ET pour Graph) et on compte les appels.
+
+function mockGraphFetch(photoResponse) {
+  const calls = []
+  const original = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const s = String(url)
+    calls.push(s)
+    if (/login\.microsoftonline\.com.*token/.test(s)) {
+      return { ok: true, status: 200, json: async () => ({ access_token: 'tok', expires_in: 3600 }) }
+    }
+    const { status = 200, contentType, body } = photoResponse(s)
+    const buf = Buffer.from(body)
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (h) => (h.toLowerCase() === 'content-type' ? contentType : null) },
+      arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+      json: async () => JSON.parse(buf.toString('utf8')),
+    }
+  }
+  return { calls, restore: () => { globalThis.fetch = original } }
+}
+
+const MAIL_JSON = JSON.stringify({ value: [{ subject: 'Confidentiel RH' }] })
+
+test('GET /:id/photo — id injecté (%2Fmessages%3F…%23) → 400, aucun appel Graph', { skip: SKIP }, async () => {
+  const { token } = await makeUserToken('oid-photo-inject')
+  const mock = mockGraphFetch(() => ({ contentType: 'application/json', body: MAIL_JSON }))
+  try {
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/api/users/0f8fad5b-d9cb-469f-a165-70867728950e%2Fmessages%3F%24select%3Dsubject%23/photo',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.statusCode, 400)
+    assert.doesNotMatch(res.body, /Confidentiel/)
+    assert.equal(mock.calls.length, 0, `aucun fetch attendu, reçu : ${mock.calls.join(', ')}`)
+  } finally {
+    mock.restore()
+  }
+})
+
+test('GET /:id/photo — réponse Graph non-image (JSON) → 404, jamais relayée', { skip: SKIP }, async () => {
+  const { token } = await makeUserToken('oid-photo-json')
+  const mock = mockGraphFetch(() => ({ contentType: 'application/json; charset=utf-8', body: MAIL_JSON }))
+  try {
+    const res = await fastify.inject({
+      method: 'GET', url: '/api/users/1a2b3c4d-0000-4000-8000-00000000abcd/photo',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.statusCode, 404)
+    assert.doesNotMatch(res.body, /Confidentiel/)
+  } finally {
+    mock.restore()
+  }
+})
+
+test('GET /:id/photo — GUID valide + image/jpeg → relayée, path Graph attendu', { skip: SKIP }, async () => {
+  const { token } = await makeUserToken('oid-photo-ok')
+  const guid = '2b3c4d5e-0000-4000-8000-00000000beef'
+  const mock = mockGraphFetch(() => ({ contentType: 'image/jpeg', body: 'JPEGDATA' }))
+  try {
+    const res = await fastify.inject({
+      method: 'GET', url: `/api/users/${guid}/photo`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.headers['content-type'], 'image/jpeg')
+    assert.equal(res.headers['x-content-type-options'], 'nosniff')
+    assert.equal(res.body, 'JPEGDATA')
+    const graphCalls = mock.calls.filter(u => u.startsWith('https://graph.microsoft.com/'))
+    assert.deepEqual(graphCalls, [`https://graph.microsoft.com/v1.0/users/${guid}/photo/$value`])
+  } finally {
+    mock.restore()
+  }
+})
+
+test('GET /:id — admin, id injecté → 400, aucun appel Graph (getEntraUser)', { skip: SKIP }, async () => {
+  const { token } = await makeAdminToken('oid-detail-inject')
+  const mock = mockGraphFetch(() => ({ contentType: 'application/json', body: MAIL_JSON }))
+  try {
+    const res = await fastify.inject({
+      method: 'GET',
+      url: '/api/users/0f8fad5b-d9cb-469f-a165-70867728950e%2Fmessages%3F%24select%3Dsubject%23',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.statusCode, 400)
+    assert.doesNotMatch(res.body, /Confidentiel/)
+    assert.equal(mock.calls.length, 0, `aucun fetch attendu, reçu : ${mock.calls.join(', ')}`)
+  } finally {
+    mock.restore()
+  }
 })
