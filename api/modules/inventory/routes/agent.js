@@ -8,7 +8,7 @@ import { evaluateAndPersist as evaluateCompliance } from '../../monitoring/lib/c
 import { logAudit } from '../../core/lib/audit.js'
 import { SNAPSHOT_COLUMNS, snapshotSelect } from '../lib/deployment-snapshots.js'
 import { checkDeviceClaim, CLAIM_REFUSAL_MESSAGES } from '../lib/device-claim.js'
-import { isNetbirdIp, normalizeIfaceType, clipStr } from '../lib/checkin-validation.js'
+import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle } from '../lib/checkin-validation.js'
 import { ipOnlyKey } from '../../../lib/rate-limit.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -177,6 +177,9 @@ function hashToken(t) {
 // Taille max d'un POST /setup-log (route sans auth) : large pour un log
 // d'installation, borné pour ne pas remplir audit_logs (défaut Fastify : 1 Mio).
 const SETUP_LOG_BODY_LIMIT = 64 * 1024
+// Taille max du log effectivement stocké dans audit_logs (rétention 365 j) :
+// début + fin du log, milieu omis (cf. truncateMiddle).
+const SETUP_LOG_STORED_MAX = 8 * 1024
 
 // Vérifie le Bearer token et retourne la ligne agent_tokens, ou null.
 // Filtre les tokens révoqués et les tokens dont l'expiration programmée
@@ -583,13 +586,19 @@ export default async function agentRoute(fastify) {
       return reply.code(204).send()
     }
 
+    // Route sans auth : tout ce qui est stocké est borné (le log garde son
+    // début et sa fin, ≤ 8 Kio ; un log non-string est sérialisé en JSON).
+    const logText = typeof log === 'string' ? log : JSON.stringify(log)
     await logAudit(fastify.db, fastify.log, {
       action:  'setup_script',
-      byUser:  hostname,
-      target:  script || 'unknown',
-      details: { level, log },
+      byUser:  clipStr(hostname, 255),
+      target:  clipStr(script, 100) || 'unknown',
+      details: { level: clipStr(level, 16) || 'info', log: truncateMiddle(logText, SETUP_LOG_STORED_MAX) },
     })
-    fastify.log.info({ hostname, script, level }, 'setup-log reçu')
+    fastify.log.info(
+      { hostname: clipStr(hostname, 255), script: clipStr(script, 100), level: clipStr(level, 16) },
+      'setup-log reçu'
+    )
     reply.code(204).send()
   })
 

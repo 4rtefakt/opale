@@ -498,6 +498,63 @@ test('POST /checkin — type d\'interface : liste blanche (eth|wifi|netbird), ab
   assert.deepEqual(rows.map(r => r.type), ['eth', 'wifi', 'netbird', 'eth', null, null])
 })
 
+// ─── POST /setup-log — stockage borné (route sans auth) ─────────────────────
+
+async function lastSetupLog(hostname) {
+  const { rows } = await db.query(
+    `SELECT by_user, target, details FROM audit_logs
+     WHERE action = 'setup_script' AND by_user = $1
+     ORDER BY created_at DESC LIMIT 1`,
+    [hostname]
+  )
+  return rows[0] || null
+}
+
+test('POST /setup-log — log stocké tronqué (début + fin, ≤ 8 Kio, marqueur)', { skip: SKIP }, async () => {
+  // Route sans auth : chaque requête (≤ 64 Kio) finissait en entier dans
+  // audit_logs (rétention 365 j). Seuls le début et la fin sont gardés.
+  const log = 'HEAD-' + 'a'.repeat(30 * 1024) + 'é'.repeat(5000) + 'b'.repeat(20 * 1024) + '-TAIL'
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/setup-log',
+    payload: { hostname: 'PC-SETUPLOG-BIG', script: 'install', level: 'error', log },
+  })
+  assert.equal(res.statusCode, 204)
+  const row = await lastSetupLog('PC-SETUPLOG-BIG')
+  assert.ok(row, 'log journalisé')
+  const stored = row.details.log
+  assert.ok(Buffer.byteLength(stored, 'utf8') <= 8 * 1024, `taille stockée ${Buffer.byteLength(stored, 'utf8')}`)
+  assert.ok(stored.startsWith('HEAD-aaaa'))
+  assert.ok(stored.endsWith('bbbb-TAIL'))
+  assert.match(stored, /log tronqué/)
+  assert.ok(!stored.includes('\uFFFD'), 'pas de caractère coupé')
+  assert.equal(row.details.level, 'error')
+})
+
+test('POST /setup-log — log court inchangé, champs bornés, log non-string sérialisé', { skip: SKIP }, async () => {
+  const short = await fastify.inject({
+    method: 'POST', url: '/api/agent/setup-log',
+    payload: { hostname: 'PC-SETUPLOG-SHORT', script: 'openssh', log: 'ligne 1\nligne 2' },
+  })
+  assert.equal(short.statusCode, 204)
+  const row = await lastSetupLog('PC-SETUPLOG-SHORT')
+  assert.equal(row.details.log, 'ligne 1\nligne 2')
+  assert.equal(row.details.level, 'info')
+  assert.equal(row.target, 'openssh')
+
+  const odd = await fastify.inject({
+    method: 'POST', url: '/api/agent/setup-log',
+    payload: {
+      hostname: 'PC-SETUPLOG-ODD', script: 's'.repeat(500), level: 'x'.repeat(100),
+      log: { lines: ['a', 'b'] },
+    },
+  })
+  assert.equal(odd.statusCode, 204)
+  const r2 = await lastSetupLog('PC-SETUPLOG-ODD')
+  assert.equal(r2.details.log, '{"lines":["a","b"]}')
+  assert.ok(r2.target.length <= 100)
+  assert.ok(r2.details.level.length <= 16)
+})
+
 // ─── POST /exchange-token ──────────────────────────────────────────────────
 
 test('POST /exchange-token — sans Bearer → 401', { skip: SKIP }, async () => {

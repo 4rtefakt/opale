@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { isNetbirdIp, normalizeIfaceType, clipStr } from '../../modules/inventory/lib/checkin-validation.js'
+import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle } from '../../modules/inventory/lib/checkin-validation.js'
 
 test('isNetbirdIp — accepte uniquement 100.64.0.0/10', () => {
   for (const ip of ['100.64.0.0', '100.64.0.1', '100.100.100.100', '100.127.255.255']) {
@@ -37,4 +37,25 @@ test('clipStr — borne et tolère toute valeur JSON', () => {
   assert.equal(clipStr(12345, 3), '123')
   assert.equal(clipStr({ toString: 'x' }, 10), '[object]')
   assert.equal(clipStr(['a'], 10), '[array]')
+})
+
+test('truncateMiddle — ≤ maxBytes, début + fin conservés, jamais de caractère coupé', () => {
+  assert.equal(truncateMiddle('court', 8192), 'court')
+  const exact = 'x'.repeat(8192)
+  assert.equal(truncateMiddle(exact, 8192), exact)
+
+  for (const text of [
+    'HEAD-' + 'é'.repeat(10000) + '-TAIL',       // coupures au milieu de caractères 2 octets
+    'HEAD-' + '€'.repeat(10000) + '-TAIL',       // 3 octets
+    'HEAD-' + '😀'.repeat(10000) + '-TAIL',      // 4 octets (paires de substitution)
+    'HEAD-' + 'a'.repeat(100000) + '-TAIL',
+  ]) {
+    const out = truncateMiddle(text, 8192)
+    assert.ok(Buffer.byteLength(out, 'utf8') <= 8192, `${Buffer.byteLength(out, 'utf8')} octets`)
+    assert.ok(Buffer.byteLength(out, 'utf8') > 7000, 'la place disponible est utilisée')
+    assert.ok(out.startsWith('HEAD-'))
+    assert.ok(out.endsWith('-TAIL'))
+    assert.ok(!out.includes('�'))
+    assert.match(out, new RegExp(`log tronqué : ${Buffer.byteLength(text, 'utf8')} octets`))
+  }
 })

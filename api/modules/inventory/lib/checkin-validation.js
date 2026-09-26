@@ -39,3 +39,20 @@ export function clipStr(value, max) {
   if (typeof value === 'number' || typeof value === 'boolean') return String(value).slice(0, max)
   return `[${Array.isArray(value) ? 'array' : typeof value}]`
 }
+
+// Tronque `text` au milieu pour tenir en `maxBytes` octets UTF-8 : garde le
+// début et la fin (en-tête et erreur finale d'un log d'installation), avec
+// un marqueur indiquant la taille d'origine. Ne coupe jamais un caractère.
+export function truncateMiddle(text, maxBytes) {
+  const total = Buffer.byteLength(text, 'utf8')
+  if (total <= maxBytes) return text
+  const marker = `\n… [log tronqué : ${total} octets au total, milieu omis] …\n`
+  const room = maxBytes - Buffer.byteLength(marker, 'utf8')
+  const headBytes = Math.ceil(room / 2)
+  const tailBytes = room - headBytes
+  const buf = Buffer.from(text, 'utf8')
+  // Un caractère multi-octets coupé se décode en U+FFFD : on le retire.
+  const head = buf.subarray(0, headBytes).toString('utf8').replace(/\uFFFD+$/, '')
+  const tail = buf.subarray(buf.length - tailBytes).toString('utf8').replace(/^\uFFFD+/, '')
+  return head + marker + tail
+}
