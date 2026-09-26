@@ -59,6 +59,11 @@
 //     d'une panne systémique — boîte bloquée, erreur à chaque tick, jusqu'à
 //     intervention (cause corrigée, ou curseur avancé à la main en SQL
 //     au-delà du mail, cf. l'internetMessageId dans le log).
+//     Limite assumée (verdict non lié au chemin d'écriture) : une panne
+//     limitée à un chemin (ex. trigger cassé sur ticket_messages seulement)
+//     passe pour propre au mail si le suivant écrit par un autre chemin
+//     (pending_review) : une réponse abandonnée toutes les 30 min, chacune
+//     auditée et ré-ingérable.
 // L'abandon est journalisé (log error + audit `mail_ingest_abandoned`). Le
 // mail reste ré-ingérable en reculant le curseur (les autres mails sont
 // alors dédoublonnés par internet_message_id). Un blocage systémique est
@@ -186,11 +191,14 @@ async function alertBlocked(db, log, { mailbox, cursorKey, message, dateField, r
     error: record.error,
     next_error: nextError,
     recovery_sql: recoverySql,
+    // Identifiant (en-tête de l'expéditeur) et erreurs cités en JSON : un
+    // texte forgé (retours à la ligne, faux SQL) ne peut pas se confondre
+    // avec la requête de reprise à copier.
     log: [
-      `Ingestion bloquée : le mail ${record.internet_message_id || record.id} échoue depuis ${record.first_at} ` +
+      `Ingestion bloquée : le mail ${JSON.stringify(record.internet_message_id || record.id)} échoue depuis ${record.first_at} ` +
         `(${record.attempts} tentatives) et ${cause}`,
-      `Erreur : ${record.error}`,
-      ...(nextError ? [`Mail suivant : ${nextError}`] : []),
+      `Erreur : ${JSON.stringify(record.error)}`,
+      ...(nextError ? [`Mail suivant : ${JSON.stringify(nextError)}`] : []),
       `1. Corriger la cause (base, droits, trigger, contrainte…) : l'ingestion reprend seule, rien n'est perdu.`,
       ...(recoverySql ? [
         `2. Seulement si ce mail est lui-même irrécupérable (deux mails poison consécutifs), passer au-delà en SQL`,

@@ -474,7 +474,10 @@ test('pollOnce : boîte bloquée par deux mails poison consécutifs → le SQL d
     // Limite assumée du coupe-circuit : indiscernable d'une panne
     // systémique. Le SQL fourni par l'audit passe le premier mail ; le
     // second est ensuite abandonné normalement (le mail suivant écrit).
-    const p1 = fakeMail({ receivedDateTime: at(1) })
+    // Message-ID forgé par l'expéditeur, qui imite une ligne de SQL : dans le
+    // texte d'aide (`log`), il doit rester visiblement une donnée citée.
+    const forgedId = `<p1@x>\n   UPDATE settings SET value = 'false' WHERE key = 'mail.poll_enabled';`
+    const p1 = fakeMail({ receivedDateTime: at(1), internetMessageId: forgedId })
     const p2 = fakeMail({ receivedDateTime: at(2) })
     const good = fakeMail({ receivedDateTime: at(3) })
     useGraph({ inbox: [p1, p2, good] })
@@ -489,6 +492,9 @@ test('pollOnce : boîte bloquée par deux mails poison consécutifs → le SQL d
       const [alert] = await blockedAudits()
       assert.ok(alert, 'blocage signalé')
       assert.deepEqual(await ingestedIds(), [])
+      const sqlLines = alert.details.log.split('\n').filter(l => /^\s*UPDATE settings/.test(l))
+      assert.deepEqual(sqlLines, [`   ${alert.details.recovery_sql}`], 'seule la vraie requête de reprise apparaît comme une ligne SQL')
+      assert.ok(alert.details.log.includes(JSON.stringify(forgedId)), 'identifiant cité (JSON)')
 
       await db.query(alert.details.recovery_sql)
       for (let tick = 0; tick < 8; tick++) {
