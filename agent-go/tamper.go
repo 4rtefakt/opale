@@ -17,6 +17,11 @@ func computeOwnBinarySHA256() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("os.Executable : %w", err)
 	}
+	return fileSHA256(p)
+}
+
+// fileSHA256 — SHA-256 hexadécimal (lowercase) d'un fichier.
+func fileSHA256(p string) (string, error) {
 	f, err := os.Open(p)
 	if err != nil {
 		return "", fmt.Errorf("open %s : %w", p, err)

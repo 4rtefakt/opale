@@ -295,7 +295,8 @@ func TestCheckRollback_RecordsAndSkipsRolledBackVersion(t *testing.T) {
 	if err := os.WriteFile(backupPath(), []byte("old"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	st := &State{LastUpdateAt: time.Now().UTC(), LastUpdateVersion: "9.9.9", FailedSinceUpdate: MaxFailedSinceUpdate - 1}
+	st := &State{LastUpdateAt: time.Now().UTC(), LastUpdateVersion: "9.9.9", FailedSinceUpdate: MaxFailedSinceUpdate - 1,
+		BinarySHA256: "hash-de-la-version-annulee"}
 	CheckRollback(st, context.DeadlineExceeded)
 	if restarts.Load() != 1 {
 		t.Fatalf("rollback attendu (redémarrages=%d)", restarts.Load())
@@ -305,6 +306,11 @@ func TestCheckRollback_RecordsAndSkipsRolledBackVersion(t *testing.T) {
 	}
 	if raw, _ := os.ReadFile(binaryPath()); string(raw) != "old" {
 		t.Fatalf("binaire non restauré : %q", raw)
+	}
+	// Baseline anti-tamper recalée sur le binaire restauré (sinon fausse
+	// alerte tamper au redémarrage de l'ancienne version).
+	if want, _ := fileSHA256(binaryPath()); st.BinarySHA256 != want {
+		t.Fatalf("baseline tamper = %q, attendu le hash du binaire restauré %q", st.BinarySHA256, want)
 	}
 
 	cfg := &Config{Token: "t", URL: "http://127.0.0.1:1"} // injoignable

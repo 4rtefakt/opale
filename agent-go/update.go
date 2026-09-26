@@ -212,6 +212,15 @@ func CheckRollback(st *State, lastCheckinErr error) {
 	// Mémorise la version annulée : elle ne sera plus réinstallée (cf.
 	// HandleAgentUpdate), seule une version plus récente le sera.
 	st.RolledBackVersion = st.LastUpdateVersion
+	// Baseline anti-tamper = binaire restauré. Sinon l'ancienne version,
+	// au redémarrage, ne correspondrait plus au hash de la version annulée
+	// et remonterait une fausse alerte tamper à chaque checkin.
+	if sum, err := fileSHA256(binaryPath()); err == nil {
+		st.BinarySHA256 = sum
+		st.BinaryUpdatedAt = time.Now().UTC()
+	} else {
+		logError("rollback-baseline-fail", err, nil)
+	}
 	// Reset l'état pour que la prochaine instance ne re-rollback pas
 	st.LastUpdateAt = time.Time{}
 	st.LastUpdateVersion = ""
