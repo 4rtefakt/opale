@@ -194,7 +194,7 @@ function renderPanelBody(item, mvts) {
             <i class="ti ti-${m.type==='in'?'arrow-down':'arrow-up'}"></i>
           </div>
           <div class="mvt-info">
-            <div class="mvt-label">${m.by_name || m.user_id || '—'}${(m.recipient_name || m.recipient_label) ? ` <span style="color:var(--text-tertiary)">→</span> ${esc(m.recipient_name || m.recipient_label)}` : ''}</div>
+            <div class="mvt-label">${esc(m.by_name || m.user_id || '—')}${(m.recipient_name || m.recipient_label) ? ` <span style="color:var(--text-tertiary)">→</span> ${esc(m.recipient_name || m.recipient_label)}` : ''}</div>
             <div class="mvt-sub">${m.note ? esc(m.note) + ' · ' : ''}${formatRelative(m.created_at || m.date)}</div>
           </div>
           <div class="mvt-qty" style="color:var(--${m.type==='in'?'green':'red'})">${m.type==='in'?'+':'−'}${m.quantity}</div>
