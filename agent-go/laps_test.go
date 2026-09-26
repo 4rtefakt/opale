@@ -733,3 +733,42 @@ func TestPostAdminCredential_ReturnsHTTPStatus(t *testing.T) {
 		t.Fatalf("attendu un refus définitif « HTTP 400 », reçu %v", err)
 	}
 }
+
+// La phase "escrowed" doit être persistée avant l'application locale : si
+// l'écriture échoue, on n'applique pas (sur disque, "prepared" reste vrai :
+// mot de passe jamais appliqué).
+func TestLAPS_EscrowedPhaseMustBePersistedBeforeApply(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	r := f.rotator()
+	saves := 0
+	r.save = func() error {
+		saves++
+		if saves == 2 { // 1 = stash prepared, 2 = phase escrowed
+			return errors.New("disque plein")
+		}
+		return nil
+	}
+	r.run(context.Background(), st)
+	if len(f.escrowed) != 1 || len(f.applied) != 0 {
+		t.Fatalf("pas d'application sans phase escrowed persistée : escrows=%v applied=%v", f.escrowed, f.applied)
+	}
+}
+
+// Stash "prepared" réaligné avec succès puis compte refusé : le stash est
+// soldé, le cycle suivant ne renvoie pas une nouvelle restauration.
+func TestLAPS_PreparedStashClearedAfterRestore(t *testing.T) {
+	st := &State{CurrentAdminCred: &AdminCredRecord{Username: "opale-recovery", EncB64: b64("enc(old)")}}
+	f := newLAPSFake(st)
+	st.PendingAdminCred = &PendingAdminCred{Username: "opale-recovery", EncB64: b64("enc(unsent)"), StashedAt: f.now.Add(-time.Minute), Phase: lapsPhasePrepared}
+	f.account = lapsAccount{Exists: true, SID: "S-1-5-21-1-2-3-500"} // refusé
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 1 || f.escrowed[0] != "opale-recovery:enc(old)" || st.PendingAdminCred != nil {
+		t.Fatalf("restauration unique + stash soldé attendus : escrows=%v pending=%+v", f.escrowed, st.PendingAdminCred)
+	}
+	f.now = st.LAPSRetryAfter.Add(time.Second)
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 1 {
+		t.Fatalf("nouvelle restauration inutile au cycle suivant : %v", f.escrowed)
+	}
+}

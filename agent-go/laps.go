@@ -285,8 +285,14 @@ func (r *lapsRotator) run(ctx context.Context, st *State) {
 		if pending.Phase == lapsPhasePrepared {
 			// Mot de passe jamais appliqué : le poste a toujours celui de
 			// CurrentAdminCred. On resynchronise le serveur au cas où le POST
-			// précédent l'aurait atteint malgré l'erreur.
-			r.restoreCurrentEscrow(ctx, st)
+			// précédent l'aurait atteint malgré l'erreur ; une fois fait,
+			// serveur et poste sont alignés : le stash est soldé (pas de
+			// nouveau POST de restauration à chaque cycle si la rotation
+			// échoue ensuite, ex. compte refusé).
+			if r.restoreCurrentEscrow(ctx, st) {
+				st.PendingAdminCred = nil
+				_ = r.save()
+			}
 		}
 	}
 
@@ -431,9 +437,16 @@ func (r *lapsRotator) rotate(ctx context.Context, st *State, now time.Time) {
 		return
 	}
 
-	// Étape 4 : le serveur détient désormais ce mot de passe.
+	// Étape 4 : le serveur détient désormais ce mot de passe. La phase
+	// "escrowed" DOIT être sur disque avant l'application locale : sur
+	// disque, "prepared" garantit ainsi que le mot de passe n'a jamais été
+	// appliqué (ce qui autorise la restauration de CurrentAdminCred).
 	st.PendingAdminCred.Phase = lapsPhaseEscrowed
-	_ = r.save()
+	if err := r.save(); err != nil {
+		logError("laps-stash-save-fail", err, LogFields{"user": username, "phase": lapsPhaseEscrowed})
+		r.fail(st, now)
+		return
+	}
 
 	// Étape 5 : application locale.
 	res := r.accounts.apply(username, password, acct)
