@@ -58,7 +58,9 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 	// avoir tourné.
 	for followUps := 0; ; followUps++ {
 		deployed := processCheckinJobs(ctx, cfg, st, resp)
-		if deployed == 0 || followUps >= maxFollowUpCheckins {
+		// Arrêt de l'agent (Stop) : pas de re-checkin, donc rien de plus
+		// réservé ; les résultats en file partiront au prochain démarrage.
+		if deployed == 0 || followUps >= maxFollowUpCheckins || ctx.Err() != nil {
 			break
 		}
 		// Re-checkin immédiat pour remonter les résultats sans attendre
@@ -69,7 +71,19 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 			logError("recheckin-fail", err, LogFields{"deferred_results": len(st.PendingDeployments)})
 			break
 		}
+		if ctx.Err() != nil {
+			// Arrêt pendant le re-checkin : ses travaux ne sont pas lancés
+			// (contexte annulé, ils seraient remontés en échec sans avoir
+			// tourné) ; réservés côté serveur, ils relèvent du timeout.
+			logWarn("recheckin-jobs-skipped", "arrêt de l'agent", LogFields{
+				"commands": len(next.Commands), "deployments": len(next.Deployments),
+			})
+			return
+		}
 		resp = next
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	// L'auto-update passe après les travaux (déjà réservés côté serveur) :

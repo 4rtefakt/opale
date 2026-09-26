@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -113,8 +115,15 @@ func installFakeJobs(t *testing.T) *fakeJobs {
 			f.record("cmd:" + c.ID)
 		}
 	}
-	processDeploymentsFn = func(_ context.Context, deps []Deployment, sink resultSink) {
+	processDeploymentsFn = func(ctx context.Context, deps []Deployment, sink resultSink) {
 		for _, d := range deps {
+			if ctx.Err() != nil {
+				// Comme runWithTimeout : contexte annulé → rien ne démarre,
+				// résultat 1 « interrompu ».
+				f.record("interrupted:" + d.DeploymentID)
+				sink.deployment(DeploymentResult{DeploymentID: d.DeploymentID, ExitCode: 1, Output: "[interrompu : arrêt de l'agent]"})
+				continue
+			}
 			if f.beforeDeployment != nil {
 				f.beforeDeployment(d.DeploymentID)
 			}
@@ -135,11 +144,16 @@ func installFakeJobs(t *testing.T) *fakeJobs {
 
 func runCheckinAgainst(t *testing.T, srv *jobServer) *State {
 	t.Helper()
+	return runCheckinAgainstCtx(t, context.Background(), srv)
+}
+
+func runCheckinAgainstCtx(t *testing.T, ctx context.Context, srv *jobServer) *State {
+	t.Helper()
 	t.Setenv("RMM_DATA_DIR", t.TempDir())
 	ts := httptest.NewServer(srv.handler(t))
 	t.Cleanup(ts.Close)
 	st := &State{LastTokenRotation: time.Now().UTC()}
-	runCheckin(context.Background(), &Config{Token: "tok", URL: ts.URL}, st)
+	runCheckin(ctx, &Config{Token: "tok", URL: ts.URL}, st)
 	return st
 }
 
@@ -287,4 +301,69 @@ func TestRunCheckin_EachDeploymentResultPersistedImmediately(t *testing.T) {
 		t.Fatal(strings.Join(problems, "\n"))
 	}
 	assertEveryClaimedJobRanOnce(t, srv, f, st, 4)
+}
+
+// cancelAfterCheckin — transport qui annule le contexte de l'agent juste
+// après la n-ième réponse de checkin, corps déjà lu : réponse reçue
+// intacte, arrêt (Stop du service) avant son traitement.
+type cancelAfterCheckin struct {
+	base   http.RoundTripper
+	at     int
+	cancel context.CancelFunc
+	mu     sync.Mutex
+	n      int
+}
+
+func (c *cancelAfterCheckin) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := c.base.RoundTrip(r)
+	if err != nil || r.URL.Path != "/api/agent/checkin" {
+		return resp, err
+	}
+	c.mu.Lock()
+	c.n++
+	hit := c.n == c.at
+	c.mu.Unlock()
+	if hit {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		c.cancel()
+	}
+	return resp, nil
+}
+
+// Arrêt de l'agent pendant le re-checkin : les travaux de sa réponse ne
+// sont pas lancés (contexte annulé : ils seraient remontés en échec
+// « interrompu » sans avoir tourné) ; réservés côté serveur, ils relèvent
+// du timeout comme avant. Et plus de re-checkin après l'arrêt (rien de
+// nouveau réservé).
+func TestRunCheckin_StopDuringFollowUpLeavesItsJobsUnstarted(t *testing.T) {
+	f := installFakeJobs(t)
+	srv := newJobServer(21, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	origClient := httpClient
+	httpClient = &http.Client{Timeout: 30 * time.Second,
+		Transport: &cancelAfterCheckin{base: http.DefaultTransport, at: 2, cancel: cancel}}
+	t.Cleanup(func() { httpClient = origClient })
+
+	st := runCheckinAgainstCtx(t, ctx, srv)
+
+	if n := len(f.count("interrupted:")); n != 0 {
+		t.Fatalf("%d déploiement(s) du re-checkin remonté(s) en échec sans avoir tourné : %v", n, f.order)
+	}
+	if n := len(f.count("dep:")); n != 10 {
+		t.Fatalf("%d déploiements exécutés, attendu les 10 du premier lot", n)
+	}
+	for _, r := range st.PendingDeployments {
+		if r.ExitCode != 0 {
+			t.Fatalf("résultat d'échec en file pour un déploiement non lancé : %+v", r)
+		}
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.checkins != 2 || len(srv.running) != 10 || len(srv.pending) != 1 {
+		t.Fatalf("checkins=%d running=%d pending=%d, attendu 2 / 10 (2e lot, timeout) / 1 (jamais réservé)",
+			srv.checkins, len(srv.running), len(srv.pending))
+	}
 }
