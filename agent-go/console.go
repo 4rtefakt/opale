@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 )
 
@@ -239,6 +240,19 @@ func (m *consoleManager) closeAll(reason string) {
 	for _, id := range ids {
 		m.removeSession(id, reason)
 	}
+}
+
+// shortSessionID — préfixe lisible de l'id de session pour le toast
+// utilisateur (8 caractères max). L'id vient du serveur : un id plus court
+// ne doit pas faire paniquer l'agent (l'ancien sessionID[:8] tuait le
+// service).
+func shortSessionID(id string) string {
+	id = strings.TrimSpace(id)
+	r := []rune(id)
+	if len(r) > 8 {
+		r = r[:8]
+	}
+	return strings.TrimSpace(string(r))
 }
 
 func (m *consoleManager) sendError(id, msg string) {

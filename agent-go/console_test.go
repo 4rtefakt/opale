@@ -147,3 +147,21 @@ func framesTypes(fs []wsFrame) []string {
 	}
 	return out
 }
+
+// L'id de session vient du serveur : un id court ne doit pas paniquer
+// (sessionID[:8] faisait tomber le service Windows).
+func TestShortSessionID(t *testing.T) {
+	cases := map[string]string{
+		"":                                     "",
+		"abc":                                  "abc",
+		"0123456789abcdef":                     "01234567",
+		"  12345678  ":                         "12345678",
+		"éàùç€ßøåx":                            "éàùç€ßøå",
+		"c0ffee00-1111-2222-3333-444455556666": "c0ffee00",
+	}
+	for in, want := range cases {
+		if got := shortSessionID(in); got != want {
+			t.Errorf("shortSessionID(%q) = %q, attendu %q", in, got, want)
+		}
+	}
+}

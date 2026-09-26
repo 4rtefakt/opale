@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"os/exec"
-	"strings"
 
 	"github.com/UserExistsError/conpty"
 )
@@ -57,7 +56,7 @@ func notifyConsoleOpened(sessionID string) {
 	// les caractères trop exotiques. Format minimaliste.
 	msg := fmt.Sprintf(
 		"[Opale] Un administrateur vient d'ouvrir une console sur ce poste. "+
-			"Session : %s.", strings.TrimSpace(sessionID[:8]))
+			"Session : %s.", shortSessionID(sessionID))
 	cmd := exec.Command("msg.exe", "*", "/TIME:10", msg)
 	if err := cmd.Run(); err != nil {
 		logWarn("toast-user-fail", "", LogFields{"error": err.Error()})
