@@ -233,11 +233,12 @@ async function runAuto(obId, checkId) {
   btn.disabled = true
   btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i>'
   try {
-    const { result } = await window.api.runAutoCheck(obId, checkId)
+    const { result, warning } = await window.api.runAutoCheck(obId, checkId)
     // Affiché avant tout re-fetch : si celui-ci échoue, le mot de passe
     // (non stocké côté serveur) ne doit pas être perdu.
-    if (result?.temporaryPassword) showTempPassword(result)
-    showToast(t('onboarding.toast.auto_ok'), 'success')
+    if (result?.temporaryPassword) showTempPassword(result, warning)
+    // warning : action exécutée mais non enregistrée côté serveur.
+    showToast(warning || t('onboarding.toast.auto_ok'), warning ? 'error' : 'success')
     const ob = await window.api.getOnboarding(obId)
     const idx = _items.findIndex(i => i.id === obId)
     if (idx !== -1) {
@@ -255,10 +256,12 @@ async function runAuto(obId, checkId) {
 
 // Mot de passe temporaire (create_account) : renvoyé UNE seule fois par l'API
 // et jamais stocké côté serveur → affiché ici, à noter avant de fermer.
-function showTempPassword(result) {
+function showTempPassword(result, warning) {
   showModal(`
     <div class="modal-title">${t('onboarding.info.entra')}</div>
     <div style="display:flex;flex-direction:column;gap:8px;font-size:13px">
+      ${warning ? `<div style="color:var(--red)">${esc(warning)}</div>
+      <div>Id : <code style="user-select:all">${esc(result.id || '')}</code></div>` : ''}
       <div>${esc(result.userPrincipalName || '')}</div>
       <div style="color:var(--text-secondary)">Mot de passe temporaire — affiché une seule fois, non conservé :</div>
       <code style="font-family:monospace;font-size:14px;background:var(--bg-tertiary);padding:6px 10px;border-radius:4px;user-select:all;word-break:break-all">${esc(result.temporaryPassword)}</code>

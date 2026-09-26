@@ -548,3 +548,79 @@ test('Migration 075 : retire uniquement le mot de passe des notes et de auto_res
   const { rows: [chk2] } = await db.query('SELECT auto_result FROM onboarding_checks WHERE id = $1', [check.id])
   assert.equal(chk2.auto_result, chk.auto_result)
 })
+
+// ─── create_account : échec DB après création Entra → résultat conservé ────
+// Le compte Entra existe dès que Graph a répondu : si une écriture DB échoue
+// ensuite, la réponse doit quand même porter le mot de passe temporaire (seul
+// endroit où il existe), avec un avertissement, et non un 500 qui le perd.
+// L'échec est provoqué par un trigger Postgres réel, limité à cette fiche.
+
+test('POST auto create_account — échec DB après création Entra → 200 + mot de passe + warning', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-auto-dbfail')
+  const created = (await createOnboarding(token, {
+    person_name: 'Echec DB Onboarding', email: 'echec.db@contoso.fr',
+  })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  await db.query(`
+    CREATE OR REPLACE FUNCTION t_fail_entra_id_created() RETURNS trigger AS $$
+    BEGIN
+      IF NEW.person_name = 'Echec DB Onboarding' THEN
+        RAISE EXCEPTION 'panne DB simulée';
+      END IF;
+      RETURN NEW;
+    END $$ LANGUAGE plpgsql;
+    CREATE TRIGGER t_fail_entra_id_created BEFORE UPDATE OF entra_id_created ON onboardings
+      FOR EACH ROW EXECUTE FUNCTION t_fail_entra_id_created();
+  `)
+  const entraId = '6f708192-0000-4000-8000-0000000000db'
+  const mock = mockGraphCreateUser({ id: entraId, userPrincipalName: 'echec.db@contoso.fr' })
+
+  let res
+  try {
+    res = await fastify.inject({
+      method: 'POST', url: `/api/onboarding/${created.id}/checks/${check.id}/auto`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+  } finally {
+    mock.restore()
+    await db.query(`
+      DROP TRIGGER IF EXISTS t_fail_entra_id_created ON onboardings;
+      DROP FUNCTION IF EXISTS t_fail_entra_id_created();
+    `)
+  }
+
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.headers['cache-control'], 'no-store')
+  const body = res.json()
+  const pwd = body.result?.temporaryPassword
+  assert.ok(pwd && pwd.length === 14, 'le mot de passe est renvoyé malgré l\'échec DB')
+  assert.equal(body.result.id, entraId)
+  assert.match(body.warning, /panne DB simulée/)
+  assert.match(body.warning, /mot de passe temporaire/)
+
+  // Rien n'a été écrit (ni id, ni mot de passe) ; l'étape reste à faire.
+  const { rows: [ob] } = await db.query('SELECT notes, entra_id_created FROM onboardings WHERE id = $1', [created.id])
+  assert.equal(ob.entra_id_created, null)
+  assert.ok(!(ob.notes || '').includes(pwd))
+  const { rows: [chk] } = await db.query('SELECT done, auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  assert.equal(chk.done, false)
+  assert.equal(chk.auto_result, null)
+})
+
+test('POST auto — automatisation en échec : toujours 500 avec auto_error (inchangé)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-auto-noemail')
+  const created = (await createOnboarding(token, { person_name: 'Sans Email' })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/onboarding/${created.id}/checks/${check.id}/auto`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 500)
+  assert.match(res.json().error, /Email requis/)
+  assert.equal(res.json().check.auto_error, 'Email requis pour créer le compte')
+  assert.equal(res.json().warning, undefined)
+})

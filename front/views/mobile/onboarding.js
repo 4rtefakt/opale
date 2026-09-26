@@ -235,10 +235,13 @@ async function mObToggleCheck(obId, checkId, done, row) {
 async function mObRunAuto(obId, checkId, btn) {
   await withBusy(btn, async () => {
     let created = null
+    let warning = null
     try {
-      const { result } = await window.api.runAutoCheck(obId, checkId)
-      if (result?.temporaryPassword) created = result
-      window.showToast(t('mobile.onboarding.toast.auto_ok'), 'success')
+      const res = await window.api.runAutoCheck(obId, checkId)
+      if (res.result?.temporaryPassword) created = res.result
+      // warning : action exécutée mais non enregistrée côté serveur.
+      warning = res.warning || null
+      window.showToast(warning || t('mobile.onboarding.toast.auto_ok'), warning ? 'error' : 'success')
       _activeOb = await window.api.getOnboarding(obId)
       renderDetailSheet()
       syncListItem(_activeOb)
@@ -256,6 +259,8 @@ async function mObRunAuto(obId, checkId, btn) {
     if (created) {
       document.querySelector('#m-sheet-inner .m-sheet-title')?.insertAdjacentHTML('afterend', `
         <div style="margin:0 16px 12px;padding:10px;border-radius:8px;background:var(--bg-secondary);font-size:13px">
+          ${warning ? `<div style="color:var(--red);margin-bottom:4px">${esc(warning)}</div>
+          <div>Id : <code style="user-select:all;word-break:break-all">${esc(created.id || '')}</code></div>` : ''}
           <div>${esc(created.userPrincipalName || '')}</div>
           <div style="margin-top:4px;color:var(--text-secondary)">Mot de passe temporaire — affiché une seule fois, non conservé :</div>
           <code style="display:block;margin-top:6px;font-size:15px;user-select:all;word-break:break-all">${esc(created.temporaryPassword)}</code>

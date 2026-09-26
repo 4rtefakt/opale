@@ -142,49 +142,68 @@ export default async function onboardingRoute(fastify) {
     const ob = oRows[0]
     const { displayName } = fastify.getUserIdentity(req)
 
-    let result = null
-    let error  = null
+    let result  = null
+    let error   = null
+    let warning = null
 
     try {
       result = await runAutomation(check.step_id, ob, fastify)
-
-      // Sauvegarder le résultat éventuel (id du compte créé)
-      if (result?.id && check.step_id === 'create_account') {
-        await fastify.db.query(
-          'UPDATE onboardings SET entra_id_created = $1, updated_at = now() WHERE id = $2',
-          [result.id, ob.id]
-        )
-      }
-      // Le mot de passe temporaire n'est JAMAIS stocké (ni notes, ni
-      // auto_result) : il est renvoyé une seule fois dans la réponse de
-      // cette action, à l'admin qui l'a déclenchée.
-      if (result?.temporaryPassword) {
-        const note = `Compte créé : ${result.userPrincipalName}`
-        await fastify.db.query(
-          'UPDATE onboardings SET notes = COALESCE(notes || E\'\\n\', \'\') || $1 WHERE id = $2',
-          [note, ob.id]
-        )
-      }
     } catch (err) {
       error = err.message
       fastify.log.warn({ err: err.message, step: check.step_id }, 'Automatisation échouée')
     }
 
-    const { rows: updated } = await fastify.db.query(`
-      UPDATE onboarding_checks
-      SET done = $1, done_at = $2, done_by = $3,
-          auto_result = $4, auto_error = $5, updated_at = now()
-      WHERE id = $6 RETURNING *
-    `, [!error, error ? null : new Date(), displayName,
-        error ? null : JSON.stringify(withoutSecrets(result)), error,
-        req.params.checkId])
+    // Écritures DB. Si l'automatisation a réussi (ex: compte Entra créé), une
+    // erreur ici ne doit PAS faire perdre le résultat : le mot de passe
+    // temporaire n'existe que dans cette réponse. On répond alors 200 avec
+    // `warning` plutôt qu'un 500 sans `result`.
+    let updated = []
+    try {
+      if (!error) {
+        // Sauvegarder le résultat éventuel (id du compte créé)
+        if (result?.id && check.step_id === 'create_account') {
+          await fastify.db.query(
+            'UPDATE onboardings SET entra_id_created = $1, updated_at = now() WHERE id = $2',
+            [result.id, ob.id]
+          )
+        }
+        // Le mot de passe temporaire n'est JAMAIS stocké (ni notes, ni
+        // auto_result) : il est renvoyé une seule fois dans la réponse de
+        // cette action, à l'admin qui l'a déclenchée.
+        if (result?.temporaryPassword) {
+          const note = `Compte créé : ${result.userPrincipalName}`
+          await fastify.db.query(
+            'UPDATE onboardings SET notes = COALESCE(notes || E\'\\n\', \'\') || $1 WHERE id = $2',
+            [note, ob.id]
+          )
+        }
+      }
 
-    await updateOnboardingStatus(fastify, req.params.id)
+      ;({ rows: updated } = await fastify.db.query(`
+        UPDATE onboarding_checks
+        SET done = $1, done_at = $2, done_by = $3,
+            auto_result = $4, auto_error = $5, updated_at = now()
+        WHERE id = $6 RETURNING *
+      `, [!error, error ? null : new Date(), displayName,
+          error ? null : JSON.stringify(withoutSecrets(result)), error,
+          req.params.checkId]))
+
+      await updateOnboardingStatus(fastify, req.params.id)
+    } catch (dbErr) {
+      if (error) throw dbErr
+      fastify.log.error({ err: dbErr.message, step: check.step_id, onboarding: ob.id },
+        'Automatisation réussie mais enregistrement DB échoué')
+      warning = `Automatisation exécutée, mais son enregistrement dans Opale a échoué (${dbErr.message}) : ` +
+        'l\'étape reste à valider manuellement.' +
+        (result?.temporaryPassword
+          ? ' Notez l\'identifiant du compte et le mot de passe temporaire : ils ne sont conservés nulle part.'
+          : '')
+    }
 
     if (error) return reply.code(500).send({ error, check: updated[0] })
     // Réponse porteuse du mot de passe temporaire : jamais mise en cache.
     reply.header('Cache-Control', 'no-store')
-    reply.send({ check: updated[0], result })
+    reply.send({ check: updated[0] ?? null, result, ...(warning ? { warning } : {}) })
   })
 }
 
