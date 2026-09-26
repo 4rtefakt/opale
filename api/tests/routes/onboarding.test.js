@@ -7,10 +7,10 @@
 // - PATCH /:id/checks/:checkId (toggle manuel + auto-status)
 //
 // POST /:id/checks/:checkId/auto : fait appel à graph.js (createEntraUser,
-// addUserToGroup, disableEntraUser, revokeUserSessions). Ces fonctions sont
-// mockées via un module-level spy pour les tests qui les touchent (step_id
-// inconnu → 500 sans Graph), ou skippées avec note pour les cas nécessitant
-// une vraie réponse Graph (create_account, assign_license, etc.).
+// addUserToGroup, disableEntraUser, revokeUserSessions). create_account est
+// couvert en stubbant globalThis.fetch (utilisé par graph.js pour le token
+// et pour Graph) ; step_id inconnu → 500 sans aucun appel Graph. Les autres
+// étapes Graph (assign_license, disable_account…) ne sont pas couvertes.
 
 import { test, before, after, mock } from 'node:test'
 import assert from 'node:assert/strict'
@@ -381,9 +381,8 @@ test('PATCH /:id/checks — tous done → onboarding.status passe à done', { sk
 })
 
 // ─── POST /:id/checks/:checkId/auto — étape inconnue → 500 ───────────────────
-// Les étapes auto réelles (create_account, assign_license, etc.) appellent
-// graph.js. Elles sont skippées car elles nécessitent un mock de module ESM
-// non trivial. L'étape inconnue peut être testée sans mock.
+// Les étapes auto réelles appellent graph.js : create_account est testé plus
+// bas via un stub de globalThis.fetch. L'étape inconnue se teste sans stub.
 
 test('POST /:id/checks/:checkId/auto — step_id inconnu → 500 sans appel Graph', { skip: SKIP }, async () => {
   const token = await adminToken('oid-ob-auto-unknown')
@@ -422,11 +421,9 @@ test('POST /:id/checks/:checkId/auto — check inexistant → 404', { skip: SKIP
   assert.equal(res.statusCode, 404)
 })
 
-// NOTE SKIPPÉE : POST auto avec steps Graph réels (create_account, assign_license,
-// disable_account, revoke_sessions) ne sont pas testés ici car ils nécessitent
-// un mock de module ESM (lib/graph.js) non supporté nativement par node:test
-// sans instrumentation supplémentaire. À tester en E2E ou via un refactor
-// qui injecte les fonctions Graph comme dépendances.
+// NOTE : create_account est couvert ci-dessous (stub de globalThis.fetch,
+// sans mock de module ESM). assign_license, assign_groups, disable_account et
+// revoke_sessions ne sont pas couverts : même technique applicable si besoin.
 
 // ─── create_account : mot de passe temporaire jamais stocké ──────────────────
 // createEntraUser (lib/graph.js) passe par globalThis.fetch : on le stubbe
