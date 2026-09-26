@@ -3,6 +3,7 @@ package pty
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -108,12 +109,29 @@ func pumpInput(r io.Reader, w *wsWriter) {
 }
 
 // readLoop relaie les frames serveur vers stdout/stderr jusqu'à la fin de
-// session : nil à la fermeture du socket ou sur une frame de fin, l'erreur
-// d'une frame illisible sinon.
-func readLoop(conn *websocket.Conn, stdout, stderr io.Writer) error {
-	for {
-		_, raw, err := conn.ReadMessage()
+// session. nil : fin normale (frame exit, socket fermé sans motif). Erreur :
+// frame illisible, ou socket fermé avec un motif sans frame préalable —
+// taken-over, agent-disconnected, server-shutdown, browser-frame-too-large
+// (api/modules/remote/lib/console-sessions.js close()). La session a alors
+// été coupée de l'extérieur : code de sortie non nul, et le motif n'est
+// affiché qu'une fois, par cobra, terminal restauré.
+func readLoop(conn *websocket.Conn, stdout, stderr io.Writer) (err error) {
+	defer func() {
+		// Retour à la ligne : le « Error: » de cobra ne doit pas atterrir au
+		// milieu de la dernière ligne distante.
 		if err != nil {
+			fmt.Fprint(stderr, "\r\n")
+		}
+	}()
+	for {
+		_, raw, rerr := conn.ReadMessage()
+		if rerr != nil {
+			// error et exit terminent la boucle : un motif lu ici n'a pas
+			// encore été expliqué à l'admin.
+			var ce *websocket.CloseError
+			if errors.As(rerr, &ce) && ce.Text != "" {
+				return fmt.Errorf("déconnecté : %s", ce.Text)
+			}
 			return nil
 		}
 		if end, err := handleFrame(raw, stdout, stderr); end || err != nil {
@@ -166,9 +184,11 @@ func handleFrame(raw []byte, stdout, stderr io.Writer) (end bool, err error) {
 		fmt.Fprintf(stderr, "\r\n[erreur] %s\r\n", frameText(msg.Data))
 		return true, nil
 	case "exit":
-		// Le serveur ferme le socket juste après (routes/agent.js) : on
-		// continue de lire, c'est la fermeture qui termine la session.
+		// Dernière frame de la session : l'agent l'émet après sa dernière
+		// sortie et routes/agent.js ferme le socket juste derrière (avec le
+		// même motif, déjà affiché ici).
 		fmt.Fprintf(stderr, "\r\n[Session terminée : %s]\r\n", exitReason(msg.Data))
+		return true, nil
 	case "close":
 		return true, nil
 	}

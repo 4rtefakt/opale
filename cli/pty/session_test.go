@@ -3,6 +3,7 @@ package pty
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -89,10 +90,15 @@ func feed(frames ...string) frameRun {
 }
 
 func TestHandleFrame_ConsoleTransport(t *testing.T) {
+	// exit (dernière frame) termine la session, sans erreur.
 	r := feed(consoleFrames...)
-	if r.err != nil || r.end {
-		t.Fatalf("session console interrompue : end=%v err=%v", r.end, r.err)
+	if r.err != nil || !r.end {
+		t.Fatalf("session console : end=%v err=%v, want end=true err=nil", r.end, r.err)
 	}
+	if r = feed(consoleFrames[:len(consoleFrames)-1]...); r.end || r.err != nil {
+		t.Fatalf("session console interrompue avant exit : end=%v err=%v", r.end, r.err)
+	}
+	r = feed(consoleFrames...)
 	if want := "PS C:\\Windows\\system32> héllo\r\n"; r.stdout != want {
 		t.Errorf("sortie console = %q, want %q", r.stdout, want)
 	}
@@ -288,17 +294,23 @@ func serveFrames(frames []string, closePayload []byte) func(c *websocket.Conn) {
 // runReadLoop fait tourner la vraie boucle de lecture sur un socket gorilla.
 func runReadLoop(t *testing.T, frames []string, closePayload []byte) frameRun {
 	t.Helper()
-	conn := dialTestWS(t, serveFrames(frames, closePayload))
 	var out, errOut bytes.Buffer
+	err := runReadLoopTo(t, frames, closePayload, &out, &errOut)
+	return frameRun{stdout: out.String(), stderr: errOut.String(), err: err}
+}
+
+func runReadLoopTo(t *testing.T, frames []string, closePayload []byte, stdout, stderr io.Writer) error {
+	t.Helper()
+	conn := dialTestWS(t, serveFrames(frames, closePayload))
 	errc := make(chan error, 1)
-	go func() { errc <- readLoop(conn, &out, &errOut) }()
+	go func() { errc <- readLoop(conn, stdout, stderr) }()
 	select {
 	case err := <-errc:
-		return frameRun{stdout: out.String(), stderr: errOut.String(), err: err}
+		return err
 	case <-time.After(5 * time.Second):
 		t.Fatal("readLoop bloquée")
 	}
-	return frameRun{}
+	return nil
 }
 
 // Câblage réel (socket, pas de TTY) : sortie des deux transports, fin propre,
@@ -325,5 +337,34 @@ func TestReadLoop_Wiring(t *testing.T) {
 	}
 	if strings.Contains(r.stdout, "APRES") {
 		t.Errorf("la session aurait dû s'arrêter à la frame illisible : stdout = %q", r.stdout)
+	}
+}
+
+// Socket fermé par le serveur avec un motif, sans frame error/exit : la CLI
+// doit dire pourquoi (comme le « Déconnecté : <motif> » du browser) et sortir
+// en erreur. Motifs de api/modules/remote/lib/console-sessions.js close().
+func TestReadLoop_CloseReasonIsReported(t *testing.T) {
+	opened := consoleFrames[:3] // status, opened, data (invite sans retour à la ligne)
+	for _, reason := range []string{"taken-over", "agent-disconnected", "server-shutdown", "browser-frame-too-large"} {
+		// Un seul flux, comme le terminal où stdout et stderr s'entrelacent.
+		var term bytes.Buffer
+		err := runReadLoopTo(t, opened, websocket.FormatCloseMessage(websocket.CloseNormalClosure, reason), &term, &term)
+		if err == nil || err.Error() != "déconnecté : "+reason {
+			t.Errorf("%s : err = %v, want « déconnecté : %s »", reason, err, reason)
+		}
+		if !strings.HasSuffix(term.String(), "PS C:\\Windows\\system32> \r\n") {
+			t.Errorf("%s : terminal = %q, doit finir par un retour à la ligne avant le « Error: » de cobra", reason, term.String())
+		}
+	}
+
+	// Fin normale : exit puis fermeture avec le même motif → déjà expliquée,
+	// pas de « déconnecté » en plus, code 0.
+	r := runReadLoop(t, consoleFrames, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "exit"))
+	if r.err != nil || strings.Contains(r.stderr, "déconnecté") {
+		t.Errorf("exit puis close : %+v, want fin normale", r)
+	}
+	// SSH : `socket.close()` sans motif (ssh.js) → fin normale.
+	if r = runReadLoop(t, sshFrames, []byte{}); r.err != nil {
+		t.Errorf("ssh close sans motif : err = %v", r.err)
 	}
 }
