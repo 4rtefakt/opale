@@ -9,7 +9,12 @@ les schémas appliqués des deux côtés via les migrations SQL standard.
 
 - Node.js ≥ 20
 - Accès réseau aux deux bases PostgreSQL (DSN avec credentials)
-- Schéma cible déjà à jour (toutes les migrations `api/migrations/*.sql` appliquées)
+- Schéma cible déjà à jour (toutes les migrations `api/migrations/*.sql` appliquées) :
+  démarrer une fois l'API cible suffit, elle applique les migrations au
+  démarrage (runner, cf. `api/migrations/MIGRATIONS.md`) ; avec
+  `DB_AUTO_MIGRATE=false`, les appliquer à la main
+- Source et cible au **même niveau de migrations** : sur la source, démarrer
+  l'API (même version) avant la migration, ou appliquer les fichiers manquants
 - L'instance source en **lecture seule** ou en maintenance pendant la migration
 
 ## Installation
@@ -115,7 +120,8 @@ migration cross-version mineure sans bloquer.
 
 ### Tables exclues
 
-- `schema_migrations` : chaque instance gère son propre historique
+- `schema_migrations` : chaque instance gère son propre historique (table
+  du runner de migrations, remplie au démarrage de l'API cible)
 - `device_software` : cache régénéré par les agents au prochain checkin
 - `monitors`, `ticket_history` : ces tables n'existent pas dans le schéma actuel
 
@@ -167,10 +173,11 @@ Pour valider le script sans toucher à la prod :
 docker run -d --rm --name mig-src -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_DB=src postgres:16-alpine
 docker run -d --rm --name mig-dst -p 55433:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_DB=dst postgres:16-alpine
 
-# 2. Appliquer les migrations des deux côtés
+# 2. Appliquer les migrations des deux côtés (à la main ici ; une API Opale
+#    pointée sur ces bases le ferait au démarrage)
 for f in api/migrations/*.sql; do
-  cat "$f" | docker exec -i mig-src psql -U postgres -d src -q
-  cat "$f" | docker exec -i mig-dst psql -U postgres -d dst -q
+  cat "$f" | docker exec -i mig-src psql -v ON_ERROR_STOP=1 -U postgres -d src -q
+  cat "$f" | docker exec -i mig-dst psql -v ON_ERROR_STOP=1 -U postgres -d dst -q
 done
 
 # 3. Peupler la source (snapshot prod ou fixtures custom)

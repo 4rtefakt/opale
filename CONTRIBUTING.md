@@ -26,8 +26,8 @@ docker compose -f docker-compose.example.yml up -d
 
 The frontend has no build step — edit files in `front/` and reload.
 The API runs in a Docker container; rebuild with `docker compose build api`
-after editing `api/`. PostgreSQL migrations beyond `001_init.sql` are applied
-manually (see [INSTALL.md](INSTALL.md)).
+after editing `api/`. PostgreSQL migrations are applied by the API at startup
+(rules for writing one: [api/migrations/MIGRATIONS.md](api/migrations/MIGRATIONS.md)).
 
 For the Windows agent, see [agent-go/RECAP-pour-UI.md](agent-go/RECAP-pour-UI.md).
 

@@ -59,6 +59,7 @@ same compose network (`reverse_proxy api:3010`), trust that network's CIDR.
 | `POSTGRES_USER` | yes | `opale` | Role used by the API |
 | `POSTGRES_PASSWORD` | yes | — | No default — set a strong random secret |
 | `POSTGRES_HOST` | no | `db` | Resolves to the service name in the bundled compose |
+| `DB_AUTO_MIGRATE` | no | `true` | Apply pending `api/migrations/*.sql` files at startup, before listening (see [MIGRATIONS.md](../api/migrations/MIGRATIONS.md)). `false` = apply them by hand. Any other value stops the API at boot |
 
 ### 1.3 Frontend
 

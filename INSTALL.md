@@ -145,15 +145,23 @@ docker compose -f docker-compose.example.yml up -d
 docker compose -f docker-compose.example.yml logs -f api
 ```
 
-The first start applies `api/migrations/001_init.sql` automatically.
-Migrations `002+` are not auto-applied — run them in order:
+The API applies the database migrations itself at startup, **before** it
+starts listening: every `api/migrations/NNN_*.sql` file not yet recorded in
+the `schema_migrations` table runs in order, each in its own transaction
+(details in [api/migrations/MIGRATIONS.md](api/migrations/MIGRATIONS.md)).
+In the logs you should see one `migration appliquée` line per file, then
+`migrations : base à jour`. If a migration fails, the API logs the file,
+line and PostgreSQL error, rolls that file back and exits (Docker restarts
+it); it never serves requests on a half-migrated schema.
+
+To apply migrations by hand instead, set `DB_AUTO_MIGRATE=false` in `.env`
+and run them in order:
 
 ```bash
 for m in api/migrations/0[0-9][0-9]_*.sql; do
-  [[ "$m" == *001_init.sql ]] && continue
   echo "→ $m"
   docker compose -f docker-compose.example.yml exec -T db \
-    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$m"
+    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$m"
 done
 ```
 
@@ -265,12 +273,36 @@ git pull
 # edits visible immediately at the next page refresh
 ```
 
-**Applying a new migration**
+**Applying a new migration** — nothing to do: new files in
+`api/migrations/` are applied when the updated API starts (see §5). With
+`DB_AUTO_MIGRATE=false`, apply them by hand:
 ```bash
 docker compose -f docker-compose.example.yml exec -T db \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   < api/migrations/0NN_description.sql
 ```
+
+**First start of the migration runner on an existing instance** (a database
+whose migrations were applied by hand, without a `schema_migrations` table):
+
+1. Back up the database first:
+   ```bash
+   docker compose -f docker-compose.example.yml exec -T db \
+     pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > opale-before-runner.dump
+   ```
+2. Deploy and start the new API as usual. The runner cannot know which files
+   were really applied by hand, so it **re-runs every file once** (a warning
+   `base existante sans historique` is logged), then records them. This is
+   safe: every migration is idempotent on a populated database (tested),
+   and it also applies the files you may have missed (e.g. `071`, `075`).
+   It takes a few seconds; the API only starts listening afterwards.
+   Close any open `psql` session first: a table lock held for more than
+   60 s makes the start fail (it is retried by Docker).
+3. Check: `SELECT filename, applied_at FROM schema_migrations ORDER BY 1;`
+   lists every file.
+
+To keep applying migrations by hand, set `DB_AUTO_MIGRATE=false` before
+deploying.
 
 **One-off data migration scripts** (`api/scripts/`)
 
@@ -337,6 +369,7 @@ signature, and self-replaces atomically with rollback on failure.
 | Agent installs but no checkin | Server URL unreachable from the endpoint (firewall? mesh VPN missing?) — check `C:\ProgramData\<DataDir>\agent.log` |
 | Agent rolls back after each update | Signature verification failure — the agent expects the binary served by `/api/agent/binary` to be signed by the ed25519 key embedded at build time |
 | Push notifications don't trigger | `VAPID_EMAIL` missing or invalid — must be `mailto:…` or a bare email |
+| API exits at startup with `Migration NNN_….sql en échec` | That migration failed and was rolled back (file, line and PostgreSQL error in the log). Fix the cause (or the file), then restart: already-applied files are not re-run. A `lock_timeout` error means another session held a table lock for 60 s — close it and restart |
 
 For anything else, open an issue with the logs (`docker compose logs api`,
 agent log, browser console) — see [SECURITY.md](SECURITY.md) first if it
