@@ -293,6 +293,7 @@ export default {
   'tickets.mail_diag.cursor':        'last scan',
   'tickets.mail_diag.ingested':      'ingested',
   'tickets.mail_diag.blocked':       'blocked {since} ({attempts} attempts) by {id}: {error}',
+  'tickets.mail_diag.sent':          'Sent items',
   'tickets.mail_diag.activity':      '{days}-day activity ({n} mails)',
   'tickets.mail_diag.proposals':     'proposals',
   'tickets.mail_diag.proposals_reply':'proposals (orphan reply)',

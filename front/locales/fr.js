@@ -481,6 +481,7 @@ export default {
   'tickets.mail_diag.cursor':        'dernier scan',
   'tickets.mail_diag.ingested':      'mails ingérés',
   'tickets.mail_diag.blocked':       'bloquée {since} ({attempts} tentatives) par {id} : {error}',
+  'tickets.mail_diag.sent':          'Éléments envoyés',
   'tickets.mail_diag.activity':      'Activité sur {days} jours ({n} mails)',
   'tickets.mail_diag.proposals':     'propositions créées',
   'tickets.mail_diag.proposals_reply':'propositions (reply orphelin)',

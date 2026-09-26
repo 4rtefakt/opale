@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
-import { seedAdmin } from '../fixtures/users.js'
+import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 
 import emailRoute from '../../modules/email-bridge/routes/email.js'
 
@@ -43,27 +43,46 @@ test('GET /api/email/status : blocage en cours exposé par boîte, rien pour une
       id: 'AAMk-1', internet_message_id: '<bloque@example.com>', attempts: 7,
       error: 'panne', first_at: '2026-05-10T10:00:00.000Z', alerted: true,
     }
-    await db.query(`UPDATE settings SET value = 'a@example.com,b@example.com,c@example.com' WHERE key = 'mail.inboxes'`)
+    // Premier échec, il y a quelques secondes : transitoire, pas affiché.
+    const fresh = { ...retry, id: 'AAMk-2', attempts: 1, first_at: new Date().toISOString() }
+    await db.query(`UPDATE settings SET value = 'a@example.com,b@example.com,c@example.com,d@example.com' WHERE key = 'mail.inboxes'`)
+    await db.query(`UPDATE settings SET value = 's@example.com' WHERE key = 'mail.sent_mailboxes'`)
     await db.query(`
       INSERT INTO settings (key, value) VALUES
         ('mail.cursor.a@example.com', $1), ('mail.cursor_state.a@example.com', $2),
         ('mail.cursor.b@example.com', $1), ('mail.cursor_state.b@example.com', $3),
-        ('mail.cursor.c@example.com', $1), ('mail.cursor_state.c@example.com', $4)
+        ('mail.cursor.c@example.com', $1), ('mail.cursor_state.c@example.com', $4),
+        ('mail.cursor.d@example.com', $1), ('mail.cursor_state.d@example.com', $5),
+        ('mail.sent_cursor.s@example.com', $1), ('mail.sent_cursor_state.s@example.com', $2)
     `, [
       cursor,
       JSON.stringify({ at: cursor, done: [], retry }),
       JSON.stringify({ at: cursor, done: [], retry: null }),
       // État d'un autre curseur (curseur modifié à la main) : ignoré, comme par le worker.
       JSON.stringify({ at: '2026-05-01T00:00:00.000Z', done: [], retry }),
+      JSON.stringify({ at: cursor, done: [], retry: fresh }),
     ])
 
     const res = await fastify.inject({ method: 'GET', url: '/api/email/status', headers: { authorization: `Bearer ${token}` } })
     assert.equal(res.statusCode, 200)
-    const byAddr = Object.fromEntries(res.json().mailboxes.map(m => [m.address, m]))
-    assert.deepEqual(byAddr['a@example.com'].blocked, {
-      since: retry.first_at, attempts: 7, error: 'panne', internet_message_id: '<bloque@example.com>',
-    })
+    const body = res.json()
+    const byAddr = Object.fromEntries(body.mailboxes.map(m => [m.address, m]))
+    const expected = { since: retry.first_at, attempts: 7, error: 'panne', internet_message_id: '<bloque@example.com>' }
+    assert.deepEqual(byAddr['a@example.com'].blocked, expected)
     assert.equal(byAddr['b@example.com'].blocked, null)
     assert.equal(byAddr['c@example.com'].blocked, null)
+    assert.equal(byAddr['d@example.com'].blocked, null, 'premier échec récent : pas de faux signal')
+
+    // Éléments envoyés (mail.sent_mailboxes) : même information.
+    assert.deepEqual(body.sent_mailboxes, [{ address: 's@example.com', cursor, blocked: expected }])
+  }
+)
+
+test('GET /api/email/status : réservé aux admins (403 sinon)',
+  { skip: SKIP }, async () => {
+    const u = await seedNonAdmin(db, { entraId: 'oid-status-user', displayName: 'Status User', email: 'status-user@x' })
+    const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+    const res = await fastify.inject({ method: 'GET', url: '/api/email/status', headers: { authorization: `Bearer ${token}` } })
+    assert.equal(res.statusCode, 403)
   }
 )

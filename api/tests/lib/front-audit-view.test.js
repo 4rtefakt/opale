@@ -141,10 +141,15 @@ test('tickets : diagnostic mail → ligne rouge pour une boîte bloquée, champs
     { address: 'a@example.com', cursor: '2026-05-10T09:00:00Z', total_ingested: 3,
       blocked: { since: '2026-05-10T10:00:00.000Z', attempts: 7, error: 'panne <b>x</b>', internet_message_id: '<id@x>' } },
     { address: 'b@example.com', cursor: '2026-05-10T09:00:00Z', total_ingested: 1, blocked: null },
+  ], sent_mailboxes: [
+    { address: 'agent@example.com', cursor: '2026-05-10T09:00:00Z',
+      blocked: { since: '2026-05-10T10:00:00.000Z', attempts: 9, error: 'envoyés en panne', internet_message_id: '<s@x>' } },
   ] }
   const html = ctx.renderMailDiagConfig({ config: {} }, status)
-  const red = html.match(/<div style="color:var\(--red\)[^"]*">[^\n]*<\/div>/g) || []
-  assert.equal(red.length, 1, 'une seule boîte bloquée')
+  assert.match(html, /agent@example\.com — tickets\.mail_diag\.sent/, 'boîte des Éléments envoyés listée')
+  const red = (html.match(/<div style="color:var\(--red\)[^"]*">[^\n]*<\/div>/g) || []).filter(l => !/envoyés en panne/.test(l))
+  assert.ok(/envoyés en panne/.test(html), 'blocage des Éléments envoyés affiché')
+  assert.equal(red.length, 1, 'une seule boîte de réception bloquée')
   assert.match(red[0], /tickets\.mail_diag\.blocked/)
   assert.match(red[0], /panne &lt;b&gt;x&lt;\/b&gt;/, 'erreur échappée')
   assert.match(red[0], /&lt;id@x&gt;/, 'internet_message_id échappé')

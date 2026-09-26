@@ -2030,8 +2030,13 @@ function renderMailDiagConfig(diag, status) {
   const c = diag.config || {}
   const cls = c.classifier || {}
   const mailboxes = status?.mailboxes || []
+  const sentMailboxes = status?.sent_mailboxes || []
 
   const dot = (on) => `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${on?'#0d9488':'#dc2626'};vertical-align:1px;margin-right:6px"></span>`
+  // Mail en échec qui retient le curseur (cf. api email-bridge/lib/poll-cursor.js).
+  const blockedLine = (b) => b ? `<div style="color:var(--red);font-weight:600">${esc(t('tickets.mail_diag.blocked', {
+    since: b.since ? formatRelative(b.since) : '?', attempts: b.attempts,
+    id: b.internet_message_id || '?', error: b.error || '?' }))}</div>` : ''
 
   return `
     <section style="margin-bottom:16px">
@@ -2046,13 +2051,10 @@ function renderMailDiagConfig(diag, status) {
         <div>${dot(cls.enabled && cls.url && cls.model)} ${t('tickets.mail_diag.classifier')}</div>
         <div style="color:var(--text-secondary)">${cls.enabled ? `${esc(cls.model || '(?)')} @ ${esc(cls.url || '(?)')}` : t('tickets.mail_diag.classifier_off')}</div>
       </div>
-      ${mailboxes.length ? `
+      ${mailboxes.length || sentMailboxes.length ? `
         <div style="margin-top:8px;font-size:11px;color:var(--text-tertiary)">
-          ${mailboxes.map(m => `<div>${esc(m.address)} — ${t('tickets.mail_diag.cursor')}: ${m.cursor ? formatRelative(m.cursor) : '(init)'} · ${m.total_ingested} ${t('tickets.mail_diag.ingested')}</div>${
-            // Mail en échec qui retient le curseur (cf. api email-bridge/lib/poll-cursor.js).
-            m.blocked ? `<div style="color:var(--red);font-weight:600">${esc(t('tickets.mail_diag.blocked', {
-              since: m.blocked.since ? formatRelative(m.blocked.since) : '?', attempts: m.blocked.attempts,
-              id: m.blocked.internet_message_id || '?', error: m.blocked.error || '?' }))}</div>` : ''}`).join('')}
+          ${mailboxes.map(m => `<div>${esc(m.address)} — ${t('tickets.mail_diag.cursor')}: ${m.cursor ? formatRelative(m.cursor) : '(init)'} · ${m.total_ingested} ${t('tickets.mail_diag.ingested')}</div>${blockedLine(m.blocked)}`).join('')}
+          ${sentMailboxes.map(m => `<div>${esc(m.address)} — ${t('tickets.mail_diag.sent')} · ${t('tickets.mail_diag.cursor')}: ${m.cursor ? formatRelative(m.cursor) : '(init)'}</div>${blockedLine(m.blocked)}`).join('')}
         </div>` : ''}
     </section>`
 }
