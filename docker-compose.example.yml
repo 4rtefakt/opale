@@ -67,6 +67,7 @@ services:
       # seule fois, après le premier `up` avec la nouvelle image :
       #   docker compose -f docker-compose.example.yml exec -u root api \
       #     chown -R node:node /app/data/ticket-attachments
+      # Procédure complète de mise à jour : docs/UPGRADING.md.
       - attachments_data:/app/data/ticket-attachments
 
   db:

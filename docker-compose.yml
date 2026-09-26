@@ -12,8 +12,9 @@ services:
     # privées en 600 → une fois sur l'hôte :
     #   sudo chgrp 1000 agent-go/keys/signing.key agent-go/keys/laps.key
     #   sudo chmod 640  agent-go/keys/signing.key agent-go/keys/laps.key
-    # (sans ça : plus de signature des binaires → plus d'auto-update agent,
-    # et lecture LAPS en erreur).
+    # (sans ça : plus de signature des binaires → plus d'auto-update agent
+    # ni d'enrôlement, et lecture LAPS en erreur). Procédure complète de
+    # mise à jour : docs/UPGRADING.md.
     volumes:
       - ./front:/app/front:ro
       # Agent Go : binaire et clé privée de signature montés à part pour
