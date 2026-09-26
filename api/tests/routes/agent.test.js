@@ -316,7 +316,7 @@ test('POST /checkin — un déploiement pending d\'un package approuvé est dist
   const deps = res.json().deployments
   assert.equal(deps.length, 1)
   // Forme exacte attendue par les agents déployés (agent-go/types.go Deployment).
-  // package_id : ajouté pour 2.15.0 ; un agent ≤ 2.14 ignore ce champ
+  // package_id : ajouté pour 2.15.1 ; un agent plus ancien ignore ce champ
   // inconnu (json.Unmarshal sans DisallowUnknownFields), les autres clés
   // sont inchangées.
   assert.deepEqual(Object.keys(deps[0]).sort(), [

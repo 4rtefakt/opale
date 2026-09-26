@@ -71,7 +71,7 @@ func classifyExecResult(err error, ps *os.ProcessState, runCtxErr, parentErr err
 
 // postInstallDetection exécute via run le detection_script d'un déploiement
 // (exit 0 = installé) et rattache le résultat au package déployé. Sans
-// package_id (serveur antérieur à 2.15.0) : aucun résultat — l'id du
+// package_id (serveur antérieur à 2.15.1) : aucun résultat — l'id du
 // déploiement n'est pas un id de package ; la détection périodique prend
 // le relais.
 func postInstallDetection(ctx context.Context, d Deployment, run func(context.Context, string) (int, string)) (DetectionResult, bool) {

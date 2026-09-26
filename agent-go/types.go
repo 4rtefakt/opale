@@ -178,7 +178,7 @@ type Command struct {
 
 type Deployment struct {
 	DeploymentID      string `json:"deployment_id"`
-	// PackageID — package déployé (envoyé depuis 2.15.0 ; vide avec un
+	// PackageID — package déployé (envoyé depuis 2.15.1 ; vide avec un
 	// serveur plus ancien). Sert à la détection post-install.
 	PackageID         string `json:"package_id"`
 	Name              string `json:"name"`

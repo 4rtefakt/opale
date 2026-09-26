@@ -165,7 +165,7 @@ function isMaintenanceWindowActive(w, now) {
 // Première version de l'agent Go qui traite toute réponse de checkin :
 // celle du re-checkin post-déploiement, et les travaux d'une réponse qui
 // propose une mise à jour (exécutés avant de l'appliquer). Cf. checkin.
-const AGENT_PROCESSES_EVERY_RESPONSE = '2.15.0'
+const AGENT_PROCESSES_EVERY_RESPONSE = '2.15.1'
 
 function semverGt(a, b) {
   const pa = String(a).split('.').map(Number)
@@ -1280,13 +1280,15 @@ export default async function agentRoute(fastify) {
     // une ré-approbation ou un retour en draft pendant le checkin est pris
     // en compte. Ordre d'envoi : celui de la sélection.
     //
-    // Agent < 2.15.0 (ou sans version) : il ignore la réponse (1) du
+    // Agent < 2.15.1 (ou sans version) : il ignore la réponse (1) du
     // re-checkin qui remonte ses résultats de déploiement, (2) de tout
-    // checkin qui lui propose une mise à jour (il retourne avant les travaux,
-    // mise à jour réussie ou non ; faute de redémarrage effectif, jusqu'au
-    // reboot du poste). Ce qui y serait réservé ne tournerait jamais
-    // ('running' → timeout) : rien n'est réservé, les lignes restent
-    // 'pending' pour le checkin suivant, dont il traite la réponse.
+    // checkin qui lui propose une mise à jour (il retourne avant les travaux :
+    // ≤ 2.14 mise à jour réussie ou non, et faute de redémarrage effectif
+    // jusqu'au reboot du poste ; 2.15.0, build de main antérieur à ces
+    // correctifs, dès le binaire permuté). Ce qui y serait réservé ne
+    // tournerait jamais ('running' → timeout) : rien n'est réservé, les
+    // lignes restent 'pending' pour le checkin suivant, dont il traite la
+    // réponse.
     const legacyAgent = !agent_version || semverGt(AGENT_PROCESSES_EVERY_RESPONSE, agent_version)
     const responseIgnored = legacyAgent && (agentUpdate !== null || deployment_results.length > 0)
     let scriptsToSend = []
@@ -1333,7 +1335,7 @@ export default async function agentRoute(fastify) {
       commands:   scriptsToSend.map(r => ({ id: r.id, name: r.script_name, script: r.script_content })),
       deployments: deploymentsToSend.map(r => ({
         deployment_id:       r.deployment_id,
-        // Ajout 2.15.0 (détection post-install) ; ignoré par les agents
+        // Ajout 2.15.1 (détection post-install) ; ignoré par les agents
         // plus anciens (champ JSON inconnu).
         package_id:          r.package_id,
         name:                r.name,
