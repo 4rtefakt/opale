@@ -26,6 +26,10 @@ const _CATEGORIES = {
     in: ['token_created', 'token_revoked', 'agent_bootstrap_exchange', 'admin_granted', 'admin_revoked',
          'agent_bootstrap_exchange_refused', 'agent_token_bind_refused', 'agent_token_bound'],
   },
+  mail: {
+    label: 'Pont mail',
+    in: ['mail_ingest_abandoned'],
+  },
   agent_conn: {
     label: 'Connexion agent (bruyant)',
     in: ['agent_ws_connect', 'agent_ws_disconnect', 'agent_checkin', 'setup_script'],
@@ -141,6 +145,7 @@ const _BADGE = {
   agent_console_takeover:    ['b-prog',   'ti-hand-grab'],
   ssh_open:                  ['b-prog',   'ti-terminal'],
   ssh_close:                 ['b-done',   'ti-terminal'],
+  mail_ingest_abandoned:     ['b-prog',   'ti-mail-x'],
 }
 
 // Libellés FR pour les actions remontées dans les badges. Si absent,
@@ -160,6 +165,7 @@ const _ACTION_LABEL = {
   agent_bootstrap_exchange_refused: 'échange bootstrap refusé',
   agent_token_bind_refused:         'liaison token refusée',
   agent_token_bound:                'token lié au poste',
+  mail_ingest_abandoned:            'mail abandonné (ingestion)',
 }
 
 function _formatDuration(s) {
@@ -199,6 +205,14 @@ function _summary(action, details) {
   if (action === 'agent_bootstrap_exchange_refused') return [details.reason, details.bootstrap_label, details.serial].filter(Boolean).join(' · ')
   if (action === 'agent_token_bind_refused')         return [details.reason, details.token_label, details.serial].filter(Boolean).join(' · ')
   if (action === 'agent_token_bound')                return [details.token_label, details.serial].filter(Boolean).join(' · ')
+  // Mail entrant abandonné par le worker (cf. email-bridge/lib/poll-cursor.js).
+  // Champs issus du mail et d'une erreur DB : le résumé est échappé au rendu.
+  if (action === 'mail_ingest_abandoned') {
+    const date  = details.date ? `mail du ${String(details.date).replace('T', ' ').replace(/(\.\d+)?Z$/, ' UTC')}` : ''
+    const error = details.error ? String(details.error) : ''
+    return [date, details.internet_message_id, error.length > 160 ? error.slice(0, 160) + '…' : error]
+      .filter(Boolean).join(' · ')
+  }
   return ''
 }
 

@@ -93,7 +93,7 @@ async function saveCursor(db, updatedBy, entries) {
 
 async function abandon(db, log, { mailbox, message, key, dateField, attempts, error, tag }) {
   const details = {
-    level: 'warn',
+    level: 'error',   // mail non ingéré : filtre « error » du journal d'audit
     worker: tag,
     internet_message_id: message.internetMessageId || null,
     graph_message_id: key,

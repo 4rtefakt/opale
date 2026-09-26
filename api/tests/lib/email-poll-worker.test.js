@@ -376,6 +376,7 @@ test('pollOnce : mail « poison » → abandonné après MAX_INGEST_ATTEMPTS éc
       assert.equal(audits[0].by_user, 'system')
       assert.equal(audits[0].details.internet_message_id, poison.internetMessageId)
       assert.equal(audits[0].details.attempts, ticksBeforeAge + 1)
+      assert.equal(audits[0].details.level, 'error', 'mail perdu : niveau error dans le journal')
       assert.match(audits[0].details.error, /échec simulé/)
 
       assert.deepEqual(await ingestedIds(), ids([next]), 'la boîte n\'est plus bloquée')
