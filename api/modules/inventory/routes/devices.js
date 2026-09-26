@@ -234,6 +234,9 @@ export default async function devicesRoute(fastify) {
       [req.params.id]
     )
     if (!rows.length) return reply.code(404).send({ error: 'Poste introuvable' })
+    // Tokens du poste supprimés en cascade : la WS agent encore ouverte
+    // (authentifiée à l'upgrade seulement) est fermée.
+    fastify.agentWs?.evictDevice(req.params.id, 'device-deleted')
     const { displayName } = fastify.getUserIdentity(req)
     await logAudit(fastify.db, fastify.log, { action: 'device_deleted', byUser: displayName, target: rows[0].hostname })
     reply.code(204).send()

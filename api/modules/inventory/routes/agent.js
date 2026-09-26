@@ -274,7 +274,7 @@ export default async function agentRoute(fastify) {
       // Trouver ou créer le device par hostname. FOR UPDATE : sérialise deux
       // exchanges concurrents sur le même poste (check + émission atomiques).
       let deviceId
-      let revokedUnused = 0
+      let revokedUnused = []
       const { rows: dev } = await client.query(
         'SELECT id, serial FROM devices WHERE hostname = $1 FOR UPDATE', [hostname]
       )
@@ -285,16 +285,17 @@ export default async function agentRoute(fastify) {
         } else {
           deviceId = dev[0].id
           // Jamais les tokens de rotation (émis à un agent déjà authentifié).
-          const { rowCount } = await client.query(
+          const { rows: revoked } = await client.query(
             `UPDATE agent_tokens SET revoked_at = now()
                WHERE device_id = $1
                  AND is_bootstrap = FALSE
                  AND revoked_at IS NULL
                  AND last_used_at IS NULL
-                 AND created_by IS DISTINCT FROM 'agent-rotation'`,
+                 AND created_by IS DISTINCT FROM 'agent-rotation'
+             RETURNING id`,
             [deviceId]
           )
-          revokedUnused = rowCount
+          revokedUnused = revoked.map(r => r.id)
         }
       } else {
         const { rows: nd } = await client.query(
@@ -362,6 +363,10 @@ export default async function agentRoute(fastify) {
         .send({ error: CLAIM_REFUSAL_MESSAGES[refused.reason] })
     }
 
+    // Tokens révoqués ci-dessus : la WS n'enregistre pas last_used_at, un
+    // tube peut être ouvert avec l'un d'eux (premier checkin pas encore fait).
+    fastify.agentWs?.evictTokens(result.revokedUnused, 'token-revoked')
+
     logAudit(fastify.db, fastify.log, {
       action:  'agent_bootstrap_exchange',
       byUser:  hostname,
@@ -369,7 +374,7 @@ export default async function agentRoute(fastify) {
       details: {
         bootstrap_label: result.bootstrapLabel,
         serial,
-        ...(result.revokedUnused ? { revoked_unused_tokens: result.revokedUnused } : {}),
+        ...(result.revokedUnused.length ? { revoked_unused_tokens: result.revokedUnused.length } : {}),
       },
     })
 
@@ -699,7 +704,7 @@ export default async function agentRoute(fastify) {
     // sont révoqués : un seul credential vivant par poste.
     if (!token.device_id && lookup.rows[0]) {
       let refusal = null
-      let revokedUnused = 0
+      let revokedUnused = []
       const client = await fastify.db.connect()
       try {
         await client.query('BEGIN')
@@ -727,10 +732,11 @@ export default async function agentRoute(fastify) {
                  AND is_bootstrap = FALSE
                  AND revoked_at IS NULL
                  AND last_used_at IS NULL
-                 AND created_by IS DISTINCT FROM 'agent-rotation'`,
+                 AND created_by IS DISTINCT FROM 'agent-rotation'
+             RETURNING id`,
             [lookup.rows[0].id, token.id]
           )
-          revokedUnused = revoked.rowCount
+          revokedUnused = revoked.rows.map(r => r.id)
         }
         await client.query('COMMIT')
       } catch (err) {
@@ -740,6 +746,8 @@ export default async function agentRoute(fastify) {
         client.release()
       }
       if (!refusal) {
+        // Même cas qu'à l'exchange : fermer la WS éventuelle des tokens révoqués.
+        fastify.agentWs?.evictTokens(revokedUnused, 'token-revoked')
         await logAudit(fastify.db, fastify.log, {
           action:  'agent_token_bound',
           byUser:  clipStr(hostname, 255),
@@ -748,7 +756,7 @@ export default async function agentRoute(fastify) {
             token_id:    token.id,
             token_label: token.label,
             serial:      clipStr(serial, 100),
-            ...(revokedUnused ? { revoked_unused_tokens: revokedUnused } : {}),
+            ...(revokedUnused.length ? { revoked_unused_tokens: revokedUnused.length } : {}),
           },
         })
       }
@@ -1394,6 +1402,9 @@ export default async function agentRoute(fastify) {
     }, HEARTBEAT_INTERVAL_MS)
 
     socket.on('message', (raw) => {
+      // Credential invalidé (cf. AgentWSRegistry.evict) : ws émet encore
+      // les frames reçues pendant le handshake de close, on les ignore.
+      if (conn.revokedReason) return
       // Garde-fou taille avant parsing JSON pour éviter qu'un agent
       // compromis n'épuise la mémoire avec une frame géante.
       if (raw.length > WS_FRAME_MAX_BYTES) {

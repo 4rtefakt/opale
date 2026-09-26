@@ -13,24 +13,26 @@ async function agentWsPlugin(fastify) {
   const registry = new AgentWSRegistry(fastify.log)
   fastify.decorate('agentWs', registry)
 
-  // Centralisation de l'audit log des disconnects superseded : émis par
-  // register() avant le close, donc avant que le onClose du handler ws ne
-  // fire (et peut-être ne fire jamais si le peer a déjà coupé). Les autres
-  // cas (close normal, 1006, heartbeat, etc.) restent gérés par le onClose
-  // du handler car le code WS n'est connu qu'à ce moment-là.
+  // Centralisation de l'audit log des disconnects initiés côté serveur
+  // (superseded, token révoqué / expiré, poste supprimé) : émis par
+  // register() / evict() avant le close, donc avant que le onClose du
+  // handler ws ne fire (et peut-être ne fire jamais si le peer a déjà
+  // coupé). Les autres cas (close normal, 1006, heartbeat, etc.) restent
+  // gérés par le onClose du handler car le code WS n'est connu qu'à ce
+  // moment-là.
   registry.on('disconnect', (deviceId, conn, info) => {
-    if (info?.reason !== 'superseded') return
+    if (!info?.reason) return
     const durationSeconds = Math.round((Date.now() - (conn.connectedAt || Date.now())) / 1000)
     fastify.db.query(
       `INSERT INTO audit_logs (action, by_user, target, details)
        VALUES ('agent_ws_disconnect', $1, $2, $3)`,
       [conn.hostname, deviceId, JSON.stringify({
         code: info.code,
-        reason: 'superseded',
+        reason: info.reason,
         duration_seconds: durationSeconds,
         token_id: conn.tokenId,
       })]
-    ).catch(err => fastify.log.warn({ err: err.message }, 'agent_ws_disconnect (superseded) audit failed'))
+    ).catch(err => fastify.log.warn({ err: err.message, reason: info.reason }, 'agent_ws_disconnect audit failed'))
   })
 
   fastify.addHook('onClose', async () => {
