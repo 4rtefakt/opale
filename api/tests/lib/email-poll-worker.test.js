@@ -424,6 +424,35 @@ test('pollOnce : panne systémique (tous les mails échouent, settings OK) → a
   }
 )
 
+test('pollOnce : suspect à la seconde du curseur, retour arrière (panne systémique) → le suspect n\'est pas sauté',
+  { skip: SKIP }, async () => {
+    // x et le suspect partagent la seconde du curseur : le retour arrière
+    // doit restaurer `done` tel qu'avant le suspect (copie), sinon le
+    // suspect y reste et est ensuite écarté comme « déjà traité ».
+    const x = fakeMail({ receivedDateTime: at(1) })
+    const suspect = fakeMail({ receivedDateTime: at(1) })
+    const next = fakeMail({ receivedDateTime: at(2) })
+    useGraph({ inbox: [x, suspect, next] })
+    await failMappingInsertFor(suspect)
+    await failMappingInsertFor(next)
+    const clock = fakeClock()
+    try {
+      for (let tick = 0; tick < 8; tick++) {   // 40 min : la branche systémique joue
+        await pollOnce(db, null, { now: clock.now })
+        clock.advance(TICK_MS)
+      }
+      assert.equal((await cursorState()).done.includes(suspect.id), false, 'suspect absent de done après retour arrière')
+
+      await db.query(`TRUNCATE TABLE test_failing_mail`)
+      await pollOnce(db, null, { now: clock.now })
+      assert.deepEqual((await ingestedIds()).sort(), ids([x, suspect, next]).sort(), 'rien perdu')
+      assert.equal((await abandonedAudits()).length, 0)
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
 test('pollOnce : panne systémique, mail suivant déjà ingéré (rien d\'écrit) → pas de verdict, aucun abandon',
   { skip: SKIP }, async () => {
     // Copie d'un mail déjà ingéré (règle « copier vers un dossier ») :
