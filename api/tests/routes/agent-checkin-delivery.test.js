@@ -3,7 +3,11 @@
 //     le retire de sa file qu'après acquittement : réponse perdue → renvoi) ;
 //     le serveur doit l'accepter sans effet de bord (pas de changement de
 //     statut, pas de doublon, pas de 4xx/5xx qui ferait renvoyer l'agent
-//     indéfiniment).
+//     indéfiniment) ;
+//   - un agent < 2.15.0 ignore la réponse du re-checkin qui remonte ses
+//     résultats de déploiement : rien n'y est réservé, les travaux partent
+//     au checkin suivant (un agent ≥ 2.15.0 traite cette réponse).
+//     Réponse portant une mise à jour : cf. agent-checkin-update-jobs.test.js.
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -159,4 +163,73 @@ test('POST /checkin — résultats inconnus ou mal formés : 200 (jamais renvoy�
     ],
   })
   assert.equal(res.statusCode, 200, res.body)
+})
+
+// ─── Re-checkin post-déploiement (plus d'un lot) ────────────────────────────
+
+async function queueScript(deviceId, name) {
+  const { rows: [r] } = await db.query(
+    `INSERT INTO script_executions (device_id, script_name, script_content, status, mode)
+     VALUES ($1, $2, 'hostname', 'pending', 'agent') RETURNING id`,
+    [deviceId, name]
+  )
+  return r.id
+}
+
+async function statusOf(table, id) {
+  const { rows: [r] } = await db.query(`SELECT status FROM ${table} WHERE id = $1`, [id])
+  return r.status
+}
+
+// 11 déploiements en attente (lots de 10) : le 1er checkin en livre 10 ; le
+// re-checkin qui remonte leurs résultats trouve le 11e et un script mis en
+// file entre-temps. Renvoie ce que ce re-checkin a livré.
+async function followUpScenario(hostname, agentVersion) {
+  const device = await seedDevice(db, { hostname })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const deps = []
+  for (let i = 1; i <= 11; i++) {
+    deps.push((await snapshottedDeployment(device.id, `${hostname} Pkg ${i}`)).dep)
+  }
+  const version = agentVersion ? { agent_version: agentVersion } : {}
+
+  const first = await checkin(secret, { hostname, ...version })
+  assert.equal(first.statusCode, 200, first.body)
+  const delivered = first.json().deployments.map(d => d.deployment_id)
+  assert.equal(delivered.length, 10)
+  const eleventh = deps.find(d => !delivered.includes(d.id))
+  const scriptId = await queueScript(device.id, `${hostname} diag`)
+
+  const followUp = await checkin(secret, {
+    hostname, ...version,
+    deployment_results: delivered.map(id => ({ deployment_id: id, exit_code: 0, output: 'ok' })),
+  })
+  assert.equal(followUp.statusCode, 200, followUp.body)
+  for (const id of delivered) assert.equal(await statusOf('deployments', id), 'success')
+  return { device, secret, version, eleventh, scriptId, body: followUp.json() }
+}
+
+test('POST /checkin — agent < 2.15.0 : rien n\'est réservé dans la réponse du re-checkin (ignorée), tout part au checkin suivant', { skip: SKIP }, async () => {
+  // Version absente (agent qui ne la remonte pas) : traitée comme ancienne.
+  for (const [hostname, agentVersion] of [['PC-FOLLOWUP-214', '2.14.0'], ['PC-FOLLOWUP-NOVER', null]]) {
+    const { secret, version, eleventh, scriptId, body } = await followUpScenario(hostname, agentVersion)
+    assert.deepEqual(body.deployments, [], `${hostname} : déploiement réservé dans une réponse ignorée`)
+    assert.deepEqual(body.commands, [], `${hostname} : script réservé dans une réponse ignorée`)
+    assert.equal(await statusOf('deployments', eleventh.id), 'pending')
+    assert.equal(await statusOf('script_executions', scriptId), 'pending')
+
+    // Checkin suivant (réponse traitée par l'agent) : livrés, une seule fois.
+    const next = await checkin(secret, { hostname, ...version })
+    assert.equal(next.statusCode, 200, next.body)
+    assert.deepEqual(next.json().deployments.map(d => d.deployment_id), [eleventh.id])
+    assert.deepEqual(next.json().commands.map(c => c.id), [scriptId])
+    assert.equal(await statusOf('deployments', eleventh.id), 'running')
+  }
+})
+
+test('POST /checkin — agent ≥ 2.15.0 : le re-checkin réserve le lot suivant (réponse traitée)', { skip: SKIP }, async () => {
+  const { eleventh, scriptId, body } = await followUpScenario('PC-FOLLOWUP-215', '2.15.0')
+  assert.deepEqual(body.deployments.map(d => d.deployment_id), [eleventh.id])
+  assert.deepEqual(body.commands.map(c => c.id), [scriptId])
+  assert.equal(await statusOf('deployments', eleventh.id), 'running')
 })
