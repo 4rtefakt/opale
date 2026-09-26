@@ -172,9 +172,13 @@ export default async function consoleRoute(fastify) {
     // session) : son disconnect est passé avant l'enregistrement de la
     // session, qui serait liée à une connexion morte (browser bloqué sur
     // « Ouverture… », poste marqué occupé). Pas d'await depuis create().
-    if (fastify.agentWs.get(grant.deviceId) !== agentConn) {
+    const currentConn = fastify.agentWs.get(grant.deviceId)
+    if (currentConn !== agentConn) {
       sendBrowser('error', 'Agent déconnecté pendant l\'ouverture de la console')
-      await fastify.consoleSessions.close(session.id, agentConn.revokedReason || 'agent-disconnected')
+      // Raison de l'évincement si connue ; une autre connexion en place =
+      // reconnexion de l'agent (supersede).
+      const reason = agentConn.revokedReason || (currentConn ? 'superseded' : 'agent-disconnected')
+      await fastify.consoleSessions.close(session.id, reason)
       return
     }
 

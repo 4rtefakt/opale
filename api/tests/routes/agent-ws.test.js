@@ -794,7 +794,7 @@ test('console : agent reconnecté pendant la création de la session → erreur 
   let agent2
   const reconnected = duringSessionInsert(async () => { agent2 = await connectAgent(tok.secret, device.id) })
   const browser = await openWs(`/api/console/${device.id}?nonce=${g.json().nonce}`)
-  await assertConsoleAborted(device, browser, 'agent-disconnected')
+  await assertConsoleAborted(device, browser, 'superseded')
   await reconnected()
 
   // La nouvelle connexion sert une nouvelle console normalement.
