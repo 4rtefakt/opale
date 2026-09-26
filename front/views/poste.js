@@ -985,6 +985,8 @@ function initGraphListeners() {
   })
 }
 
+// type : eth | wifi | netbird, ou null quand l'API ne reconnaît pas la valeur
+// remontée par l'agent → pas de badge (icône par défaut).
 function netifRow(iface) {
   const icon = iface.type === 'wifi' ? 'ti-wifi' : iface.type === 'netbird' ? 'ti-network' : 'ti-plug-connected'
   return `<div class="netif-row">
@@ -993,7 +995,7 @@ function netifRow(iface) {
       <div style="font-size:12px;font-weight:500">${esc(iface.adapter || '—')}</div>
       <div style="font-size:11px;color:var(--text-tertiary)">${esc(iface.ip || '—')} · ${esc(iface.mac || '—')}</div>
     </div>
-    <span class="badge">${esc(iface.type)}</span>
+    ${iface.type ? `<span class="badge">${esc(iface.type)}</span>` : ''}
   </div>`
 }
 
