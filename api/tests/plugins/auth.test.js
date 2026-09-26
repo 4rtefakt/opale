@@ -19,7 +19,7 @@ import Fastify from 'fastify'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
-import authPlugin, { makeJwksGetter } from '../../plugins/auth.js'
+import authPlugin, { makeJwksGetter, JWT_ALGORITHMS } from '../../plugins/auth.js'
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from 'jose'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip auth suite'
@@ -434,6 +434,12 @@ test('authenticate — JWT signé en PS256 avec la clé RSA (JWK Entra sans alg)
   } finally {
     await app.close()
   }
+})
+
+test('JWT_ALGORITHMS — liste figée (non modifiable à l\'exécution)', () => {
+  assert.deepEqual([...JWT_ALGORITHMS], ['RS256'])
+  assert.ok(Object.isFrozen(JWT_ALGORITHMS))
+  assert.throws(() => { 'use strict'; JWT_ALGORITHMS.push('PS256') }, TypeError)
 })
 
 test('makeJwksGetter — JWKS distant construit une seule fois, pas de reconstruction périodique', (t) => {

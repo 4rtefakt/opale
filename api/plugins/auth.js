@@ -8,7 +8,7 @@ const JWKS_CACHE_MS = 10 * 60 * 1000
 // champ `alg` : sans liste d'algorithmes, jose accepterait aussi une
 // signature PS256 faite avec la même clé RSA. On épingle l'algorithme
 // attendu (défense en profondeur contre la confusion d'algorithmes).
-export const JWT_ALGORITHMS = ['RS256']
+export const JWT_ALGORITHMS = Object.freeze(['RS256'])
 
 // Retourne la fonction qui fournit le JWKS à jwtVerify. En test, `jwks`
 // (createLocalJWKSet) évite le fetch HTTPS. En prod, le JWKS distant
