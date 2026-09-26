@@ -13,10 +13,12 @@
 //             mails déjà ingérés sont dédoublonnés par internet_message_id ;
 //   - done  : ids Graph des mails déjà traités (ou volontairement ignorés) à
 //             l'horodatage `at` ;
-//   - retry : { id, attempts, error, first_at, memo } du mail en échec qui bloque
-//             la boîte. Clé = id Graph : il change si le mail est déplacé
-//             de dossier pendant les reprises, le compteur repart alors de
-//             zéro (retarde l'abandon, ne perd rien — acceptable).
+//   - retry : { id, internet_message_id, attempts, error, first_at, memo,
+//             alerted } du mail en échec qui bloque la boîte. Clé = id
+//             Graph : il change si le mail est déplacé de dossier pendant
+//             les reprises, le compteur repart alors de zéro (retarde
+//             l'abandon, ne perd rien — acceptable). `alerted` : blocage
+//             systémique déjà signalé à l'audit.
 //
 // Le listing est INCLUSIF (`ge at`) : un `gt` sautait pour toujours les
 // mails de même horodatage que le dernier traité (coupure de page, mail
@@ -56,7 +58,9 @@
 //     au-delà du mail, cf. l'internetMessageId dans le log).
 // L'abandon est journalisé (log error + audit `mail_ingest_abandoned`). Le
 // mail reste ré-ingérable en reculant le curseur (les autres mails sont
-// alors dédoublonnés par internet_message_id).
+// alors dédoublonnés par internet_message_id). Un blocage systémique est
+// signalé une fois par l'audit `mail_ingest_blocked` (avec la reprise
+// manuelle en SQL), puis en log error à chaque tick.
 
 import { logAudit } from '../../core/lib/audit.js'
 
@@ -96,6 +100,43 @@ async function saveCursor(db, updatedBy, entries) {
     VALUES ${values.join(', ')}
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by
   `, [...entries.flat(), updatedBy])
+}
+
+// Boîte bloquée par une panne probablement systémique : une ligne d'audit
+// (niveau error) avec de quoi agir. `log` = texte affiché dans le panneau
+// dépliable du journal d'audit ; `recovery_sql` = dernier recours si le
+// mail est lui-même irrécupérable (deux mails poison consécutifs).
+async function alertBlocked(db, log, { mailbox, cursorKey, message, dateField, record, nextError, tag }) {
+  const ts = Date.parse(message[dateField])
+  const sqlStr = s => `'${String(s).replace(/'/g, "''")}'`
+  const recoverySql = Number.isFinite(ts)
+    ? `UPDATE settings SET value = ${sqlStr(new Date(Math.floor(ts / 1000) * 1000 + 1000).toISOString())} WHERE key = ${sqlStr(cursorKey)};`
+    : null
+  const details = {
+    level: 'error',
+    worker: tag,
+    internet_message_id: record.internet_message_id,
+    graph_message_id: record.id,
+    date: message[dateField] || null,
+    since: record.first_at,
+    attempts: record.attempts,
+    error: record.error,
+    next_error: nextError,
+    recovery_sql: recoverySql,
+    log: [
+      `Ingestion bloquée : le mail ${record.internet_message_id || record.id} échoue depuis ${record.first_at} ` +
+        `(${record.attempts} tentatives) et le mail suivant échoue aussi — panne probablement systémique, aucun mail abandonné.`,
+      `Erreur : ${record.error}`,
+      `Mail suivant : ${nextError}`,
+      `1. Corriger la cause (base, droits, trigger, contrainte…) : l'ingestion reprend seule, rien n'est perdu.`,
+      ...(recoverySql ? [
+        `2. Seulement si ce mail est lui-même irrécupérable (deux mails poison consécutifs), passer au-delà en SQL`,
+        `   (saute aussi les autres mails de la même seconde) :`,
+        `   ${recoverySql}`,
+      ] : []),
+    ].join('\n'),
+  }
+  await logAudit(db, log, { action: 'mail_ingest_blocked', byUser: 'system', target: mailbox, details })
 }
 
 async function abandon(db, log, { mailbox, message, key, dateField, attempts, error, tag }) {
@@ -181,9 +222,15 @@ export async function pollMailboxCursor(db, log, {
             // dépassés depuis — exclus ou déjà traités — n'ont rien écrit).
             ({ at, done, retry } = suspect.rollback)
             log?.error({
-              mailbox, internetMessageId: suspect.message.internetMessageId,
+              mailbox, internetMessageId: retry.internet_message_id,
               attempts: retry.attempts, since: retry.first_at, err: retry.error, next_err: error,
             }, `${tag}: le mail suivant échoue aussi — panne probablement systémique, aucun abandon (boîte bloquée jusqu'au rétablissement)`)
+            // Une seule ligne d'audit par blocage (`alerted` gardé dans
+            // l'état, effacé avec `retry` quand la boîte repart).
+            if (!retry.alerted) {
+              await alertBlocked(db, log, { mailbox, cursorKey, message: suspect.message, dateField, record: retry, nextError: error, tag })
+              retry.alerted = true
+            }
             suspect = null
             blocked = true
             break
@@ -191,7 +238,11 @@ export async function pollMailboxCursor(db, log, {
           const same = retry?.id === key
           const attempts = (same ? retry.attempts : 0) + 1
           const firstAt = (same && retry.first_at) || new Date(now()).toISOString()
-          const record = { id: key, attempts, error, first_at: firstAt, memo: r.memo ?? (same ? retry.memo : undefined) }
+          const record = {
+            id: key, internet_message_id: m.internetMessageId || null, attempts, error, first_at: firstAt,
+            memo: r.memo ?? (same ? retry.memo : undefined),
+            alerted: (same && retry.alerted) || undefined,
+          }
           if (attempts < MAX_INGEST_ATTEMPTS || now() - Date.parse(firstAt) < MIN_POISON_AGE_MS) {
             // Curseur laissé avant ce mail : retenté au tick suivant.
             retry = record

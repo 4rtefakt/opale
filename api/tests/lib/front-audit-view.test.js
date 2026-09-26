@@ -77,12 +77,44 @@ test('audit : mail_ingest_abandoned → libellé, badge et résumé (date, inter
   assert.match(html, /ERROR/, 'niveau error affiché')
 })
 
-test('audit : catégorie « Pont mail » → filtre sur mail_ingest_abandoned', async () => {
+const BLOCKED = {
+  action: 'mail_ingest_blocked',
+  by_user: 'system',
+  target: 'helpdesk@example.com',
+  created_at: '2026-05-10T10:31:00Z',
+  details: {
+    level: 'error',
+    internet_message_id: '<c"d@mail.example.com>',
+    since: '2026-05-10T10:00:00.000Z',
+    attempts: 7,
+    error: 'panne <script>x</script>',
+    next_error: 'panne aussi',
+    recovery_sql: "UPDATE settings SET value = '2026-05-10T09:00:02.000Z' WHERE key = 'mail.cursor.o''brien@example.com';",
+    log: "Ingestion bloquée…\n   UPDATE settings SET value = '2026-05-10T09:00:02.000Z' WHERE key = 'mail.cursor.o''brien@example.com';",
+  },
+}
+
+test('audit : mail_ingest_blocked → libellé, résumé échappé, reprise SQL dans le panneau dépliable', async () => {
+  const { ctx, getElementById } = loadAuditView({ rows: [BLOCKED] })
+  await ctx.renderAudit({ innerHTML: '' })
+  const html = getElementById('audit-body').innerHTML
+
+  assert.match(html, /boîte mail bloquée/)
+  assert.doesNotMatch(html, /ti-dots/, 'badge dédié')
+  assert.match(html, /bloquée depuis 2026-05-10 10:00:00 UTC/)
+  assert.match(html, /7 tentatives/)
+  assert.match(html, /&lt;c&quot;d@mail\.example\.com&gt;/, 'internet_message_id échappé')
+  assert.match(html, /panne &lt;script&gt;x&lt;\/script&gt;/, 'erreur échappée')
+  assert.doesNotMatch(html, /<script>/)
+  assert.match(html, /<pre>[^<]*UPDATE settings SET value = &#39;2026-05-10T09:00:02\.000Z&#39;/, 'SQL de reprise dans le panneau, échappé')
+})
+
+test('audit : catégorie « Pont mail » → filtre sur les actions du pont mail', async () => {
   const { ctx, auditCalls } = loadAuditView({ rows: [ABANDONED], category: 'mail' })
   const container = { innerHTML: '' }
   await ctx.renderAudit(container)
 
   assert.match(container.innerHTML, /<option value="mail" selected>/, 'catégorie proposée dans le filtre')
   assert.equal(auditCalls.length, 1)
-  assert.deepEqual(auditCalls[0].actions_in.split(','), ['mail_ingest_abandoned'])
+  assert.deepEqual(auditCalls[0].actions_in.split(',').sort(), ['mail_ingest_abandoned', 'mail_ingest_blocked'])
 })

@@ -28,7 +28,7 @@ const _CATEGORIES = {
   },
   mail: {
     label: 'Pont mail',
-    in: ['mail_ingest_abandoned'],
+    in: ['mail_ingest_abandoned', 'mail_ingest_blocked'],
   },
   agent_conn: {
     label: 'Connexion agent (bruyant)',
@@ -146,6 +146,7 @@ const _BADGE = {
   ssh_open:                  ['b-prog',   'ti-terminal'],
   ssh_close:                 ['b-done',   'ti-terminal'],
   mail_ingest_abandoned:     ['b-prog',   'ti-mail-x'],
+  mail_ingest_blocked:       ['b-prog',   'ti-mail-pause'],
 }
 
 // Libellés FR pour les actions remontées dans les badges. Si absent,
@@ -166,6 +167,7 @@ const _ACTION_LABEL = {
   agent_token_bind_refused:         'liaison token refusée',
   agent_token_bound:                'token lié au poste',
   mail_ingest_abandoned:            'mail abandonné (ingestion)',
+  mail_ingest_blocked:              'boîte mail bloquée',
 }
 
 function _formatDuration(s) {
@@ -184,6 +186,16 @@ function _reasonShort(reason) {
   const note = (reason.note || '').slice(0, 60)
   const ellipsis = (reason.note || '').length > 60 ? '…' : ''
   return note ? `motif: ${reason.category} — ${note}${ellipsis}` : `motif: ${reason.category}`
+}
+
+// Horodatage ISO → « AAAA-MM-JJ HH:MM:SS UTC » (résumés du pont mail).
+function _utc(iso) {
+  return String(iso).replace('T', ' ').replace(/(\.\d+)?Z$/, ' UTC')
+}
+
+function _truncate(s, n) {
+  const str = s ? String(s) : ''
+  return str.length > n ? str.slice(0, n) + '…' : str
 }
 
 function _summary(action, details) {
@@ -205,13 +217,18 @@ function _summary(action, details) {
   if (action === 'agent_bootstrap_exchange_refused') return [details.reason, details.bootstrap_label, details.serial].filter(Boolean).join(' · ')
   if (action === 'agent_token_bind_refused')         return [details.reason, details.token_label, details.serial].filter(Boolean).join(' · ')
   if (action === 'agent_token_bound')                return [details.token_label, details.serial].filter(Boolean).join(' · ')
-  // Mail entrant abandonné par le worker (cf. email-bridge/lib/poll-cursor.js).
-  // Champs issus du mail et d'une erreur DB : le résumé est échappé au rendu.
+  // Pont mail (cf. email-bridge/lib/poll-cursor.js) : mail abandonné, ou
+  // boîte bloquée (panne systémique ; reprise SQL dans `details.log`, affiché
+  // dans le panneau dépliable). Champs issus du mail et d'une erreur DB : le
+  // résumé est échappé au rendu.
   if (action === 'mail_ingest_abandoned') {
-    const date  = details.date ? `mail du ${String(details.date).replace('T', ' ').replace(/(\.\d+)?Z$/, ' UTC')}` : ''
-    const error = details.error ? String(details.error) : ''
-    return [date, details.internet_message_id, error.length > 160 ? error.slice(0, 160) + '…' : error]
-      .filter(Boolean).join(' · ')
+    const date = details.date ? `mail du ${_utc(details.date)}` : ''
+    return [date, details.internet_message_id, _truncate(details.error, 160)].filter(Boolean).join(' · ')
+  }
+  if (action === 'mail_ingest_blocked') {
+    const since = details.since ? `bloquée depuis ${_utc(details.since)}` : ''
+    const attempts = details.attempts ? `${details.attempts} tentatives` : ''
+    return [since, attempts, details.internet_message_id, _truncate(details.error, 120)].filter(Boolean).join(' · ')
   }
   return ''
 }

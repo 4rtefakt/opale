@@ -114,6 +114,13 @@ async function failMappingInsertFor(mail) {
   await db.query(`INSERT INTO test_failing_mail VALUES ($1)`, [mail.internetMessageId])
 }
 
+async function blockedAudits() {
+  const { rows } = await db.query(
+    `SELECT target, details FROM audit_logs WHERE action = 'mail_ingest_blocked' ORDER BY created_at`
+  )
+  return rows
+}
+
 async function abandonedAudits() {
   const { rows } = await db.query(
     `SELECT by_user, target, details FROM audit_logs WHERE action = 'mail_ingest_abandoned'`
@@ -415,9 +422,69 @@ test('pollOnce : panne systémique (tous les mails échouent, settings OK) → a
       const systemic = errors.filter(m => /systémique/.test(m)).length
       assert.equal(systemic, ticks - MIN_POISON_AGE_MS / TICK_MS, 'une erreur par tick une fois l\'âge minimal atteint')
 
+      // Blocage visible : UNE ligne d'audit, pas une par tick.
+      const blocked = await blockedAudits()
+      assert.equal(blocked.length, 1)
+      assert.equal(blocked[0].target, MAILBOX)
+      const d = blocked[0].details
+      assert.equal(d.level, 'error')
+      assert.equal(d.internet_message_id, mails[0].internetMessageId)
+      assert.equal(d.since, new Date(Date.parse('2026-05-10T10:00:00Z')).toISOString())
+      assert.equal(d.attempts, MIN_POISON_AGE_MS / TICK_MS + 1)
+      assert.match(d.error, /échec simulé/)
+      assert.match(d.next_error, /échec simulé/)
+      assert.match(d.recovery_sql, new RegExp(`UPDATE settings SET value = '[^']+' WHERE key = 'mail\\.cursor\\.${MAILBOX.replace('.', '\\.')}';`))
+      assert.match(d.log, /aucun mail abandonné/)
+
       await db.query(`TRUNCATE TABLE test_failing_mail`)
       await pollOnce(db, log, { now: clock.now })
       assert.deepEqual(await ingestedIds(), ids(mails), 'tout est ingéré au rétablissement')
+      assert.equal((await cursorState()).retry, null, 'boîte repartie : alerte réarmée')
+
+      // Nouvelle panne plus tard : nouvelle (et unique) alerte.
+      const later = Array.from({ length: 2 }, (_, i) => fakeMail({ receivedDateTime: at(100 + i) }))
+      graph.inbox.push(...later)
+      for (const m of later) await failMappingInsertFor(m)
+      for (let tick = 0; tick < 12; tick++) {
+        await pollOnce(db, log, { now: clock.now })
+        clock.advance(TICK_MS)
+      }
+      assert.equal((await blockedAudits()).length, 2)
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollOnce : boîte bloquée par deux mails poison consécutifs → le SQL de reprise de l\'audit la débloque',
+  { skip: SKIP }, async () => {
+    // Limite assumée du coupe-circuit : indiscernable d'une panne
+    // systémique. Le SQL fourni par l'audit passe le premier mail ; le
+    // second est ensuite abandonné normalement (le mail suivant écrit).
+    const p1 = fakeMail({ receivedDateTime: at(1) })
+    const p2 = fakeMail({ receivedDateTime: at(2) })
+    const good = fakeMail({ receivedDateTime: at(3) })
+    useGraph({ inbox: [p1, p2, good] })
+    await failMappingInsertFor(p1)
+    await failMappingInsertFor(p2)
+    const clock = fakeClock()
+    try {
+      for (let tick = 0; tick < 8; tick++) {
+        await pollOnce(db, null, { now: clock.now })
+        clock.advance(TICK_MS)
+      }
+      const [alert] = await blockedAudits()
+      assert.ok(alert, 'blocage signalé')
+      assert.deepEqual(await ingestedIds(), [])
+
+      await db.query(alert.details.recovery_sql)
+      for (let tick = 0; tick < 8; tick++) {
+        await pollOnce(db, null, { now: clock.now })
+        clock.advance(TICK_MS)
+      }
+      const abandoned = await abandonedAudits()
+      assert.deepEqual(abandoned.map(a => a.details.internet_message_id), [p2.internetMessageId])
+      assert.deepEqual(await ingestedIds(), ids([good]))
     } finally {
       graph.restore()
     }
