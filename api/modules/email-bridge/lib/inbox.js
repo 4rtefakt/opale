@@ -8,6 +8,7 @@
 import { extractMailBodyText, htmlToText } from './body-text.js'
 import { getMessage } from './graph-mail.js'
 import { matchSender } from './match-sender.js'
+import { stripNul } from './sanitize.js'
 import { syncRequester, addDeviceToTicket } from '../../tickets/lib/relations.js'
 
 // Strip standard des préfixes Outlook sur le subject pour un titre lisible.
@@ -68,6 +69,9 @@ export async function createTicketFromMapping(client, log, { mappingId, byEntraI
       'inbox.createTicketFromMapping: fetch full body échoué, fallback bodyPreview')
   }
   if (!bodyText) bodyText = htmlToText(graphMessage.bodyPreview || '')
+  // Corps complet venu de Graph : caractères NUL retirés (refusés par
+  // Postgres → 500 sinon), cf. sanitize.js.
+  bodyText = stripNul(bodyText)
 
   // Match expéditeur → suggère un requester + device. Pas bloquant non plus
   // (les colonnes restent NULL si pas de match).
