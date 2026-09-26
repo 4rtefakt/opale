@@ -340,6 +340,7 @@ export async function pollMailboxCursor(db, log, {
           if (resumed) {
             // Il échoue encore : la recherche de verdict reprend là où elle
             // s'était arrêtée (mails suivants déjà vus : rien d'écrit).
+            suspect.jumped = true
             jumpTo = resumed
             break
           }
@@ -351,6 +352,24 @@ export async function pollMailboxCursor(db, log, {
           const { attempts, error } = suspect.rollback.retry
           await abandon(db, log, { mailbox, message: suspect.message, key: suspect.key, dateField, attempts, error, tag })
           abandoned++
+          if (suspect.jumped) {
+            // La recherche avait sauté à une position gardée : un mail devenu
+            // visible entre-temps DANS la plage déjà parcourue (réponse
+            // Outlook synchronisée en retard, mail sorti des Indésirables…)
+            // n'a pas été listé. Nouveau passage depuis juste après le
+            // suspect (abandonné → marqué traité) avant d'avancer : les mails
+            // de la plage sont revus (déjà ingérés / non rattachés : rien
+            // d'écrit), dans les bornes du tick — le curseur n'avance que
+            // jusqu'où ce passage est allé.
+            const sTs = Date.parse(suspect.message[dateField])
+            const back = { at: suspect.rollback.at, done: new Set(suspect.rollback.done) }
+            if (sTs > back.at) { back.at = sTs; back.done = new Set() }
+            back.done.add(suspect.key)
+            jumpTo = { at: new Date(back.at).toISOString(), done: [...back.done] }
+            retry = null
+            suspect = null
+            break
+          }
           suspect = null
         }
       }

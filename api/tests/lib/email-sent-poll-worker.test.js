@@ -211,9 +211,17 @@ test('pollSentOnce : poison suivie de 260 réponses déjà présentes (doublons)
       assert.ok((await ticketContents()).includes('Réponse suivante'), 'réponse suivante ajoutée')
       const { rows } = await db.query(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'mail_ingest_abandoned'`)
       assert.equal(rows[0].n, 1, 'poison abandonnée')
-      const refetched = dups.filter(d => graph.calls.filter(u => u.includes(`/messages/${encodeURIComponent(d.id)}`)).length > 1)
-      assert.equal(refetched.length, 0, 'aucun doublon relu (getMessage) deux fois')
+      // Au verdict, la plage parcourue est revue une fois (mails visibles en
+      // retard) à 50 mails par tick : on laisse finir ce passage.
+      for (let tick = 0; tick < 8 && await cursorMs() < Date.parse(at(400)); tick++) {
+        await pollSentOnce(db, null, { now })
+        t += 5 * 60_000
+      }
       assert.equal(await cursorMs(), Date.parse(at(400)))
+      // Pas de relecture à chaque tick pendant l'attente : au plus deux
+      // lectures par doublon (recherche du verdict, puis passage au verdict).
+      const refetched = dups.filter(d => graph.calls.filter(u => u.includes(`/messages/${encodeURIComponent(d.id)}`)).length > 2)
+      assert.equal(refetched.length, 0, 'aucun doublon relu plus de deux fois (getMessage)')
     } finally {
       graph.restore()
     }
@@ -248,6 +256,41 @@ test('pollSentOnce : verdict attendu sur plusieurs ticks puis échec du mail sui
       assert.deepEqual(await ticketContents(), ['Réponse A', 'Réponse B'])
       const { rows: after } = await db.query(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'mail_ingest_abandoned'`)
       assert.equal(after[0].n, 0, 'le suspect n\'est pas abandonné au rétablissement')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollSentOnce : réponse visible en retard DANS la plage déjà parcourue pour le verdict → ajoutée, sans doublon',
+  { skip: SKIP }, async () => {
+    // Outlook hors ligne : la réponse est synchronisée tard, avec un
+    // sentDateTime (horloge du poste) entre le suspect et la position de
+    // recherche gardée. La reprise à cette position ne la liste jamais : au
+    // verdict, on repasse donc depuis juste après le suspect.
+    const poison = sentReply(1, 'Réponse poison')
+    const perso = Array.from({ length: 20 }, (_, i) => fakeMail({
+      sentDateTime: at(10 + i), conversationId: `perso-${i}`, subject: `Perso ${i}`,
+      from: { emailAddress: { address: MAILBOX } },
+    }))
+    graph = installFakeGraph({ sent: [poison, ...perso] })
+    await db.query(`INSERT INTO test_failing_mail VALUES ($1)`, [poison.internetMessageId])
+    let t = Date.parse('2026-05-10T10:00:00Z')
+    const now = () => t
+    try {
+      for (let tick = 0; tick < 8; tick++) {   // suspect ; recherche gardée après les 20 mails perso
+        await pollSentOnce(db, null, { now })
+        t += 5 * 60_000
+      }
+      graph.sent.push(sentReply(5, 'Réponse synchronisée en retard'), sentReply(100, 'Réponse suivante'))
+      for (let tick = 0; tick < 4; tick++) {
+        await pollSentOnce(db, null, { now })
+        t += 5 * 60_000
+      }
+      assert.deepEqual(await ticketContents(), ['Réponse synchronisée en retard', 'Réponse suivante'], 'les deux ajoutées, une fois chacune')
+      const { rows } = await db.query(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'mail_ingest_abandoned'`)
+      assert.equal(rows[0].n, 1, 'poison abandonnée')
+      assert.equal(await cursorMs(), Date.parse(at(100)))
     } finally {
       graph.restore()
     }

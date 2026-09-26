@@ -646,6 +646,38 @@ test('pollOnce : panne systémique, mail suivant déjà ingéré (rien d\'écrit
   }
 )
 
+test('pollOnce : mail sorti des Indésirables dans la plage parcourue pour le verdict → ingéré au verdict',
+  { skip: SKIP }, async () => {
+    // « Courrier légitime » : le mail passe d'Indésirables (exclu) à la
+    // Réception, nouvel id, dans la plage déjà parcourue. Sans nouveau
+    // passage depuis le suspect, il ne serait jamais ingéré.
+    const poison = fakeMail({ receivedDateTime: at(1) })
+    const junk = fakeMail({ receivedDateTime: at(5), parentFolderId: 'junk-id' })
+    const sent = Array.from({ length: 3 }, (_, i) => fakeMail({ receivedDateTime: at(10 + i), parentFolderId: 'sent-id' }))
+    useGraph({ inbox: [poison, junk, ...sent] })
+    await failMappingInsertFor(poison)
+    const clock = fakeClock()
+    try {
+      for (let tick = 0; tick < 8; tick++) {
+        await pollOnce(db, null, { now: clock.now })
+        clock.advance(TICK_MS)
+      }
+      junk.id = `moved-${junk.id}`
+      junk.parentFolderId = 'inbox-id'
+      const next = fakeMail({ receivedDateTime: at(100) })
+      graph.inbox.push(next)
+      for (let tick = 0; tick < 4; tick++) {
+        await pollOnce(db, null, { now: clock.now })
+        clock.advance(TICK_MS)
+      }
+      assert.deepEqual((await ingestedIds()).sort(), ids([junk, next]).sort())
+      assert.equal((await abandonedAudits()).length, 1)
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
 test('pollOnce : mail en échec sans mail suivant → pas abandonné (rien à débloquer), abandonné dès qu\'un mail suivant passe',
   { skip: SKIP }, async () => {
     const poison = fakeMail({ receivedDateTime: at(1) })
