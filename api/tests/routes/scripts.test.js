@@ -448,10 +448,24 @@ test('GET /executions/device/:deviceId — device sans executions → total 0', 
 
 const { Server: SshServer, utils: sshUtils } = ssh2
 
+// utils.generateKeyPairSync('ed25519') de ssh2 produit environ 0,2 % de clés
+// que son propre parseur refuse (« Malformed OpenSSH private key », mesuré :
+// 12 sur 5 000) : c'était la cause des échecs intermittents de ces tests
+// (clé cliente illisible → exécution en 'error' en quelques ms). On
+// régénère jusqu'à obtenir une clé lisible. Sans effet sur la prod (clés
+// générées par ssh-keygen).
+function ed25519KeyPair() {
+  for (let i = 0; i < 20; i++) {
+    const k = sshUtils.generateKeyPairSync('ed25519')
+    if (!(sshUtils.parseKey(k.private) instanceof Error)) return k
+  }
+  throw new Error('ssh2 : aucune clé ed25519 lisible générée')
+}
+
 // Serveur SSH local qui accepte toute authentification et répond à exec
 // par `output` puis le code de sortie donné.
 async function fakeSshServer(t, { output, exitCode = 0 }) {
-  const hostKey = sshUtils.generateKeyPairSync('ed25519')
+  const hostKey = ed25519KeyPair()
   const server = new SshServer({ hostKeys: [hostKey.private] }, (client) => {
     client.on('error', () => {})
     client.on('authentication', (ctx) => ctx.accept())
@@ -498,7 +512,7 @@ async function execRows(scriptId) {
 
 test('POST /:id/exec — sortie SSH > 10 000 caractères : ligne finalisée (tronquée), plus de running bloqué', { skip: SKIP, timeout: 15000 }, async (t) => {
   const port = await fakeSshServer(t, { output: 'o'.repeat(12000) })
-  const clientKey = sshUtils.generateKeyPairSync('ed25519')
+  const clientKey = ed25519KeyPair()
   withEnv(t, { SSH_PORT: String(port), SSH_USER: 'opale', SSH_PRIVATE_KEY_B64: Buffer.from(clientKey.private).toString('base64') })
   const token = await adminToken('oid-sc-exec-ssh-long')
   const script = await seedScript({ name: 'SSH long' })
@@ -513,7 +527,7 @@ test('POST /:id/exec — sortie SSH > 10 000 caractères : ligne finalisée (tro
   assert.match(res.body, /"type":"end"/)
   const rows = await execRows(script.id)
   assert.equal(rows.length, 1)
-  assert.equal(rows[0].status, 'success')
+  assert.equal(rows[0].status, 'success', `sortie : ${rows[0].output?.slice(0, 300)}`)
   assert.equal(rows[0].len, 10000, 'sortie tronquée à la taille de la colonne')
 })
 
