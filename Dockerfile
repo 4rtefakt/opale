@@ -24,9 +24,12 @@ RUN chmod +x setup.sh && ./setup.sh
 FROM node:22-alpine AS runtime
 WORKDIR /app
 
-# Installation des dépendances API uniquement (pas devDependencies).
-COPY api/package.json ./
-RUN npm install --omit=dev && npm cache clean --force
+# Dépendances API de prod (pas de devDependencies), installées depuis le
+# lockfile : `npm ci` installe exactement les versions testées en CI et
+# échoue si package.json et package-lock.json divergent (au lieu de
+# résoudre les dernières versions au moment du build).
+COPY api/package.json api/package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Code de l'API.
 COPY api/ ./
