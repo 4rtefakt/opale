@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -282,5 +283,40 @@ func TestDoCheckin_ResultsBatchBoundedBelowBodyLimit(t *testing.T) {
 	}
 	if short := pendingDeploymentBatch(&State{PendingDeployments: []DeploymentResult{{Output: "ok"}}}); short[0].Output != "ok" {
 		t.Fatalf("sortie courte modifiée : %q", short[0].Output)
+	}
+}
+
+// truncateMiddle coupe début ET fin sur des frontières de caractères :
+// caractères de 1 à 4 octets, décalés de 0 à 3 octets (en tête ou en
+// queue), pour que chaque coupure tombe à toutes les positions possibles
+// à l'intérieur d'un caractère.
+func TestTruncateMiddle_UTF8BoundariesBothSides(t *testing.T) {
+	const limit = 101
+	for _, ch := range []string{"a", "é", "€", "😀"} {
+		for headPad := 0; headPad < 4; headPad++ {
+			for tailPad := 0; tailPad < 4; tailPad++ {
+				for limitDelta := 0; limitDelta < 4; limitDelta++ {
+					s := strings.Repeat("x", headPad) + strings.Repeat(ch, 200) + strings.Repeat("y", tailPad)
+					l := limit + limitDelta
+					out := truncateMiddle(s, l)
+					name := fmt.Sprintf("%q tête+%d queue+%d limite %d", ch, headPad, tailPad, l)
+					if !utf8.ValidString(out) {
+						t.Fatalf("%s : UTF-8 invalide %q", name, out)
+					}
+					if len(out) > l {
+						t.Fatalf("%s : %d octets > %d", name, len(out), l)
+					}
+					head, tail, ok := strings.Cut(out, "\n[… sortie tronquée …]\n")
+					if !ok || !strings.HasPrefix(s, head) || !strings.HasSuffix(s, tail) {
+						t.Fatalf("%s : pas un début + marqueur + fin de l'original : %q", name, out)
+					}
+					// Au plus un caractère perdu de chaque côté par l'alignement.
+					half := (l - len("\n[… sortie tronquée …]\n")) / 2
+					if len(head) < half-3 || len(tail) < half-3 {
+						t.Fatalf("%s : coupure trop large (tête %d, queue %d, moitié %d)", name, len(head), len(tail), half)
+					}
+				}
+			}
+		}
 	}
 }
