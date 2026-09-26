@@ -31,16 +31,25 @@ consumer; the frontend gets a curated subset via `GET /env.js`.
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `TRUST_PROXY` | recommended behind a proxy | off | Proxies trusted to set `X-Forwarded-For`, so the API sees the real client IP (used by rate limiting). Comma-separated proxy IPs/CIDRs (recommended, e.g. `172.16.0.0/12` for a Docker bridge network), a hop count (`1`), or `true` (trust any `X-Forwarded-For` — avoid). Invalid values stop the API at boot |
+| `TRUST_PROXY` | **yes in production behind a reverse proxy** | off | Proxies trusted to set `X-Forwarded-For`, so the API sees the real client IP (used by rate limiting). Comma-separated proxy IPs/CIDRs (recommended, e.g. `172.16.0.0/12` for a Docker bridge network), a hop count (`1`), or `true` (trust any `X-Forwarded-For` — avoid). Invalid values stop the API at boot |
 
-Without it, every request behind Caddy/nginx carries the proxy's IP, so all
-clients share the same rate-limit buckets (e.g. `/api/agent/exchange-token`
-10/min and `/api/agent/setup-log` 60/min for the whole fleet). Only set it if
-the API port is reachable **solely** through the proxy (bind it to
-`127.0.0.1` or keep it off the public network): otherwise a client connecting
-directly could forge `X-Forwarded-For`. With the API in Docker behind a
-host-level proxy, the peer address the API sees is the Docker bridge gateway
-(e.g. `172.18.0.1`), not `127.0.0.1` — trust the bridge CIDR.
+**Effectively required in production behind Caddy/nginx.** Without it, every
+request carries the proxy's IP, so all clients share the same rate-limit
+buckets: `/api/agent/exchange-token` becomes 10/min and
+`/api/agent/setup-log` 60/min **for the whole fleet**, and anyone on the
+Internet can exhaust the enrolment bucket with junk requests (enrolment DoS).
+
+**Only safe if port 3010 is reachable solely through the proxy.** Otherwise a
+client connecting to 3010 directly can forge `X-Forwarded-For` and pick its
+own rate-limit key. The stock `docker-compose.yml` publishes `3010:3010` on
+**all interfaces**: change it to `127.0.0.1:3010:3010` (host-level proxy) or
+drop the `ports:` entry (proxy in the same compose network), or firewall
+3010, **before** setting `TRUST_PROXY`.
+
+Which value: with the API in Docker behind a host-level proxy, the peer
+address the API sees is the Docker bridge gateway (e.g. `172.18.0.1`), not
+`127.0.0.1` — trust the bridge CIDR (e.g. `172.16.0.0/12`). With Caddy in the
+same compose network (`reverse_proxy api:3010`), trust that network's CIDR.
 
 ### 1.2 Database
 
