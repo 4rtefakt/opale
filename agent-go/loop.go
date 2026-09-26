@@ -31,7 +31,7 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 	// Rafraîchissement du cache runtime-config si TTL expiré (no-op
 	// sinon). Garantit que les changements UI Paramètres sont vus au
 	// cycle suivant sans attendre une rotation LAPS (30j).
-	GetRuntimeConfig(httpClient, cfg.URL, cfg.Token)
+	GetRuntimeConfig(httpClient, cfg.URL, cfg.token())
 	// Rotation token éventuelle (toutes les 30j). Non bloquante.
 	MaybeRotateToken(ctx, cfg, st)
 	// Rotation mdp admin local (LAPS-like, opt-in via cfg.LAPSEnabled).
@@ -54,9 +54,13 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 			if err := HandleAgentUpdate(c, cfg, st, resp.AgentUpdate); err != nil {
 				logError("update-fail", err, LogFields{"target_version": resp.AgentUpdate.LatestVersion})
 			}
-			// Si l'update a abouti, le service va redémarrer ; on évite de
-			// déclencher des déploiements potentiellement longs.
-			return
+			// Binaire permuté : le service va redémarrer, on évite de
+			// déclencher des déploiements potentiellement longs. Update
+			// ignorée (version déjà annulée par rollback) ou en échec : les
+			// commandes et déploiements suivent normalement.
+			if swappedVersion != "" {
+				return
+			}
 		}
 	}
 
@@ -112,20 +116,23 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 }
 
 // runDebugLoop — mode interactif (non-service). Utilisé via --debug.
+// WS persistant en parallèle du polling (cf. runAgent). Si un
+// redémarrage est demandé (binaire permuté par l'auto-update sous
+// Windows), la boucle s'arrête : l'opérateur relance l'agent.
 func runDebugLoop(ctx context.Context, cfg *Config, st *State) error {
 	logf("mode --debug : checkin immédiat puis interval %s", CheckinInterval)
-	// WS persistant en parallèle du polling. Indépendant : si le tube WS
-	// tombe, le polling continue ; si le polling échoue, le WS continue.
-	go RunWSClient(ctx, cfg)
-	runCheckin(ctx, cfg, st)
-	tick := time.NewTicker(CheckinInterval)
-	defer tick.Stop()
-	for {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
 		select {
+		case <-restartRequests:
+			logf("redémarrage demandé (nouveau binaire) : arrêt du mode --debug, relancer l'agent")
+			cancel()
 		case <-ctx.Done():
-			return nil
-		case <-tick.C:
-			runCheckin(ctx, cfg, st)
 		}
-	}
+	}()
+	runAgent(ctx, CheckinInterval,
+		func(ctx context.Context) { runCheckin(ctx, cfg, st) },
+		func(ctx context.Context) { RunWSClient(ctx, cfg) })
+	return nil
 }

@@ -2,9 +2,6 @@
 
 package main
 
-import "errors"
-
-// Stub : l'opération n'a de sens que sur Windows.
-func setLocalAdminPassword(username, password string) error {
-	return errors.New("setLocalAdminPassword : non supporté hors Windows")
-}
+// Hors Windows, pas de compte local géré : MaybeRotateAdminPassword ne fait
+// rien (et surtout n'escrowe rien) même si laps_enabled est positionné.
+func platformLAPSAccounts() lapsAccountStore { return nil }

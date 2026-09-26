@@ -59,7 +59,7 @@ func DoCheckin(ctx context.Context, cfg *Config, st *State) (*CheckinResponse, e
 	if err != nil {
 		return nil, fmt.Errorf("new request : %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.token())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent())
 
@@ -114,7 +114,7 @@ func postCommandResult(ctx context.Context, cfg *Config, executionID string, exi
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.token())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", userAgent())
 

@@ -123,8 +123,8 @@ func fetchRuntimeConfig(client *http.Client, baseURL, token string) (RuntimeConf
 // runtimeConfigFetchTimeout (réseau) — safe à appeler depuis n'importe
 // quel chemin chaud.
 func ResolveLAPSUser(cfg *Config) string {
-	if cfg != nil && cfg.URL != "" && cfg.Token != "" {
-		rc := GetRuntimeConfig(httpClient, cfg.URL, cfg.Token)
+	if tok := cfg.tokenOrEmpty(); tok != "" && cfg.URL != "" {
+		rc := GetRuntimeConfig(httpClient, cfg.URL, tok)
 		if rc.LAPSRecoveryUsername != "" {
 			return rc.LAPSRecoveryUsername
 		}

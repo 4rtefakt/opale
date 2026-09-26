@@ -45,25 +45,43 @@ func parsePinsFile(raw []byte) map[string]struct{} {
 // InsecureSkipVerify nulle part : on AJOUTE une couche de vérif, on n'en
 // remplace aucune.
 //
-// Match si AU MOINS un cert de la chaîne a un SubjectPublicKeyInfo dont
-// le SHA-256 figure dans pinSet. Permet de pinner la feuille ET/OU
-// l'intermédiaire — utile pour les rotations LE.
-func verifyPeerSPKI(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-	if len(pinSet) == 0 {
+// Match si AU MOINS un cert d'une chaîne VÉRIFIÉE (feuille → racine de
+// confiance, construite par crypto/x509) a un SubjectPublicKeyInfo dont le
+// SHA-256 figure dans pinSet. Permet de pinner la feuille ET/OU
+// l'intermédiaire / la racine — utile pour les rotations LE.
+//
+// On ignore volontairement rawCerts : c'est la liste brute envoyée par le
+// serveur, qui peut contenir des certificats supplémentaires sans rapport
+// avec la chaîne validée. Un attaquant muni d'un cert valide (CA publique)
+// pourrait y ajouter le cert public du vrai serveur pour satisfaire le pin.
+//
+// Pas de ClientSessionCache sur nos tls.Config : pas de reprise de session,
+// donc ce hook est appelé à chaque handshake.
+func verifyPeerSPKI(_ [][]byte, verifiedChains [][]*x509.Certificate) error {
+	return matchSPKIPins(pinSet, verifiedChains)
+}
+
+// matchSPKIPins — cœur de verifyPeerSPKI, pins injectables pour les tests.
+func matchSPKIPins(pins map[string]struct{}, verifiedChains [][]*x509.Certificate) error {
+	if len(pins) == 0 {
 		return nil // pinning désactivé
 	}
-	for _, raw := range rawCerts {
-		cert, err := x509.ParseCertificate(raw)
-		if err != nil {
-			continue
-		}
-		sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
-		hexStr := hex.EncodeToString(sum[:])
-		if _, ok := pinSet[strings.ToLower(hexStr)]; ok {
-			return nil
+	if len(verifiedChains) == 0 {
+		// Ne devrait jamais arriver sans InsecureSkipVerify : fail closed.
+		return errors.New("pinning SPKI : aucune chaîne vérifiée par la validation CA")
+	}
+	for _, chain := range verifiedChains {
+		for _, cert := range chain {
+			if cert == nil {
+				continue
+			}
+			sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+			if _, ok := pins[hex.EncodeToString(sum[:])]; ok {
+				return nil
+			}
 		}
 	}
-	return errors.New("aucun cert de la chaîne ne match un SPKI pinné")
+	return errors.New("aucun cert des chaînes vérifiées ne match un SPKI pinné")
 }
 
 // PinsList — utilisé par --show-pins. Retourne les pins triés.

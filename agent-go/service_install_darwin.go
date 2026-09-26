@@ -207,7 +207,7 @@ func writeInstallConfigDarwin(path, token, url string) error {
 		return fmt.Errorf("--url doit être en https:// (reçu %q)", url)
 	}
 	cfg := Config{Token: token, URL: strings.TrimRight(url, "/")}
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	data, err := json.MarshalIndent(&cfg, "", "  ")
 	if err != nil {
 		return err
 	}

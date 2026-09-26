@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+// rolledBackRetryAfter — délai avant de retenter une version annulée par
+// rollback (cf. HandleAgentUpdate).
+const rolledBackRetryAfter = 24 * time.Hour
+
 // MaxFailedSinceUpdate — au-delà de ce nombre de checkins échoués
 // consécutifs après une mise à jour, on rollback vers le binaire précédent.
 const MaxFailedSinceUpdate = 2
@@ -22,17 +26,43 @@ const MaxFailedSinceUpdate = 2
 // proposée par le serveur. Toute erreur de vérification (sha256 ou ed25519)
 // est fatale pour cette tentative — on n'écrase jamais le binaire actuel.
 //
-// Si l'update aboutit, la fonction redémarre le service et n'est jamais
-// supposée retourner (os.Exit). Sinon, retourne nil ou une erreur.
+// Si l'update aboutit, la fonction demande le redémarrage du service
+// (restartService) et retourne ; sous Windows la boucle de service quitte
+// ensuite pour être relancée par le SCM. Sinon, retourne nil ou une erreur.
 func HandleAgentUpdate(ctx context.Context, cfg *Config, st *State, upd *AgentUpdate) error {
 	if upd == nil {
 		return nil
+	}
+	if swappedVersion != "" {
+		// Binaire déjà permuté par ce process, redémarrage en attente : ne
+		// pas re-télécharger à chaque checkin (et la 2e permutation
+		// échouerait, l'image en cours d'exécution étant le .bak). On
+		// redemande le redémarrage (Windows : la boucle de service revérifie
+		// les actions de récupération, cf. runServiceLoop).
+		logInfo("update-pending-restart", "binaire déjà remplacé, en attente de redémarrage", LogFields{
+			"version": swappedVersion,
+		})
+		return restartServiceFn()
 	}
 	if upd.LatestVersion == "" || upd.SHA256 == "" || upd.Signature == "" {
 		return errors.New("agent_update incomplet (version/sha256/signature manquants)")
 	}
 	if !semverGT(upd.LatestVersion, AgentVersion) {
 		// Le serveur peut ré-envoyer la même version par paranoïa ; ignore.
+		return nil
+	}
+	if st.RolledBackVersion != "" && upd.LatestVersion == st.RolledBackVersion &&
+		time.Since(st.RolledBackAt) < rolledBackRetryAfter {
+		// Cette version a échoué ici récemment (rollback) : la réinstaller
+		// tout de suite relancerait la boucle update → 2 checkins KO →
+		// rollback, avec un téléchargement complet à chaque tour. Elle est
+		// retentée après rolledBackRetryAfter (le rollback a pu venir d'une
+		// panne serveur, pas du binaire) ; une version plus récente est
+		// acceptée immédiatement.
+		logInfo("update-skipped-rolled-back", "version annulée par rollback sur ce poste, nouvel essai plus tard", LogFields{
+			"version":     upd.LatestVersion,
+			"retry_after": st.RolledBackAt.Add(rolledBackRetryAfter).Format(time.RFC3339),
+		})
 		return nil
 	}
 	logInfo("update-start", "", LogFields{"from": AgentVersion, "to": upd.LatestVersion})
@@ -91,12 +121,22 @@ func HandleAgentUpdate(ctx context.Context, cfg *Config, st *State, upd *AgentUp
 	st.BinaryUpdatedAt = st.LastUpdateAt
 	st.Save()
 
+	swappedVersion = upd.LatestVersion
 	logInfo("update-applied", "binaire remplacé, redémarrage du service", LogFields{
 		"version": upd.LatestVersion,
 	})
-	// 7. Redémarrer le service — n'est pas supposé retourner.
-	return restartService()
+	// 7. Redémarrer le service.
+	return restartServiceFn()
 }
+
+// swappedVersion — version du binaire permuté sur disque par ce process
+// (vide tant qu'aucune mise à jour n'a été appliquée). Le process courant
+// exécute toujours l'ancienne image jusqu'au redémarrage.
+var swappedVersion string
+
+// restartServiceFn — indirection pour les tests (restartService lance un
+// helper systemd/launchd hors Windows).
+var restartServiceFn = restartService
 
 // atomicReplace : binary.exe → backup ; new.exe → binary.exe.
 // Sur Windows, on peut renommer un .exe en cours d'exécution (mais pas
@@ -132,6 +172,13 @@ func atomicReplace() error {
 func CheckRollback(st *State, lastCheckinErr error) {
 	// Pas d'update récent à surveiller
 	if st.LastUpdateAt.IsZero() {
+		return
+	}
+	// Ce process est l'ANCIENNE image (binaire permuté, redémarrage pas
+	// encore effectué) : ses checkins ne disent rien du nouveau binaire. Ni
+	// validation (qui retirerait la surveillance au nouveau binaire), ni
+	// rollback sur ses propres échecs.
+	if swappedVersion != "" {
 		return
 	}
 
@@ -170,13 +217,26 @@ func CheckRollback(st *State, lastCheckinErr error) {
 		return
 	}
 	logInfo("rollback-applied", "binaire restauré", LogFields{"to": "previous"})
+	// Mémorise la version annulée : elle ne sera plus réinstallée (cf.
+	// HandleAgentUpdate), seule une version plus récente le sera.
+	st.RolledBackVersion = st.LastUpdateVersion
+	st.RolledBackAt = time.Now().UTC()
+	// Baseline anti-tamper = binaire restauré. Sinon l'ancienne version,
+	// au redémarrage, ne correspondrait plus au hash de la version annulée
+	// et remonterait une fausse alerte tamper à chaque checkin.
+	if sum, err := fileSHA256(binaryPath()); err == nil {
+		st.BinarySHA256 = sum
+		st.BinaryUpdatedAt = time.Now().UTC()
+	} else {
+		logError("rollback-baseline-fail", err, nil)
+	}
 	// Reset l'état pour que la prochaine instance ne re-rollback pas
 	st.LastUpdateAt = time.Time{}
 	st.LastUpdateVersion = ""
 	st.FailedSinceUpdate = 0
 	st.Save()
 	// Redémarrer pour charger le binaire restauré
-	_ = restartService()
+	_ = restartServiceFn()
 }
 
 func rollback() error {
@@ -206,7 +266,7 @@ func downloadBinary(ctx context.Context, cfg *Config, upd *AgentUpdate) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.token())
 	req.Header.Set("User-Agent", userAgent())
 
 	resp, err := httpClient.Do(req)

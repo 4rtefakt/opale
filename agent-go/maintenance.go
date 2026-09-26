@@ -4,6 +4,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	// Base IANA embarquée (~450 Kio) : Windows n'en fournit pas à Go, et
+	// sans elle LoadLocation("Europe/Paris") échoue → fenêtre évaluée en UTC.
+	_ "time/tzdata"
 )
 
 // MaintenanceWindow — fenêtre déclarée par le serveur durant laquelle

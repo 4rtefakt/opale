@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,5 +101,42 @@ func TestMaintenanceWindow_BadInputFailOpen(t *testing.T) {
 	w := &MaintenanceWindow{Start: "garbage", End: "04:00"}
 	if !w.IsActive(time.Now()) {
 		t.Fatal("input invalide doit fail-open (rester actif)")
+	}
+}
+
+// Sous Windows, time.LoadLocation n'a pas de base IANA système : sans
+// time/tzdata embarqué, "Europe/Paris" échoue et la fenêtre était évaluée
+// en UTC (décalage d'1 à 2 h). Le binaire Windows doit embarquer tzdata.
+func TestWindowsBuildEmbedsTZData(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("toolchain go absente")
+	}
+	cmd := exec.Command(goBin, "list", "-deps", ".")
+	cmd.Env = append(os.Environ(), "GOOS=windows", "GOARCH=amd64", "CGO_ENABLED=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list : %v\n%s", err, out)
+	}
+	for _, dep := range strings.Fields(string(out)) {
+		if dep == "time/tzdata" {
+			return
+		}
+	}
+	t.Fatal("le build windows n'embarque pas time/tzdata : LoadLocation(\"Europe/Paris\") échoue sur les postes")
+}
+
+// Europe/Paris doit se charger et la fenêtre s'évaluer en heure de Paris
+// (UTC+2 en été) : 01:30 UTC = 03:30 Paris → dans la fenêtre 02:00-04:00.
+func TestMaintenanceWindow_EuropeParisLoaded(t *testing.T) {
+	if _, err := time.LoadLocation("Europe/Paris"); err != nil {
+		t.Fatalf("LoadLocation(Europe/Paris) : %v", err)
+	}
+	w := &MaintenanceWindow{Start: "02:00", End: "04:00", TZ: "Europe/Paris"}
+	if !w.IsActive(time.Date(2026, 7, 14, 1, 30, 0, 0, time.UTC)) {
+		t.Fatal("01:30 UTC (03:30 Paris) devrait être dans la fenêtre")
+	}
+	if w.IsActive(time.Date(2026, 7, 14, 3, 0, 0, 0, time.UTC)) {
+		t.Fatal("03:00 UTC (05:00 Paris) devrait être hors fenêtre")
 	}
 }

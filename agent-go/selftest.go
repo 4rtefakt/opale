@@ -136,7 +136,7 @@ func testServerReachable() testResult {
 	if err != nil {
 		return testResult{Name: "Serveur accessible", Message: err.Error()}
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+cfg.token())
 	req.Header.Set("User-Agent", userAgent()+" selftest")
 
 	client := &http.Client{

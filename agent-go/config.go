@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/4rtefakt/opale/agent-go/branding"
 )
@@ -15,6 +16,11 @@ import (
 // Config — contenu du config.json (chemin retourné par configPath()).
 // Ce fichier est lu au démarrage et après chaque rotation de token.
 type Config struct {
+	// mu protège Token : la rotation (goroutine de checkin) le réécrit
+	// pendant que la goroutine WS et les requêtes HTTP le lisent. Toujours
+	// passer par token() / setToken() hors chargement initial.
+	mu sync.RWMutex
+
 	Token string `json:"token"`
 	URL   string `json:"url"`
 
@@ -23,9 +29,32 @@ type Config struct {
 	// surprendre l'admin après upgrade.
 	LAPSEnabled bool `json:"laps_enabled,omitempty"`
 	// LAPSUser : compte local DÉDIÉ rotaté. Ne PAS pointer sur
-	// "Administrator" ou un compte existant pour éviter tout lockout.
+	// "Administrator" ou un compte existant pour éviter tout lockout
+	// (refusé par l'agent, cf. checkLAPSAccountManageable).
 	// Créé automatiquement par l'agent à la première rotation.
 	LAPSUser string `json:"laps_user,omitempty"`
+}
+
+// token — lecture du token courant, sûre en concurrence avec la rotation.
+func (c *Config) token() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Token
+}
+
+// tokenOrEmpty — comme token() mais tolère un cfg nil.
+func (c *Config) tokenOrEmpty() string {
+	if c == nil {
+		return ""
+	}
+	return c.token()
+}
+
+// setToken — remplace le token en mémoire (rotation / rollback).
+func (c *Config) setToken(t string) {
+	c.mu.Lock()
+	c.Token = t
+	c.mu.Unlock()
 }
 
 // lapsUser — wrapper qui délègue à ResolveLAPSUser : valeur runtime servie
@@ -108,21 +137,20 @@ func agentNewName() string {
 	return branding.BinName + ".new"
 }
 
-// Save écrit la config sur disque atomiquement (fichier .new + rename).
+// Save écrit la config sur disque atomiquement (temporaire + fsync +
+// rename, cf. writeFileAtomic) : une coupure pendant la rotation du token
+// ne doit jamais laisser un config.json vide (agent orphelin).
 // Permissions strictes 0600 — Windows ignore le mode mais l'ACL du dossier
 // data dir reste SYSTEM-only via install.ps1.
 func (c *Config) Save() error {
+	c.mu.RLock()
 	data, err := json.MarshalIndent(c, "", "  ")
+	c.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshal : %w", err)
 	}
-	tmp := configPath() + ".new"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return fmt.Errorf("write %s : %w", tmp, err)
-	}
-	if err := os.Rename(tmp, configPath()); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename : %w", err)
+	if err := writeFileAtomic(configPath(), data, 0o600); err != nil {
+		return fmt.Errorf("écriture %s : %w", configPath(), err)
 	}
 	return nil
 }

@@ -176,6 +176,15 @@ Changing this name does **not** delete the previous account on already
 deployed endpoints — the old account is left in place and a new one is
 created at the next checkin. Clean the orphans manually if needed.
 
+Since agent 2.15.0 the agent only rotates an account it created itself: an
+account that does not exist yet (created with the branding description), or
+an existing account whose SID the agent recorded in `state.json`, or whose
+description equals the build's `lapsAccountDescription` (accounts created by
+agents ≤ 2.14). Built-in accounts (RID < 1000, e.g. the renamed built-in
+Administrator) and any other existing account are refused (`laps-account-refused`
+in `agent.log`). Pointing this setting at an existing account therefore
+requires setting that account's description to the branding value first.
+
 ### 2.5 Operations
 
 | Key | Type | Default | Effect |
