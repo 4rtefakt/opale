@@ -531,6 +531,26 @@ test('POST /:id/exec — sortie SSH > 10 000 caractères : ligne finalisée (tro
   assert.equal(rows[0].len, 10000, 'sortie tronquée à la taille de la colonne')
 })
 
+test('POST /:id/exec — sortie SSH avec octets NUL : ligne finalisée sans NUL (plus de running bloqué)', { skip: SKIP, timeout: 15000 }, async (t) => {
+  const port = await fakeSshServer(t, { output: 'o\u0000k' })
+  const clientKey = ed25519KeyPair()
+  withEnv(t, { SSH_PORT: String(port), SSH_USER: 'opale', SSH_PRIVATE_KEY_B64: Buffer.from(clientKey.private).toString('base64') })
+  const token = await adminToken('oid-sc-exec-ssh-nul')
+  const script = await seedScript({ name: 'SSH NUL' })
+  const { group } = await groupWithDevice('G-exec-ssh-nul', 'PC-SSH-NUL')
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+  assert.match(res.body, /"type":"end"/)
+  const rows = await execRows(script.id)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].status, 'success', `sortie : ${rows[0].output}`)
+  assert.equal(rows[0].output, 'ok')
+})
+
 test('POST /:id/exec — échec avant la connexion (clé SSH absente) : ligne en error, réponse terminée', { skip: SKIP, timeout: 15000 }, async (t) => {
   withEnv(t, { SSH_PRIVATE_KEY_B64: undefined })
   const token = await adminToken('oid-sc-exec-ssh-nokey')

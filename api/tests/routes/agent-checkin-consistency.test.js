@@ -270,3 +270,20 @@ test('POST /result — sortie > 10 000 caractères : résultat enregistré (tron
   assert.equal(r.exit_code, 0)
   assert.equal(r.len, 10000)
 })
+
+test('POST /result — sortie avec octets NUL (sortie UTF-16 / binaire) : enregistrée sans NUL, plus de 500', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-RESULT-NUL' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const scriptId = await queueScript(device.id, 'nul-output')
+  const got = await checkin(fastify, secret, { hostname: device.hostname })
+  assert.deepEqual(got.json().commands.map(c => c.id), [scriptId])
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/result',
+    headers: { authorization: `Bearer ${secret}` },
+    payload: { execution_id: scriptId, exit_code: 0, output: 'R\u0000é\u0000s\u0000u\u0000l\u0000t\u0000' },
+  })
+  assert.equal(res.statusCode, 204, res.body)
+  const { rows: [r] } = await db.query(`SELECT status, output FROM script_executions WHERE id = $1`, [scriptId])
+  assert.deepEqual(r, { status: 'done', output: 'Résult' })
+})

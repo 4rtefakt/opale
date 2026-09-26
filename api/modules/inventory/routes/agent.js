@@ -11,7 +11,7 @@ import { checkDeviceClaim, CLAIM_REFUSAL_MESSAGES } from '../lib/device-claim.js
 import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle, stripNul } from '../lib/checkin-validation.js'
 import { ipOnlyKey } from '../../../lib/rate-limit.js'
 import { retentionDays } from '../../../lib/retention.js'
-import { SCRIPT_OUTPUT_MAX } from '../lib/script-output.js'
+import { scriptOutputForDb } from '../lib/script-output.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -549,8 +549,8 @@ export default async function agentRoute(fastify) {
 
     const status = exit_code === 0 ? 'done' : 'error'
     // Sortie tronquée à la taille de la colonne (VARCHAR(10000), migration
-    // 029) : au-delà, l'UPDATE échouait (22001 → 500), le résultat était
-    // perdu et le script restait 'running'.
+    // 029) et débarrassée des octets NUL : sinon l'UPDATE échouait (22001 /
+    // 22021 → 500), le résultat était perdu et le script restait 'running'.
     // Le filtre device_id = token.device_id empêche un agent compromis de
     // remonter de faux résultats pour les exécutions d'autres devices
     // (cross-device tampering).
@@ -559,7 +559,7 @@ export default async function agentRoute(fastify) {
       SET status = $1, exit_code = $2, output = $3, completed_at = now()
       WHERE id = $4 AND mode = 'agent' AND device_id = $5
       RETURNING device_id, script_name
-    `, [status, exit_code ?? -1, (output || '').slice(0, SCRIPT_OUTPUT_MAX), execution_id, token.device_id])
+    `, [status, exit_code ?? -1, scriptOutputForDb(output), execution_id, token.device_id])
 
     // Audit log (uniquement en cas de succès, pour valoriser dans Rapports)
     if (status === 'done' && updated.rows[0]) {
