@@ -127,12 +127,9 @@ func processCommands(ctx context.Context, cfg *Config, cmds []Command) {
 }
 
 // processDeployments exécute les déploiements (winget ou script) et leurs
-// scripts post-install + detection_script. Retourne deux slices à remonter
-// au prochain checkin.
-func processDeployments(ctx context.Context, deps []Deployment) ([]DeploymentResult, []DetectionResult) {
-	var depResults []DeploymentResult
-	var detResults []DetectionResult
-
+// scripts post-install + detection_script. Chaque résultat est remis à
+// sink dès qu'il est connu (persisté aussitôt, cf. resultSink).
+func processDeployments(ctx context.Context, deps []Deployment, sink resultSink) {
 	for _, d := range deps {
 		var exitCode int
 		var output string
@@ -166,7 +163,7 @@ func processDeployments(ctx context.Context, deps []Deployment) ([]DeploymentRes
 			output = strings.TrimSpace(output + "\n[post-install]\n" + postOut)
 		}
 
-		depResults = append(depResults, DeploymentResult{
+		sink.deployment(DeploymentResult{
 			DeploymentID: d.DeploymentID,
 			ExitCode:     exitCode,
 			Output:       output,
@@ -175,10 +172,9 @@ func processDeployments(ctx context.Context, deps []Deployment) ([]DeploymentRes
 		// Détection post-install : exit 0 = installé, rattachée au package
 		// (cf. postInstallDetection).
 		if det, ok := postInstallDetection(ctx, d, runPowerShell); ok {
-			detResults = append(detResults, det)
+			sink.detection(det)
 		}
 	}
-	return depResults, detResults
 }
 
 // processDetect exécute les detection_scripts d'inventaire logiciel.

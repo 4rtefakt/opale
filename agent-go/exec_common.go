@@ -69,6 +69,16 @@ func classifyExecResult(err error, ps *os.ProcessState, runCtxErr, parentErr err
 	return 1, "error : " + err.Error()
 }
 
+// resultSink — reçoit chaque résultat de déploiement (puis sa détection
+// post-install) dès qu'il est connu. L'appelant le met en file et le
+// persiste aussitôt : un crash, une coupure ou un installeur qui tue
+// l'agent en cours de lot ne perd pas les résultats déjà obtenus (sinon
+// timeout côté serveur et réinstallation au « Rejouer »).
+type resultSink struct {
+	deployment func(DeploymentResult)
+	detection  func(DetectionResult)
+}
+
 // postInstallDetection exécute via run le detection_script d'un déploiement
 // (exit 0 = installé) et rattache le résultat au package déployé. Sans
 // package_id (serveur antérieur à 2.15.1) : aucun résultat — l'id du

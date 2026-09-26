@@ -75,6 +75,8 @@ func (s *jobServer) handler(t *testing.T) http.HandlerFunc {
 type fakeJobs struct {
 	mu    sync.Mutex
 	order []string
+	// beforeDeployment — appelé avant l'exécution de chaque déploiement.
+	beforeDeployment func(id string)
 }
 
 func (f *fakeJobs) record(s string) {
@@ -111,13 +113,15 @@ func installFakeJobs(t *testing.T) *fakeJobs {
 			f.record("cmd:" + c.ID)
 		}
 	}
-	processDeploymentsFn = func(_ context.Context, deps []Deployment) ([]DeploymentResult, []DetectionResult) {
-		var out []DeploymentResult
+	processDeploymentsFn = func(_ context.Context, deps []Deployment, sink resultSink) {
 		for _, d := range deps {
+			if f.beforeDeployment != nil {
+				f.beforeDeployment(d.DeploymentID)
+			}
 			f.record("dep:" + d.DeploymentID)
-			out = append(out, DeploymentResult{DeploymentID: d.DeploymentID, ExitCode: 0, Output: "ok"})
+			sink.deployment(DeploymentResult{DeploymentID: d.DeploymentID, ExitCode: 0, Output: "ok"})
+			sink.detection(DetectionResult{PackageID: "pkg-" + d.DeploymentID, Detected: true})
 		}
-		return out, nil
 	}
 	processDetectFn = func(context.Context, []Detect) []DetectionResult { return nil }
 	// Mise à jour réussie : binaire permuté, redémarrage en attente.
@@ -255,4 +259,32 @@ func TestRunCheckin_DeploymentsRunEvenIfAgentThinksOutOfWindow(t *testing.T) {
 	if len(srv.results) != 3 {
 		t.Fatalf("résultats reçus %d / 3", len(srv.results))
 	}
+}
+
+// Chaque résultat est persisté dès que son déploiement se termine : au
+// démarrage du déploiement n, state.json contient déjà les résultats (et
+// détections post-install) des n-1 précédents du lot. Avant, rien n'était
+// écrit avant la fin du lot : un crash, une coupure ou un installeur qui
+// tue l'agent perdait les résultats des déploiements déjà terminés.
+func TestRunCheckin_EachDeploymentResultPersistedImmediately(t *testing.T) {
+	f := installFakeJobs(t)
+	srv := newJobServer(4, 10)
+	var done []string
+	var problems []string
+	f.beforeDeployment = func(id string) {
+		saved := LoadState()
+		if got := depIDs(saved.PendingDeployments); !sameIDs(got, done) {
+			problems = append(problems, fmt.Sprintf("avant %s : state.json = %v, attendu %v", id, got, done))
+		}
+		if len(saved.PendingDetections) != len(done) {
+			problems = append(problems, fmt.Sprintf("avant %s : %d détections persistées, attendu %d", id, len(saved.PendingDetections), len(done)))
+		}
+		done = append(done, id)
+	}
+	st := runCheckinAgainst(t, srv)
+
+	if len(problems) > 0 {
+		t.Fatal(strings.Join(problems, "\n"))
+	}
+	assertEveryClaimedJobRanOnce(t, srv, f, st, 4)
 }

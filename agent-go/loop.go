@@ -116,30 +116,35 @@ func processCheckinJobs(ctx context.Context, cfg *Config, st *State, resp *Check
 		processCommandsFn(ctx, cfg, resp.Commands)
 	}
 
-	// Déploiements + détections post-install — résultats stash en state.
+	// Déploiements + détections post-install — résultats mis en file et
+	// persistés un par un, dès qu'ils sont connus (cf. resultSink) : un
+	// reboot, une coupure ou un installeur qui tue l'agent en cours de lot
+	// ne perd pas ceux déjà obtenus.
 	// Fenêtre de maintenance appliquée par le serveur, qui ne réserve les
 	// déploiements qu'en fenêtre : l'agent exécute ce qu'il a reçu. Les
 	// déférer ici (avis divergent : fuseau, format, horloge) les laissait
 	// 'running' sans exécution jusqu'au timeout (1 h), puis en échec.
-	var depResults []DeploymentResult
-	var detResults []DetectionResult
+	deployed := 0
 	if len(resp.Deployments) > 0 {
-		depResults, detResults = processDeploymentsFn(ctx, resp.Deployments)
+		processDeploymentsFn(ctx, resp.Deployments, resultSink{
+			deployment: func(r DeploymentResult) {
+				st.PendingDeployments = append(st.PendingDeployments, r)
+				st.Save()
+				deployed++
+			},
+			detection: func(r DetectionResult) {
+				st.PendingDetections = append(st.PendingDetections, r)
+				st.Save()
+			},
+		})
 	}
 	if len(resp.Detect) > 0 {
-		detResults = append(detResults, processDetectFn(ctx, resp.Detect)...)
+		if dets := processDetectFn(ctx, resp.Detect); len(dets) > 0 {
+			st.PendingDetections = append(st.PendingDetections, dets...)
+			st.Save()
+		}
 	}
-
-	if len(depResults) == 0 && len(detResults) == 0 {
-		return 0
-	}
-
-	// Persister avant le re-checkin : si la machine reboot ou perd réseau,
-	// les résultats ne sont pas perdus.
-	st.PendingDeployments = append(st.PendingDeployments, depResults...)
-	st.PendingDetections  = append(st.PendingDetections, detResults...)
-	st.Save()
-	return len(depResults)
+	return deployed
 }
 
 // runDebugLoop — mode interactif (non-service). Utilisé via --debug.
