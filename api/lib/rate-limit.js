@@ -25,19 +25,24 @@ function isIpOrCidr(entry) {
 // Valeur de TRUST_PROXY → option `trustProxy` de Fastify :
 //   absent / '' / false / 0 / no / off  → false (défaut : pas de proxy de confiance)
 //   true / yes / on                     → true (fait confiance à tout X-Forwarded-For : à éviter)
-//   entier N ≥ 1                        → N sauts de proxy de confiance
 //   liste 'ip,cidr,…'                   → adresses de proxy de confiance (recommandé)
+// Un nombre de sauts (« 1 ») est refusé : il ne vérifie pas le pair TCP, donc
+// un client qui joint le port en direct peut forger X-Forwarded-For
+// (GHSA-3m5p-2c4r-xxw2) ; Fastify ≥ 5.12 le traite d'ailleurs comme « aucun
+// proxy de confiance », ce qui rendrait le réglage silencieusement inopérant.
 // Toute autre valeur lève : on refuse de démarrer sur une config ambiguë.
 export function parseTrustProxy(raw) {
   const v = String(raw ?? '').trim()
   const lower = v.toLowerCase()
   if (!v || ['false', '0', 'no', 'off'].includes(lower)) return false
   if (['true', 'yes', 'on'].includes(lower)) return true
-  if (/^\d+$/.test(v)) return parseInt(v, 10)
+  if (/^\d+$/.test(v)) {
+    throw new Error(`TRUST_PROXY invalide (${v}) — un nombre de proxies n'est pas sûr : indiquer l'IP ou le CIDR du reverse proxy`)
+  }
   const entries = v.split(',').map(s => s.trim()).filter(Boolean)
   const invalid = entries.filter(e => !isIpOrCidr(e))
   if (!entries.length || invalid.length) {
-    throw new Error(`TRUST_PROXY invalide (${invalid.join(', ') || v}) — attendu : true, un nombre de proxies, ou une liste d'IP/CIDR`)
+    throw new Error(`TRUST_PROXY invalide (${invalid.join(', ') || v}) — attendu : une liste d'IP/CIDR du reverse proxy (ou true, déconseillé)`)
   }
   return entries
 }

@@ -13,14 +13,21 @@ test('parseTrustProxy — désactivé par défaut', () => {
   }
 })
 
-test('parseTrustProxy — booléen, nombre de sauts, liste d\'IP/CIDR', () => {
+test('parseTrustProxy — booléen, liste d\'IP/CIDR', () => {
   assert.equal(parseTrustProxy('true'), true)
-  assert.equal(parseTrustProxy('1'), 1)
-  assert.equal(parseTrustProxy('2'), 2)
   assert.deepEqual(parseTrustProxy('127.0.0.1'), ['127.0.0.1'])
   assert.deepEqual(parseTrustProxy(' 172.16.0.0/12 , 10.0.0.1,::1 '), ['172.16.0.0/12', '10.0.0.1', '::1'])
   assert.deepEqual(parseTrustProxy('loopback,uniquelocal'), ['loopback', 'uniquelocal'])
   assert.deepEqual(parseTrustProxy('fd00::/8'), ['fd00::/8'])
+})
+
+test('parseTrustProxy — nombre de sauts refusé au boot (ne vérifie pas le pair TCP)', () => {
+  // Fastify ≥ 5.12 traite un trustProxy numérique comme « aucun proxy de
+  // confiance » (GHSA-3m5p-2c4r-xxw2) : l'accepter rendrait TRUST_PROXY=1
+  // silencieusement inopérant, et avant 5.12 il permettait de forger l'IP.
+  for (const v of ['1', '2', '10']) {
+    assert.throws(() => parseTrustProxy(v), /nombre de proxies n'est pas sûr/, v)
+  }
 })
 
 test('parseTrustProxy — valeur invalide → erreur au boot', () => {
@@ -67,9 +74,10 @@ test('trustProxy — proxy de confiance : IP réelle du client', async () => {
     await ipSeenBy(parseTrustProxy('172.16.0.0/12'), { remoteAddress: '198.51.100.9', xff: '203.0.113.5' }),
     '198.51.100.9'
   )
-  // Un saut : dernière entrée ajoutée par le proxy, pas celle injectée par le client.
+  // Plusieurs entrées : seule la dernière (ajoutée par le proxy de confiance)
+  // est retenue, pas celle injectée par le client.
   assert.equal(
-    await ipSeenBy(parseTrustProxy('1'), { remoteAddress: '172.18.0.1', xff: '6.6.6.6, 203.0.113.5' }),
+    await ipSeenBy(parseTrustProxy('172.16.0.0/12'), { remoteAddress: '172.18.0.1', xff: '6.6.6.6, 203.0.113.5' }),
     '203.0.113.5'
   )
 })

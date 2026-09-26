@@ -31,7 +31,7 @@ consumer; the frontend gets a curated subset via `GET /env.js`.
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `TRUST_PROXY` | **yes in production behind a reverse proxy** | off | Proxies trusted to set `X-Forwarded-For`, so the API sees the real client IP (used by rate limiting). Comma-separated proxy IPs/CIDRs (recommended, e.g. `172.16.0.0/12` for a Docker bridge network), a hop count (`1`), or `true` (trust any `X-Forwarded-For` — avoid). Invalid values stop the API at boot |
+| `TRUST_PROXY` | **yes in production behind a reverse proxy** | off | Proxies trusted to set `X-Forwarded-For`, so the API sees the real client IP (used by rate limiting). Comma-separated proxy IPs/CIDRs (recommended, e.g. `172.16.0.0/12` for a Docker bridge network), or `true` (trust any `X-Forwarded-For` — avoid). A hop count (`1`) is refused: it cannot validate the TCP peer, so a direct client could spoof its IP (GHSA-3m5p-2c4r-xxw2), and Fastify ≥ 5.12 ignores it anyway. Invalid values stop the API at boot |
 
 **Effectively required in production behind Caddy/nginx.** Without it, every
 request carries the proxy's IP, so all clients share the same rate-limit
