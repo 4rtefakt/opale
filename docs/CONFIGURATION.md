@@ -59,6 +59,8 @@ same compose network (`reverse_proxy api:3010`), trust that network's CIDR.
 | `POSTGRES_USER` | yes | `opale` | Role used by the API |
 | `POSTGRES_PASSWORD` | yes | — | No default — set a strong random secret |
 | `POSTGRES_HOST` | no | `db` | Resolves to the service name in the bundled compose |
+| `DB_CONNECTION_TIMEOUT_MS` | no | `10000` | Max wait (ms) to get a database connection (pool full, or PostgreSQL unreachable / not answering) before the request fails. `0` = wait forever. Invalid values stop the API at boot |
+| `DB_STATEMENT_TIMEOUT_MS` | no | `30000` | PostgreSQL `statement_timeout` (ms) for the API's queries: a longer query is cancelled (error `57014`). `0` = no limit. Does not apply to migrations. Invalid values stop the API at boot |
 | `DB_AUTO_MIGRATE` | no | `true` | Apply pending `api/migrations/*.sql` files at startup, before listening (see [MIGRATIONS.md](../api/migrations/MIGRATIONS.md)). `false` = apply them by hand. Any other value stops the API at boot |
 
 ### 1.3 Frontend
