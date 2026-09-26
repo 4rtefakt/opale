@@ -47,6 +47,7 @@ class API {
   }
   getDevice(id)        { return this._fetch(`/devices/${id}`) }
   deleteDevice(id)     { return this._fetch(`/devices/${id}`, { method: 'DELETE' }) }
+  resetSshHostKey(id)  { return this._fetch(`/devices/${id}/ssh-host-key`, { method: 'DELETE' }) }
   forceSyncDevices(ids)    { return this._fetch('/devices/force-sync',    { method: 'POST', body: { ids } }) }
   forceCheckinDevices(ids) { return this._fetch('/devices/force-checkin', { method: 'POST', body: { ids } }) }
   getAdminCredential(deviceId)    { return this._fetch(`/admin-credentials/${deviceId}`) }

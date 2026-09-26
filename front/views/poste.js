@@ -56,6 +56,7 @@ export async function renderPosteDetail(container, id) {
   window.openRunScriptModal      = openRunScriptModal
   window.runScript               = runScript
   window.deleteDevice            = deleteDevice
+  window.resetSshHostKey         = resetSshHostKey
   window.lapsViewPassword        = lapsViewPassword
   window.lapsRequestRotation     = lapsRequestRotation
   window.forceCheckin            = forceCheckin
@@ -106,6 +107,12 @@ function renderBody() {
             ${d.agent_version ? hwRow('ti-broadcast', 'Agent RMM', 'v' + esc(d.agent_version)) : ''}
             ${hwRow('ti-clock',              t('poste.hw.last_seen'),    formatRelative(d.last_seen))}
             ${d.ip_netbird ? hwRow('ti-network', 'Netbird IP', d.ip_netbird) : ''}
+            ${d.ssh_host_key_fp ? hwRowRaw('ti-key', 'Clé d\'hôte SSH', `
+              <span title="${esc('Empreinte SHA-256 apprise au premier contact' + (d.ssh_host_key_learned_at ? ' le ' + new Date(d.ssh_host_key_learned_at).toLocaleString('fr-FR') : ''))}"
+                    style="font-family:var(--font-mono,monospace);font-size:11px">${esc(d.ssh_host_key_fp.slice(0, 16))}…</span>
+              <button class="btn btn-sm" style="margin-left:6px" onclick="resetSshHostKey()"
+                      title="À faire seulement après une réinstallation du poste : l'empreinte sera réapprise au prochain accès SSH">
+                <i class="ti ti-refresh"></i> Réinitialiser</button>`) : ''}
             ${d.compliance_state ? hwRow('ti-shield-check', t('poste.hw.compliance'), complianceBadge(d.compliance_state)) : ''}
             ${d.join_type        ? hwRow('ti-cloud',         t('poste.hw.join_type'),   formatJoinType(d.join_type)) : ''}
             ${d.enrolled_at      ? hwRow('ti-calendar', t('poste.hw.enrolled'),    formatWithDate(d.enrolled_at)) : ''}
@@ -1810,6 +1817,24 @@ async function deleteDevice() {
     await window.api.deleteDevice(_device.id)
     showToast('Poste supprimé', 'success')
     navigateTo('/postes')
+  } catch (err) {
+    showToast(err.message || t('error.generic'), 'error')
+  }
+}
+
+// Oublie l'empreinte d'hôte SSH mémorisée (TOFU) : à faire seulement après
+// une réinstallation légitime du poste. Le prochain accès SSH réapprend la
+// clé ; l'action est auditée côté API.
+async function resetSshHostKey() {
+  if (!_device) return
+  if (!confirm(`Réinitialiser l'empreinte SSH de "${_device.hostname}" ?\n\n` +
+    `À faire seulement si le poste a été réinstallé. Sinon, une clé différente ` +
+    `peut signaler une interception : ne réinitialisez pas.`)) return
+  try {
+    await window.api.resetSshHostKey(_device.id)
+    showToast('Empreinte SSH réinitialisée — réapprise au prochain accès', 'success')
+    _device = await window.api.getDevice(_device.id)
+    renderBody()
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   }
