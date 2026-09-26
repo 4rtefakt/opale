@@ -767,6 +767,83 @@ test('POST /exchange-token — relance après install interrompue (token jamais 
   assert.equal(third.statusCode, 409)
 })
 
+test('POST /exchange-token — fenêtre de rotation : le token successeur jamais utilisé bloque l\'exchange et n\'est pas révoqué', { skip: SKIP }, async () => {
+  // Le PC a appelé /rotate-token puis s'est éteint > 24 h : l'ancien token
+  // (utilisé) est expiré, le successeur (created_by = 'agent-rotation') n'a
+  // pas encore servi. Le poste reste enrôlé : un porteur du bootstrap ne
+  // doit ni obtenir de token, ni révoquer celui de l'agent légitime.
+  const device = await seedDevice(db, { hostname: 'PC-ROTATION-GAP' }) // série NULL
+  const old = await seedAgentToken(db, { deviceId: device.id, label: 'rot-old' })
+  const rotate = await fastify.inject({
+    method: 'POST', url: '/api/agent/rotate-token',
+    headers: bearer(old.secret),
+  })
+  assert.equal(rotate.statusCode, 200, `body: ${rotate.body}`)
+  const successor = rotate.json().token
+  // Ancien token : a servi, puis grace de 24 h écoulée.
+  await db.query(
+    `UPDATE agent_tokens SET last_used_at = now() - interval '2 days', expires_at = now() - interval '1 hour'
+     WHERE id = $1`,
+    [old.id]
+  )
+
+  const bootstrap = await seedBootstrap('bs-rotation-gap')
+  const res = await exchange(bootstrap.secret, { hostname: 'PC-ROTATION-GAP', serial: 'ANY' })
+  assert.equal(res.statusCode, 409, `body: ${res.body}`)
+  assert.equal((await lastRefusal(device.id)).details.reason, 'active_token')
+
+  // Le successeur n'a pas été révoqué : l'agent légitime continue.
+  const checkin = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(successor),
+    payload: { hostname: 'PC-ROTATION-GAP' },
+  })
+  assert.equal(checkin.statusCode, 200, `body: ${checkin.body}`)
+})
+
+test('POST /checkin — fenêtre de rotation : un token non lié ne se rattache pas au poste', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-ROTATION-GAP-2' })
+  const old = await seedAgentToken(db, { deviceId: device.id, label: 'rot-old-2' })
+  const rotate = await fastify.inject({
+    method: 'POST', url: '/api/agent/rotate-token',
+    headers: bearer(old.secret),
+  })
+  assert.equal(rotate.statusCode, 200)
+  await db.query(
+    `UPDATE agent_tokens SET last_used_at = now() - interval '2 days', expires_at = now() - interval '1 hour'
+     WHERE id = $1`,
+    [old.id]
+  )
+  const t = await seedAgentToken(db, { label: 'unbound-rotation-gap' })
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: bearer(t.secret),
+    payload: { hostname: 'PC-ROTATION-GAP-2' },
+  })
+  assert.equal(res.statusCode, 409, `body: ${res.body}`)
+})
+
+test('POST /exchange-token — les tokens non utilisés révoqués à l\'exchange n\'incluent jamais un token de rotation', { skip: SKIP }, async () => {
+  // Défense en profondeur : même si le check d'enrôlement passait (ex. token
+  // de rotation lui-même expiré), l'UPDATE de révocation ne touche pas les
+  // tokens 'agent-rotation'.
+  const device = await seedDevice(db, { hostname: 'PC-ROTATION-REVOKE' })
+  const rot = await seedAgentToken(db, {
+    deviceId: device.id, label: 'rot-expired', createdBy: 'agent-rotation',
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+  })
+  const orphan = await seedAgentToken(db, { deviceId: device.id, label: 'orphan', createdBy: 'bootstrap:x' })
+  const bootstrap = await seedBootstrap('bs-rotation-revoke')
+  const res = await exchange(bootstrap.secret, { hostname: 'PC-ROTATION-REVOKE', serial: 'ANY' })
+  assert.equal(res.statusCode, 201, `body: ${res.body}`)
+  const { rows } = await db.query(
+    `SELECT id, revoked_at FROM agent_tokens WHERE id = ANY($1::uuid[])`, [[rot.id, orphan.id]]
+  )
+  const revoked = Object.fromEntries(rows.map(r => [r.id, r.revoked_at]))
+  assert.equal(revoked[rot.id], null, 'token de rotation jamais révoqué par l\'exchange')
+  assert.ok(revoked[orphan.id], 'token orphelin d\'une install interrompue révoqué')
+})
+
 // ─── POST /checkin — token non lié (Paramètres → Tokens + install.ps1) ───────
 
 async function checkinWith(secret, payload) {

@@ -279,12 +279,14 @@ export default async function agentRoute(fastify) {
           refused = { ...refusal, deviceId: dev[0].id, bootstrapLabel: bs[0].label }
         } else {
           deviceId = dev[0].id
+          // Jamais les tokens de rotation (émis à un agent déjà authentifié).
           const { rowCount } = await client.query(
             `UPDATE agent_tokens SET revoked_at = now()
                WHERE device_id = $1
                  AND is_bootstrap = FALSE
                  AND revoked_at IS NULL
-                 AND last_used_at IS NULL`,
+                 AND last_used_at IS NULL
+                 AND created_by IS DISTINCT FROM 'agent-rotation'`,
             [deviceId]
           )
           revokedUnused = rowCount

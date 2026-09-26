@@ -13,7 +13,11 @@
 //      renseigné = un agent a déjà fait au moins un checkin avec). Un token
 //      émis mais jamais utilisé (install précédente interrompue avant le 1er
 //      checkin) ne bloque pas : sinon les relances Intune d'une install
-//      ratée échoueraient toutes.
+//      ratée échoueraient toutes. EXCEPTION : un token de rotation
+//      (created_by = 'agent-rotation', émis par /rotate-token à un agent
+//      déjà authentifié) compte comme actif même s'il n'a pas encore servi —
+//      sinon un PC éteint > 24 h juste après sa rotation (ancien token
+//      expiré, successeur pas encore utilisé) paraîtrait « non enrôlé ».
 // Sinon refus : un bootstrap (ou un token non lié) fuité ne permet plus
 // d'usurper un poste déjà enrôlé. Un PC réinstallé dont l'ancien token est
 // encore actif est refusé jusqu'à ce qu'un admin révoque ce token.
@@ -51,7 +55,7 @@ export async function checkDeviceClaim(db, { device, serial, excludeTokenId = nu
       AND is_bootstrap = FALSE
       AND revoked_at IS NULL
       AND (expires_at IS NULL OR expires_at > now())
-      AND last_used_at IS NOT NULL
+      AND (last_used_at IS NOT NULL OR created_by = 'agent-rotation')
       AND ($2::uuid IS NULL OR id <> $2::uuid)
     LIMIT 1
   `, [device.id, excludeTokenId])
