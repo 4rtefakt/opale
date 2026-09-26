@@ -43,15 +43,18 @@ DO $$ BEGIN
   -- (CREATE TABLE IF NOT EXISTS qui ne sait pas que la table a été archivée).
   -- Cette branche garantit l'idempotence quand on rejoue toutes les migrations
   -- de 0 sur un schéma déjà migré (cf. CI validate-sql-migrations).
+  -- current_schema() plutôt que 'public' en dur : identique en prod (schéma
+  -- public), et la migration s'applique aussi dans un autre schéma (suites
+  -- de tests isolées par schéma, runner de démarrage).
   IF EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'ssh_sessions_archive_pre046'
+    WHERE table_schema = current_schema() AND table_name = 'ssh_sessions_archive_pre046'
   ) THEN
     DROP TABLE IF EXISTS ssh_sessions;
 
   ELSIF EXISTS (
     SELECT 1 FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'ssh_sessions'
+    WHERE table_schema = current_schema() AND table_name = 'ssh_sessions'
   ) THEN
     -- Premier passage de la migration : archive les rows historiques.
     INSERT INTO remote_sessions (id, device_id, transport, by_entra_id, by_name, ip, started_at, ended_at)

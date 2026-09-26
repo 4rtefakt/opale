@@ -52,16 +52,30 @@ CREATE INDEX IF NOT EXISTS idx_tickets_merged_into
   WHERE merged_into IS NOT NULL;
 
 -- ── Backfill data depuis les colonnes existantes ───────────────────────────
--- tickets.user_id → ticket_users (role='requester'). ON CONFLICT DO NOTHING
--- pour permettre la re-run de la migration (idempotence) si jamais.
-INSERT INTO ticket_users (ticket_id, user_entra_id, role)
-SELECT id, user_id, 'requester'
-FROM tickets
-WHERE user_id IS NOT NULL
-ON CONFLICT (ticket_id, user_entra_id) DO NOTHING;
+-- tickets.user_id → ticket_users (role='requester'), tickets.device_id →
+-- ticket_devices.
+--
+-- Uniquement si la table de relations est encore VIDE (premier passage).
+-- Au rejeu sur une base en service (runner de démarrage sur une base migrée
+-- à la main), les relations sont la source de vérité et ne doivent pas être
+-- reconstruites depuis les colonnes de compat : un ticket fusionné garde son
+-- user_id/device_id mais a perdu ses relations (transférées à la cible), et
+-- un requester modifié peut diverger de tickets.user_id — le rejeu les
+-- recréait, ou échouait sur ux_ticket_users_one_requester.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM ticket_users) THEN
+    INSERT INTO ticket_users (ticket_id, user_entra_id, role)
+    SELECT id, user_id, 'requester'
+    FROM tickets
+    WHERE user_id IS NOT NULL
+    ON CONFLICT (ticket_id, user_entra_id) DO NOTHING;
+  END IF;
 
-INSERT INTO ticket_devices (ticket_id, device_id)
-SELECT id, device_id
-FROM tickets
-WHERE device_id IS NOT NULL
-ON CONFLICT (ticket_id, device_id) DO NOTHING;
+  IF NOT EXISTS (SELECT 1 FROM ticket_devices) THEN
+    INSERT INTO ticket_devices (ticket_id, device_id)
+    SELECT id, device_id
+    FROM tickets
+    WHERE device_id IS NOT NULL
+    ON CONFLICT (ticket_id, device_id) DO NOTHING;
+  END IF;
+END $$;
