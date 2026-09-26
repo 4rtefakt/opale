@@ -47,6 +47,10 @@
 //     contrainte cassés, droits retirés…) : rien n'est abandonné, erreur
 //     journalisée à chaque tick, tout repart au rétablissement. Sans mail
 //     suivant, rien à débloquer : on attend.
+//     Limite assumée : deux mails poison consécutifs sont indiscernables
+//     d'une panne systémique — boîte bloquée, erreur à chaque tick, jusqu'à
+//     intervention (cause corrigée, ou curseur avancé à la main en SQL
+//     au-delà du mail, cf. l'internetMessageId dans le log).
 // L'abandon est journalisé (log error + audit `mail_ingest_abandoned`). Le
 // mail reste ré-ingérable en reculant le curseur (les autres mails sont
 // alors dédoublonnés par internet_message_id).
