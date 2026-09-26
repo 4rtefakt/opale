@@ -15,6 +15,8 @@
 //   - GET /:id/remote-sessions (ré-utilise routes/remote-sessions.js)
 
 import { test, before, after } from 'node:test'
+import net from 'node:net'
+import ssh2 from 'ssh2'
 import assert from 'node:assert/strict'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
@@ -23,6 +25,8 @@ import { buildApp } from '../helpers/build-app.js'
 import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 
 import devicesRoute from '../../modules/inventory/routes/devices.js'
+
+const sshUtils = ssh2.utils
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
@@ -320,4 +324,36 @@ test('DELETE /:id — admin happy path : supprime + audit_logs device_deleted', 
   )
   assert.ok(audits.length >= 1)
   assert.equal(audits[0].by_user, user.displayName)
+})
+
+// ip_netbird est remonté par l'agent : pas de SSH vers un nom d'hôte.
+test('POST /force-checkin — ip_netbird qui n\'est pas une IP → poste ignoré, aucune connexion SSH', { skip: SKIP }, async (t) => {
+  // Clé SSH valide et port local fermé : sans la validation, la route
+  // tenterait une connexion vers « localhost » (erreur ECONNREFUSED
+  // rapportée dans `errors`), au lieu d'ignorer le poste.
+  let key
+  for (let i = 0; i < 20 && !key; i++) {
+    const k = sshUtils.generateKeyPairSync('ed25519')
+    if (!(sshUtils.parseKey(k.private) instanceof Error)) key = k
+  }
+  const closedPort = await new Promise((resolve) => {
+    const srv = net.createServer().listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)) })
+  })
+  const saved = { SSH_PRIVATE_KEY_B64: process.env.SSH_PRIVATE_KEY_B64, SSH_PORT: process.env.SSH_PORT }
+  process.env.SSH_PRIVATE_KEY_B64 = Buffer.from(key.private).toString('base64')
+  process.env.SSH_PORT = String(closedPort)
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  })
+  const { token } = await adminAuth('oid-dev-force-bad-ip')
+  const id = await insertDevice({ hostname: 'PC-FORCE-BADIP' })
+  await db.query(`UPDATE devices SET ip_netbird = 'localhost' WHERE id = $1`, [id])
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/devices/force-checkin',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { ids: [id] },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: 0, skipped: 1, errors: [] })
 })

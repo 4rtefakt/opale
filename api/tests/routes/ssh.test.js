@@ -21,6 +21,7 @@ import { seedAdmin } from '../fixtures/users.js'
 import { seedDevice } from '../fixtures/devices.js'
 
 import sshRoute from '../../modules/remote/routes/ssh.js'
+import websocket from '@fastify/websocket'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
@@ -44,6 +45,7 @@ before(async () => {
     db,
     jwks: jwt.jwks,
     routes: async (f) => {
+      await f.register(websocket)
       await f.register(sshRoute, { prefix: '/api/ssh' })
     },
   })
@@ -155,4 +157,36 @@ test('POST /grant — happy path → 200 + nonce 64 hex + expires_in 30s', { ski
   const body = res.json()
   assert.match(body.nonce, /^[0-9a-f]{64}$/)
   assert.equal(body.expires_in, 30)
+})
+
+// Ouverture du terminal : ip_netbird est remonté par l'agent. Un nom d'hôte
+// (agent compromis, valeur antérieure à la validation du checkin) ne doit
+// jamais devenir la cible du SSH : ni session journalisée, ni connexion.
+test('WS /:deviceId — ip_netbird qui n\'est pas une IP → erreur, aucune session ni connexion SSH', { skip: SKIP }, async () => {
+  const { token } = await adminJwt('oid-ssh-bad-ip')
+  const device = await seedDevice(db, { hostname: 'PC-SSH-BADIP', ipNetbird: 'localhost' })
+  const grant = await fastify.inject({
+    method: 'POST', url: '/api/ssh/grant',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { deviceId: device.id, reason: { category: 'maintenance', note: 'test ip invalide' } },
+  })
+  assert.equal(grant.statusCode, 200)
+
+  const messages = []
+  let closed
+  const closedP = new Promise((r) => { closed = r })
+  const ws = await fastify.injectWS(`/api/ssh/${device.id}?nonce=${grant.json().nonce}`, {}, {
+    onInit: (sock) => {
+      sock.on('message', (m) => messages.push(JSON.parse(m.toString())))
+      sock.on('close', () => closed())
+    },
+  })
+  await Promise.race([closedP, new Promise((r) => setTimeout(r, 3000))])
+  ws.terminate()
+
+  assert.equal(messages[0]?.type, 'error', JSON.stringify(messages))
+  assert.match(messages[0].data, /invalide/)
+  assert.ok(!messages.some(m => m.type === 'status'), 'aucune tentative de connexion')
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM remote_sessions WHERE device_id = $1`, [device.id])
+  assert.equal(rows[0].n, 0, 'aucune session SSH journalisée')
 })

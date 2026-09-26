@@ -3,6 +3,24 @@ import { resolveGroupMembers } from '../../groups/lib/groups.js'
 import { SNAPSHOT_COLUMNS, SNAPSHOT_UPSERT, snapshotSelect } from '../lib/deployment-snapshots.js'
 
 // Gestion des packages déployables (winget ou script PowerShell)
+
+// Format d'un identifiant winget. L'agent lance `winget install --id
+// <valeur>` en passant la valeur comme un seul argument, sans shell, et
+// winget prend le jeton qui suit --id comme valeur même s'il commence par
+// `-` : pas d'injection exploitable aujourd'hui, c'est une défense en
+// profondeur (nouvel agent, autre outil qui réutiliserait la valeur).
+// Premier caractère lettre ou chiffre (donc jamais `-` ni `@`), puis aucun
+// blanc, caractère de contrôle, caractère de formatage invisible (espace
+// sans largeur, inversion droite-gauche : l'identifiant s'afficherait
+// autrement qu'il n'est) ou caractère de chemin, 128 au plus. Les
+// vrais identifiants contiennent aussi & , ! @ ou des lettres accentuées
+// (« Rohde&Schwarz.SDC.IETDViewAutark », « ClémentGrennerat.ThreeFingerDrag ») :
+// ce motif accepte les 15 154 identifiants de l'index winget officiel.
+const WINGET_ID_RE = /^[\p{L}\p{N}][^\s\\/:*?"<>|\p{Cc}\p{Cf}]{0,127}$/u
+
+function isValidWingetId(v) {
+  return typeof v === 'string' && WINGET_ID_RE.test(v)
+}
 export default async function packagesRoute(fastify) {
 
   // GET /api/packages/winget/search — autocomplétion sur l'index officiel
@@ -59,6 +77,9 @@ export default async function packagesRoute(fastify) {
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
     if (!name) return reply.code(400).send({ error: 'name requis' })
     if (type === 'winget' && !winget_id) return reply.code(400).send({ error: 'winget_id requis pour type=winget' })
+    if (winget_id && !isValidWingetId(winget_id)) {
+      return reply.code(400).send({ error: 'winget_id invalide (format attendu : Editeur.Produit)' })
+    }
     if (type === 'script' && !install_script) return reply.code(400).send({ error: 'install_script requis pour type=script' })
 
     const { entraId } = fastify.getUserIdentity(req)
@@ -211,6 +232,12 @@ export default async function packagesRoute(fastify) {
     if (!existing) return reply.code(404).send({ error: 'Package introuvable' })
 
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
+    // Les formulaires renvoient toujours le winget_id courant : on ne valide
+    // qu'une valeur modifiée, pour ne jamais bloquer l'édition d'un package
+    // existant.
+    if (winget_id && winget_id !== existing.winget_id && !isValidWingetId(winget_id)) {
+      return reply.code(400).send({ error: 'winget_id invalide (format attendu : Editeur.Produit)' })
+    }
 
     // Toute modification d'un package approuvé le repasse en draft
     const newStatus = existing.status === 'approved' ? 'draft' : existing.status

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { Client } from 'ssh2'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
 import { scriptOutputForDb } from '../lib/script-output.js'
@@ -157,11 +158,20 @@ export default async function scriptsRoute(fastify) {
       if (!targetIds.length) return reply.code(400).send({ error: 'Groupe natif vide ou ne contient aucun poste' })
     }
 
-    const { rows: devices } = await fastify.db.query(
+    const { rows: candidates } = await fastify.db.query(
       `SELECT id, hostname, ip_netbird FROM devices WHERE id = ANY($1::uuid[]) AND ip_netbird IS NOT NULL`,
       [targetIds]
     )
-    if (!devices.length) return reply.code(400).send({ error: 'Aucun poste joignable (IP Netbird manquante)' })
+    // ip_netbird est remonté par l'agent : on n'ouvre le SSH que vers une IP
+    // littérale, jamais vers un nom d'hôte (un agent compromis ou une valeur
+    // antérieure à la validation du checkin pourrait rediriger la session,
+    // et la clé SSH d'administration, vers une machine qu'il contrôle).
+    const devices = candidates.filter(d => isIP(d.ip_netbird))
+    if (devices.length < candidates.length) {
+      fastify.log.warn({ skipped: candidates.filter(d => !isIP(d.ip_netbird)).map(d => d.hostname) },
+        'exécution SSH : postes ignorés (ip_netbird invalide)')
+    }
+    if (!devices.length) return reply.code(400).send({ error: 'Aucun poste joignable (IP Netbird manquante ou invalide)' })
 
     const { entraId, displayName } = fastify.getUserIdentity(req)
 

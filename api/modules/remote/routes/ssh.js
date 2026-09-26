@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { Client } from 'ssh2'
 import { SessionBuffer } from '../lib/session-buffer.js'
 import { parseReason, formatReasonLine } from '../lib/remote-reason.js'
@@ -74,6 +75,12 @@ export default async function sshRoute(fastify) {
     )
     if (!devices.length || !devices[0].ip_netbird) {
       send('error', 'Poste introuvable ou IP Netbird manquante'); socket.close(); return
+    }
+    // ip_netbird est remonté par l'agent : on n'ouvre le SSH (et on n'envoie
+    // la clé d'administration et le trafic du terminal) que vers une IP
+    // littérale, jamais vers un nom d'hôte qu'un agent compromis contrôlerait.
+    if (!isIP(devices[0].ip_netbird)) {
+      send('error', 'IP Netbird du poste invalide'); socket.close(); return
     }
     const device = devices[0]
 

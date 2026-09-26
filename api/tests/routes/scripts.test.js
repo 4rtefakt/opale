@@ -568,3 +568,58 @@ test('POST /:id/exec — échec avant la connexion (clé SSH absente) : ligne en
   assert.equal(rows[0].status, 'error')
   assert.match(rows[0].output, /SSH_PRIVATE_KEY_B64/)
 })
+
+// ip_netbird est remonté par l'agent : l'exécution SSH ne doit viser qu'une
+// IP littérale, jamais un nom d'hôte (redirection de la session et de la clé
+// SSH d'administration vers une machine contrôlée par l'agent).
+async function groupWithIps(name, devices) {
+  const group = await seedGroup({ name })
+  const seeded = []
+  for (const { hostname, ip } of devices) {
+    const d = await seedDevice(db, { hostname, ipNetbird: ip })
+    await db.query(`INSERT INTO group_members (group_id, device_id, added_by) VALUES ($1, $2, 'test')`, [group.id, d.id])
+    seeded.push(d)
+  }
+  return { group, devices: seeded }
+}
+
+test('POST /:id/exec — ip_netbird qui n\'est pas une IP (nom d\'hôte) → 400, aucune exécution ni connexion', { skip: SKIP, timeout: 15000 }, async () => {
+  const token = await adminToken('oid-sc-exec-bad-ip')
+  const script = await seedScript({ name: 'SSH bad ip' })
+  const { group } = await groupWithIps('G-exec-bad-ip', [{ hostname: 'PC-BAD-IP', ip: 'localhost' }])
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+  assert.equal(res.statusCode, 400)
+  assert.match(res.json().error, /invalide/)
+  assert.equal((await execRows(script.id)).length, 0)
+})
+
+test('POST /:id/exec — groupe mixte : seul le poste à IP littérale est exécuté', { skip: SKIP, timeout: 15000 }, async (t) => {
+  const port = await fakeSshServer(t, { output: 'ok' })
+  const clientKey = ed25519KeyPair()
+  withEnv(t, { SSH_PORT: String(port), SSH_USER: 'opale', SSH_PRIVATE_KEY_B64: Buffer.from(clientKey.private).toString('base64') })
+  const token = await adminToken('oid-sc-exec-mixed-ip')
+  const script = await seedScript({ name: 'SSH mixed ip' })
+  // « localhost » joindrait aussi le faux serveur : seule la validation
+  // empêche de l'utiliser comme cible.
+  const { group, devices } = await groupWithIps('G-exec-mixed-ip', [
+    { hostname: 'PC-GOOD-IP', ip: '127.0.0.1' },
+    { hostname: 'PC-HOSTNAME', ip: 'localhost' },
+  ])
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.match(res.body, /"type":"end"/)
+  const { rows } = await db.query(
+    `SELECT device_id, status FROM script_executions WHERE script_id = $1`, [script.id])
+  assert.deepEqual(rows.map(r => r.device_id), [devices[0].id], 'seul le poste à IP littérale')
+  assert.equal(rows[0].status, 'success')
+})
