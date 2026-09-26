@@ -490,6 +490,45 @@ test('heartbeat : erreur DB à la revalidation → connexion conservée, nouvel 
   assert.equal(info.reason, 'token-revoked')
 })
 
+test('heartbeat : token rattaché à un autre poste par un checkin (renommage sans série) → WS fermée, raison token-rebound', { skip: SKIP }, async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const device = await seedDevice(db, { hostname: 'PC-WS-OLDNAME' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-rebind' })
+  const agent = await connectAgent(tok.secret, device.id)
+
+  // Nouveau hostname inconnu, sans série : le checkin crée un poste et y
+  // rattache le token ; la WS reste enregistrée sous l'ancien.
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/checkin',
+    headers: { authorization: `Bearer ${tok.secret}` },
+    payload: { hostname: 'PC-WS-NEWNAME' },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  const newId = res.json().device_id
+  assert.notEqual(newId, device.id)
+
+  t.mock.timers.tick(30_000)
+  const info = await within(agent.closed, 2000, 'fermeture au tick')
+  assert.equal(info.code, WS_CLOSE.AUTH_FAIL)
+  assert.equal(info.reason, 'token-rebound')
+
+  // Reconnexion : la WS est enregistrée sous le nouveau poste.
+  const again = await connectAgent(tok.secret, newId)
+  assert.equal(fastify.agentWs.get(newId), again.conn)
+})
+
+test('heartbeat : poste supprimé hors de ce process (tokens en cascade) → WS fermée, raison device-deleted', { skip: SKIP }, async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const device = await seedDevice(db, { hostname: 'PC-WS-REMOTE-DELETE' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-remote-delete' })
+  const agent = await connectAgent(tok.secret, device.id)
+
+  await db.query('DELETE FROM devices WHERE id = $1', [device.id])
+  t.mock.timers.tick(30_000)
+  const info = await within(agent.closed, 2000, 'fermeture au tick')
+  assert.equal(info.reason, 'device-deleted')
+})
+
 test('révocation entre l\'authentification et l\'enregistrement de la WS → fermée sans attendre le heartbeat', { skip: SKIP }, async (t) => {
   // Aucun tick : seul un contrôle fait à l'enregistrement peut fermer.
   t.mock.timers.enable({ apis: ['setInterval'] })

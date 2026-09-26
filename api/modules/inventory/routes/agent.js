@@ -1400,12 +1400,19 @@ export default async function agentRoute(fastify) {
       tokenCheckPending = true
       try {
         const { rows: [t] } = await fastify.db.query(
-          `SELECT revoked_at IS NOT NULL AS revoked, expires_at <= now() AS expired
-             FROM agent_tokens WHERE id = $1 AND device_id = $2`,
-          [token.id, token.device_id]
+          `SELECT device_id, revoked_at IS NOT NULL AS revoked, expires_at <= now() AS expired
+             FROM agent_tokens WHERE id = $1`,
+          [token.id]
         )
-        // Ligne absente : poste supprimé (tokens en cascade).
-        const reason = !t || t.revoked ? 'token-revoked' : (t.expired ? 'token-expired' : null)
+        // Ligne absente : token supprimé, ce qui n'arrive qu'avec son poste
+        // (ON DELETE CASCADE). device_id différent : un checkin a rattaché
+        // le token à un autre poste (renommage sans série), la connexion
+        // est enregistrée sous l'ancien.
+        const reason = !t ? 'device-deleted'
+          : t.revoked ? 'token-revoked'
+          : t.expired ? 'token-expired'
+          : t.device_id !== token.device_id ? 'token-rebound'
+          : null
         if (reason && socket.readyState === 1) {
           fastify.log.info({ device_id: token.device_id, token_id: token.id, reason }, 'agent ws : token invalide, fermeture')
           fastify.agentWs.evict(conn, reason)
