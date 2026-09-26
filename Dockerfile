@@ -19,7 +19,9 @@ COPY front/ ./front/
 RUN chmod +x setup.sh && ./setup.sh
 
 # ─── Stage 2 : runtime API ──────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+# Node 22 LTS (Node 20 est en fin de vie depuis avril 2026). Garder la même
+# majeure que la CI (.github/workflows/ci.yml) et que `engines` (package.json).
+FROM node:22-alpine AS runtime
 WORKDIR /app
 
 # Installation des dépendances API uniquement (pas devDependencies).
