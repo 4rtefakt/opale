@@ -12,8 +12,10 @@ function setCachedPhoto(id, data) {
 }
 
 export default async function usersRoute(fastify) {
-  // GET /api/users — annuaire complet des salariés AAD
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // GET /api/users — annuaire complet des salariés AAD. Admin-only : expose
+  // le poste (hostname) assigné à chaque salarié. Le login n'utilise que
+  // /sync-me, qui reste ouvert à tout authentifié.
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     let users
     try {
       users = await getAllAADUsers(fastify.db)

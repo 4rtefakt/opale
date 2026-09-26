@@ -312,3 +312,45 @@ test('GET /:id — admin, id injecté → 400, aucun appel Graph (getEntraUser)'
     mock.restore()
   }
 })
+
+// ─── GET / — annuaire admin-only ────────────────────────────────────────────
+// L'annuaire expose le poste (hostname) assigné à chaque salarié : réservé
+// aux admins. Un non-admin est refusé AVANT tout appel Graph ; /sync-me
+// (login) reste ouvert (cf. tests plus haut).
+
+test('GET / — non-admin → 403, aucun appel Graph', { skip: SKIP }, async () => {
+  const { token } = await makeUserToken('oid-users-list-na')
+  const mock = mockGraphFetch(() => ({ contentType: 'application/json', body: JSON.stringify({ value: [] }) }))
+  try {
+    const res = await fastify.inject({
+      method: 'GET', url: '/api/users/',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.statusCode, 403)
+    assert.equal(mock.calls.length, 0)
+  } finally {
+    mock.restore()
+  }
+})
+
+test('GET / — admin → annuaire enrichi du poste assigné', { skip: SKIP }, async () => {
+  const { token } = await makeAdminToken('oid-users-list-admin')
+  const entraId = '5e6f7081-0000-4000-8000-0000000000aa'
+  await db.query(`INSERT INTO users_cache (entra_id, display_name) VALUES ($1, 'Annuaire User') ON CONFLICT DO NOTHING`, [entraId])
+  await db.query(`INSERT INTO devices (hostname, assigned_user_id) VALUES ('PC-ANNUAIRE', $1)`, [entraId])
+  const mock = mockGraphFetch(() => ({
+    contentType: 'application/json',
+    body: JSON.stringify({ value: [{ id: entraId, displayName: 'Annuaire User', userPrincipalName: 'annuaire@contoso.fr' }] }),
+  }))
+  try {
+    const res = await fastify.inject({
+      method: 'GET', url: '/api/users/',
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.statusCode, 200)
+    const u = res.json().find(x => x.entra_id === entraId)
+    assert.equal(u.device.hostname, 'PC-ANNUAIRE')
+  } finally {
+    mock.restore()
+  }
+})

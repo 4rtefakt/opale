@@ -1,10 +1,11 @@
 export default async function stockRoute(fastify) {
-  // Écritures (articles, mouvements) réservées aux admins ; lecture du
-  // catalogue ouverte aux utilisateurs authentifiés.
+  // Toutes les routes sont admin-only : les mouvements exposent hostnames et
+  // destinataires, et aucun client non-admin n'utilise le stock (le front
+  // refuse les non-admins après /users/sync-me).
 
   // GET /api/stock?q=&category=
   fastify.get('/', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       querystring: {
         type: 'object',
@@ -181,7 +182,7 @@ export default async function stockRoute(fastify) {
 
   // GET /api/stock/:id/movements
   fastify.get('/:id/movements', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       params: {
         type: 'object',

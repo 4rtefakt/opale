@@ -61,9 +61,9 @@ test('POST /api/stock — sans JWT → 401', { skip: SKIP }, async () => {
   assert.equal(res.statusCode, 401)
 })
 
-// Écritures admin-only ; la lecture du catalogue reste ouverte aux
-// utilisateurs authentifiés.
-test('écritures stock — non-admin → 403 (POST, PATCH, mouvements), quantité inchangée', { skip: SKIP }, async () => {
+// Stock entièrement admin-only (écritures, catalogue, historique des
+// mouvements qui expose hostnames et destinataires).
+test('stock — non-admin → 403 (catalogue, POST, PATCH, mouvements), quantité inchangée', { skip: SKIP }, async () => {
   const u = await seedNonAdmin(db, { entraId: 'oid-stock-na', email: 'oid-stock-na@x' })
   const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
   const item = await seedStockItem(db, { name: 'Article NA', quantity: 5 })
@@ -83,8 +83,11 @@ test('écritures stock — non-admin → 403 (POST, PATCH, mouvements), quantit�
   const { rows: pirates } = await db.query(`SELECT 1 FROM stock_items WHERE name = 'Pirate'`)
   assert.equal(pirates.length, 0)
 
+  // Ce test assertait 200 (catalogue ouvert aux non-admins) : la lecture
+  // est désormais admin-only elle aussi.
   const list = await fastify.inject({ method: 'GET', url: '/api/stock/', headers })
-  assert.equal(list.statusCode, 200)
+  assert.equal(list.statusCode, 403)
+  assert.doesNotMatch(list.body, /Article NA/)
 })
 
 // ─── GET / — liste ────────────────────────────────────────────────────────────
@@ -266,4 +269,31 @@ test('GET /api/stock/:id/movements — retourne l\'historique', { skip: SKIP }, 
   assert.equal(rows[0].type, 'out')
   assert.equal(rows[0].quantity, 1)
   assert.equal(rows[0].note, 'pour PC-TEST')
+})
+
+test('GET /api/stock/:id/movements — non-admin → 403 (hostnames, destinataires)', { skip: SKIP }, async () => {
+  const admin = await adminToken('oid-stock-mvt-read-admin')
+  const u = await seedNonAdmin(db, { entraId: 'oid-stock-mvt-read-na', email: 'oid-stock-mvt-read-na@x' })
+  const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const item = await seedStockItem(db, { name: 'Article Mvt NA', quantity: 3 })
+  const mvt = await fastify.inject({
+    method: 'POST', url: `/api/stock/${item.id}/movements`,
+    headers: { authorization: `Bearer ${admin}` },
+    payload: { type: 'out', quantity: 1, recipient_label: 'Destinataire Secret' },
+  })
+  assert.equal(mvt.statusCode, 201)
+
+  const res = await fastify.inject({
+    method: 'GET', url: `/api/stock/${item.id}/movements`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
+  assert.doesNotMatch(res.body, /Destinataire Secret/)
+
+  const ok = await fastify.inject({
+    method: 'GET', url: `/api/stock/${item.id}/movements`,
+    headers: { authorization: `Bearer ${admin}` },
+  })
+  assert.equal(ok.statusCode, 200)
+  assert.ok(ok.json().some(m => m.recipient_label === 'Destinataire Secret'))
 })
