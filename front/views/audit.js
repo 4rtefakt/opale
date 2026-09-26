@@ -23,7 +23,8 @@ const _CATEGORIES = {
   },
   security: {
     label: 'Tokens & sécurité',
-    in: ['token_created', 'token_revoked', 'agent_bootstrap_exchange', 'admin_granted', 'admin_revoked'],
+    in: ['token_created', 'token_revoked', 'agent_bootstrap_exchange', 'admin_granted', 'admin_revoked',
+         'agent_bootstrap_exchange_refused', 'agent_token_bind_refused', 'agent_token_bound'],
   },
   agent_conn: {
     label: 'Connexion agent (bruyant)',
@@ -130,6 +131,9 @@ const _BADGE = {
   admin_granted:             ['b-prog',   'ti-shield-check'],
   admin_revoked:             ['b-prog',   'ti-shield-off'],
   agent_bootstrap_exchange:  ['b-done',   'ti-arrows-exchange'],
+  agent_bootstrap_exchange_refused: ['b-prog', 'ti-shield-x'],
+  agent_token_bind_refused:  ['b-prog',   'ti-lock-x'],
+  agent_token_bound:         ['b-done',   'ti-link'],
   agent_ws_connect:          ['b-done',   'ti-broadcast'],
   agent_ws_disconnect:       ['b-closed', 'ti-broadcast-off'],
   agent_console_open:        ['b-prog',   'ti-terminal-2'],
@@ -153,6 +157,9 @@ const _ACTION_LABEL = {
   rmm_force_checkin:      'forçage checkin',
   intune_force_sync:      'forçage sync intune',
   device_deleted:         'poste supprimé',
+  agent_bootstrap_exchange_refused: 'échange bootstrap refusé',
+  agent_token_bind_refused:         'liaison token refusée',
+  agent_token_bound:                'token lié au poste',
 }
 
 function _formatDuration(s) {
@@ -189,6 +196,9 @@ function _summary(action, details) {
   if (action === 'ssh_open')               return [_reasonShort(details.reason), details.host, details.ip].filter(Boolean).join(' · ')
   if (action === 'ssh_close')              return _formatDuration(details.duration_seconds)
   if (action === 'agent_ws_disconnect')    return [details.reason, _formatDuration(details.duration_seconds)].filter(Boolean).join(' · ')
+  if (action === 'agent_bootstrap_exchange_refused') return [details.reason, details.bootstrap_label, details.serial].filter(Boolean).join(' · ')
+  if (action === 'agent_token_bind_refused')         return [details.reason, details.token_label, details.serial].filter(Boolean).join(' · ')
+  if (action === 'agent_token_bound')                return [details.token_label, details.serial].filter(Boolean).join(' · ')
   return ''
 }
 

@@ -95,7 +95,7 @@ function renderBody(el) {
       ${hwRow('ti-hash',               'Build OS',     d.os_build)}
       ${hwRow('ti-settings',           'BIOS',         d.bios_version)}
       ${hwRow('ti-fingerprint',        'Numéro série', d.serial)}
-      ${d.ip_netbird ? hwRowRaw('ti-network', 'Netbird IP', `<span style="cursor:pointer;color:var(--blue-text)" onclick="navigator.clipboard.writeText('${esc(d.ip_netbird)}').then(()=>window.showToast('IP copiée','success'))">${esc(d.ip_netbird)}</span>`) : ''}
+      ${d.ip_netbird ? hwRowRaw('ti-network', 'Netbird IP', `<span style="cursor:pointer;color:var(--blue-text)" onclick="navigator.clipboard.writeText(${jsArg(d.ip_netbird)}).then(()=>window.showToast('IP copiée','success'))">${esc(d.ip_netbird)}</span>`) : ''}
       ${hwRow('ti-clock',              'Vu',           formatRelative(d.last_seen))}
       ${d.compliance_state ? hwRowRaw('ti-shield-check', 'Conformité', complianceBadge(d.compliance_state)) : ''}
       ${hwRow('ti-cloud',              'Jonction',     d.join_type ? formatJoinType(d.join_type) : null)}
@@ -215,7 +215,7 @@ function renderBody(el) {
         <button style="width:100%;padding:13px;border-radius:10px;font-size:14px;font-weight:600;
           background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);cursor:pointer;
           display:flex;align-items:center;justify-content:center;gap:6px"
-          onclick="navigator.clipboard.writeText('${esc(sshCmd)}').then(()=>{window.mCloseSheet();window.showToast('Commande copiée','success')})">
+          onclick="navigator.clipboard.writeText(${jsArg(sshCmd)}).then(()=>{window.mCloseSheet();window.showToast('Commande copiée','success')})">
           <i class="ti ti-terminal-2"></i> Terminal local
         </button>
         <button style="width:100%;padding:10px;border-radius:10px;font-size:13px;font-weight:500;background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer" onclick="window.mCloseSheet()">

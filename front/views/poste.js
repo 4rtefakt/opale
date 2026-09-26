@@ -182,7 +182,7 @@ function renderBody() {
             <div class="ticket-item" onclick="navigateTo('/tickets')" style="cursor:pointer">
               <div class="ti-header">
                 <span class="ti-title">${esc(tk.title)}</span>
-                <span class="badge badge-${tk.status === 'resolved' ? 'green' : 'orange'}">${tk.status}</span>
+                <span class="badge badge-${tk.status === 'resolved' ? 'green' : 'orange'}">${esc(tk.status)}</span>
               </div>
               <div class="ti-meta"><span>${formatRelative(tk.created_at)}</span></div>
             </div>`).join('')
@@ -262,8 +262,8 @@ function securityPanel(d) {
   // Signature AV — ok < 3j, warning 3-7j, critique > 7j
   const sigAge = def.signature_age_days ?? null
   const sigBadge = sigAge !== null
-    ? sigAge > 7  ? `<span class="badge badge-red"    style="margin-left:4px">Ancienne (${sigAge}j)</span>`
-    : sigAge > 3  ? `<span class="badge badge-orange" style="margin-left:4px">${sigAge}j</span>`
+    ? sigAge > 7  ? `<span class="badge badge-red"    style="margin-left:4px">Ancienne (${esc(sigAge)}j)</span>`
+    : sigAge > 3  ? `<span class="badge badge-orange" style="margin-left:4px">${esc(sigAge)}j</span>`
     :               `<span class="badge badge-green"  style="margin-left:4px">À jour</span>`
     : ''
   const sigRow = def.signature_last_update
@@ -274,8 +274,8 @@ function securityPanel(d) {
   let threatRow = ''
   if (def.threats_last_30d != null) {
     const tc = def.threats_last_30d
-    const tb = tc >= 5  ? `<span class="badge badge-red">${tc} menace${tc > 1 ? 's' : ''} détectée${tc > 1 ? 's' : ''}</span>`
-             : tc > 0   ? `<span class="badge badge-orange">${tc} menace${tc > 1 ? 's' : ''}</span>`
+    const tb = tc >= 5  ? `<span class="badge badge-red">${esc(tc)} menace${tc > 1 ? 's' : ''} détectée${tc > 1 ? 's' : ''}</span>`
+             : tc > 0   ? `<span class="badge badge-orange">${esc(tc)} menace${tc > 1 ? 's' : ''}</span>`
              :            `<span class="badge badge-green">Aucune</span>`
     const lastThreat = def.last_threat_at ? ` <span style="font-size:10px;color:var(--text-tertiary)">· dernière ${esc(def.last_threat_at)}</span>` : ''
     threatRow = hwRowRaw('ti-virus', 'Menaces 30j', tb + lastThreat)
@@ -467,7 +467,7 @@ function batteryHealthPanel(d) {
           `<span style="font-weight:700;font-size:14px;color:${col}">${health.toFixed(0)}%</span>
           <div class="qty-bar" style="height:5px;margin-top:4px"><div class="qb ${cls}" style="width:${health}%"></div></div>`
         )}
-        ${cycles != null ? hwRowRaw('ti-refresh', 'Cycles', `${cycles}${cycleNote}`) : ''}
+        ${cycles != null ? hwRowRaw('ti-refresh', 'Cycles', `${esc(cycles)}${cycleNote}`) : ''}
         ${bh.chemistry ? hwRow('ti-flask', 'Chimie', bh.chemistry) : ''}
         ${bh.designed_mwh && bh.full_charge_mwh ? hwRow('ti-bolt', 'Capacité', `${+(bh.full_charge_mwh / 1000).toFixed(1)} / ${+(bh.designed_mwh / 1000).toFixed(1)} Wh`) : ''}
       </div>
@@ -485,7 +485,7 @@ function threatsPanel(d) {
         <i class="ti ti-virus" style="margin-right:6px"></i>Menaces Defender — 30 derniers jours
       </div>
       <div style="padding:12px 16px">
-        <div style="font-size:28px;font-weight:700;color:var(--red);line-height:1">${tc}</div>
+        <div style="font-size:28px;font-weight:700;color:var(--red);line-height:1">${esc(tc)}</div>
         <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">menace${tc > 1 ? 's' : ''} détectée${tc > 1 ? 's' : ''}</div>
         ${def.last_threat_at ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:8px">Dernière détection : ${esc(def.last_threat_at)}</div>` : ''}
         <div style="font-size:11px;color:var(--text-tertiary);margin-top:6px">
@@ -985,6 +985,8 @@ function initGraphListeners() {
   })
 }
 
+// type : eth | wifi | netbird, ou null quand l'API ne reconnaît pas la valeur
+// remontée par l'agent → pas de badge (icône par défaut).
 function netifRow(iface) {
   const icon = iface.type === 'wifi' ? 'ti-wifi' : iface.type === 'netbird' ? 'ti-network' : 'ti-plug-connected'
   return `<div class="netif-row">
@@ -993,7 +995,7 @@ function netifRow(iface) {
       <div style="font-size:12px;font-weight:500">${esc(iface.adapter || '—')}</div>
       <div style="font-size:11px;color:var(--text-tertiary)">${esc(iface.ip || '—')} · ${esc(iface.mac || '—')}</div>
     </div>
-    <span class="badge">${iface.type}</span>
+    ${iface.type ? `<span class="badge">${esc(iface.type)}</span>` : ''}
   </div>`
 }
 
@@ -1151,12 +1153,27 @@ async function connectSSH() {
 
   _term.onData((data) => {
     if (_ws.readyState === WebSocket.OPEN)
-      _ws.send(JSON.stringify({ type: 'input', data: btoa(data) }))
+      _ws.send(JSON.stringify({ type: 'input', data: utf8ToB64(data) }))
   })
 
   fitTerminal()
   const ro = new ResizeObserver(() => fitTerminal())
   ro.observe(mount)
+}
+
+// Entrée xterm (chaîne JS) → base64 des octets UTF-8 : /api/ssh et
+// /api/console décodent le base64 et écrivent les octets tels quels dans le
+// flux SSH / le ConPTY de l'agent, qui attendent de l'UTF-8. btoa(data)
+// envoyait du Latin-1 pour é, ü… et levait une exception au-delà de U+00FF
+// (frappe perdue). Identique à btoa(data) pour l'ASCII. Même approche que
+// le terminal mobile, par blocs pour supporter les gros collages.
+function utf8ToB64(str) {
+  const bytes = new TextEncoder().encode(str)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  }
+  return btoa(bin)
 }
 
 function disconnectSSH() {
@@ -1319,7 +1336,7 @@ async function connectConsole(takeover = false, reason = null) {
 
   _term.onData((data) => {
     if (_ws.readyState === WebSocket.OPEN)
-      _ws.send(JSON.stringify({ type: 'input', data: btoa(data) }))
+      _ws.send(JSON.stringify({ type: 'input', data: utf8ToB64(data) }))
   })
 
   fitTerminal()

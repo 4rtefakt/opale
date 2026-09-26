@@ -98,7 +98,7 @@ function renderBody() {
               <div style="font-size:13px;font-weight:500">${esc(k.label)}</div>
               <div style="font-size:10px;color:var(--text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace">${esc(k.public_key.slice(0, 40))}…</div>
             </div>
-            <button class="m-icon-btn" style="color:var(--red)" onclick="mDeleteSSHKey('${esc(k.id)}','${esc(k.label)}',this)">
+            <button class="m-icon-btn" style="color:var(--red)" onclick="mDeleteSSHKey('${esc(k.id)}',${jsArg(k.label)},this)">
               <i class="ti ti-trash"></i>
             </button>
           </div>`).join('')
@@ -119,7 +119,7 @@ function renderBody() {
               <div style="font-size:13px;font-weight:500">${esc(tk.label)}</div>
               <div style="font-size:11px;color:var(--text-tertiary)">${formatRelative(tk.created_at)}</div>
             </div>
-            <button class="m-icon-btn" style="color:var(--red)" onclick="mRevokeToken('${esc(tk.id)}','${esc(tk.label)}',this)">
+            <button class="m-icon-btn" style="color:var(--red)" onclick="mRevokeToken('${esc(tk.id)}',${jsArg(tk.label)},this)">
               <i class="ti ti-trash"></i>
             </button>
           </div>`).join('')

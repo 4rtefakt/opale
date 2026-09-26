@@ -260,7 +260,7 @@ export async function renderTickets(el) {
           lst.innerHTML = users.length
             ? users.map(u => `
                 <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-                  onclick="mNtiApplyRequester('${esc(u.entra_id)}', ${mJsArg(u.display_name || '')}, ${mJsArg(u.email || '')})">
+                  onclick="mNtiApplyRequester(${mJsArg(u.entra_id)}, ${mJsArg(u.display_name || '')}, ${mJsArg(u.email || '')})">
                   <div style="font-size:13px">${esc(u.display_name)}</div>
                   ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
                 </div>`).join('')
@@ -577,7 +577,7 @@ function renderActiveChips() {
 
 function advChip(label, key) {
   return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-secondary);font-size:11px;padding:2px 8px;border-radius:10px">
-    ${esc(label)} <span style="cursor:pointer;opacity:0.7;padding:8px;margin:-8px -4px -8px 0" onclick="mTkRemoveChip('${esc(key)}')">×</span>
+    ${esc(label)} <span style="cursor:pointer;opacity:0.7;padding:8px;margin:-8px -4px -8px 0" onclick="mTkRemoveChip(${mJsArg(key)})">×</span>
   </span>`
 }
 
@@ -695,6 +695,7 @@ function mTkClearAdv() {
   loadTickets()
 }
 
+// Valeur inconnue échappée : priority est du texte libre côté API.
 function prioLabel(p) {
-  return p === 'low' ? 'Basse' : p === 'normal' ? 'Normale' : p === 'high' ? 'Haute' : p === 'critical' ? 'Critique' : p
+  return p === 'low' ? 'Basse' : p === 'normal' ? 'Normale' : p === 'high' ? 'Haute' : p === 'critical' ? 'Critique' : esc(p)
 }

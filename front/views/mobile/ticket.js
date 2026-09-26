@@ -454,7 +454,7 @@ function mOpenPeople() {
               ${esc(u.display_name || u.entra_id)}
               ${isReq ? `<span style="font-size:10px;background:rgba(13,148,136,0.15);color:#0d9488;padding:1px 6px;border-radius:8px;margin-left:4px">${t('mobile.ticket.people.requester')}</span>` : ''}
             </div>
-            <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mRemoveUser('${esc(u.entra_id)}',this)"><i class="ti ti-x" style="font-size:12px"></i></button>
+            <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mRemoveUser(${mJsArg(u.entra_id)},this)"><i class="ti ti-x" style="font-size:12px"></i></button>
           </div>`
         }).join('') : `<div style="font-size:13px;color:var(--text-tertiary)">${t('mobile.ticket.people.empty')}</div>`}
       </div>
@@ -632,7 +632,7 @@ function wireUserSearch(inputId, listId, onPick) {
       list.innerHTML = users.length
         ? users.map(u => `
             <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-              onclick="window.__mPickUser({ entra_id: '${esc(u.entra_id)}', display_name: ${mJsArg(u.display_name || '')} })">
+              onclick="window.__mPickUser({ entra_id: ${mJsArg(u.entra_id)}, display_name: ${mJsArg(u.display_name || '')} })">
               <div style="font-size:13px">${esc(u.display_name)}</div>
               ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
             </div>`).join('')
@@ -832,8 +832,9 @@ function mEditTitle() {
 function statusLabel(s) {
   return s === 'resolved' ? 'Résolu' : s === 'in_progress' ? 'En cours' : s === 'proposed' ? 'Proposé' : 'Ouvert'
 }
+// Valeur inconnue échappée : priority est du texte libre côté API.
 function prioLabel(p) {
-  return p === 'low' ? 'Basse' : p === 'normal' ? 'Normale' : p === 'high' ? 'Haute' : p === 'critical' ? 'Critique' : (p || '—')
+  return p === 'low' ? 'Basse' : p === 'normal' ? 'Normale' : p === 'high' ? 'Haute' : p === 'critical' ? 'Critique' : esc(p || '—')
 }
 function prioColor(p) {
   return p === 'critical' ? 'var(--red)' : p === 'high' ? 'var(--amber)' : 'var(--text-tertiary)'

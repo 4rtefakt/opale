@@ -173,7 +173,7 @@ function renderResults(data) {
     const aside = r.aside ? r.aside(row) : ''
     const sub   = r.sub(row)
     return `
-      <div class="m-device-card" onclick="window.location.hash='${esc(r.href(row))}'">
+      <div class="m-device-card" onclick="window.location.hash=${jsArg(r.href(row))}">
         <i class="ti ${r.icon}" style="color:var(--text-secondary);font-size:18px;flex-shrink:0"></i>
         <div class="m-device-info">
           <div class="m-device-name">${esc(r.title(row) || '—')}</div>

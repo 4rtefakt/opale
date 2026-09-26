@@ -148,19 +148,33 @@ function defaultFilters() {
 
 // ─── Hash sync ───────────────────────────────────────────────────────────────
 
+// Le hash est contrôlable par un tiers (lien piégé envoyé à un admin) : on ne
+// garde que des valeurs connues avant qu'elles n'atteignent le rendu.
+const HASH_STATUSES   = ['all', 'open', 'in_progress', 'auto', 'resolved', 'closed']
+const HASH_PRIORITIES = ['low', 'normal', 'high', 'critical']
+const UUID_RE         = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const DATE_RE         = /^\d{4}-\d{2}-\d{2}$/
+
+// AAAA-MM-JJ et date réelle : l'aller-retour par Date rejette 2026-02-30.
+function isValidDay(s) {
+  if (!DATE_RE.test(s || '')) return false
+  const d = new Date(s + 'T00:00:00Z')
+  return !isNaN(d) && d.toISOString().slice(0, 10) === s
+}
+
 function readFiltersFromHash() {
   const hash = window.location.hash || ''
   const qIdx = hash.indexOf('?')
   if (qIdx === -1) return defaultFilters()
   const sp = new URLSearchParams(hash.slice(qIdx + 1))
   const f = defaultFilters()
-  if (sp.get('status'))       f.status   = sp.get('status')
-  if (sp.get('priority'))     f.priority = sp.get('priority').split(',').filter(Boolean)
-  if (sp.get('tag'))          f.tag      = sp.get('tag').split(',').filter(Boolean)
+  if (HASH_STATUSES.includes(sp.get('status'))) f.status = sp.get('status')
+  if (sp.get('priority'))     f.priority = sp.get('priority').split(',').filter(p => HASH_PRIORITIES.includes(p))
+  if (sp.get('tag'))          f.tag      = sp.get('tag').split(',').filter(id => UUID_RE.test(id))
   if (sp.get('assigned_to'))  f.assigned_to = sp.get('assigned_to')
   if (sp.get('assigned_label'))  f.assigned_label = sp.get('assigned_label')
-  if (sp.get('created_from')) f.created_from = sp.get('created_from')
-  if (sp.get('created_to'))   f.created_to   = sp.get('created_to')
+  if (isValidDay(sp.get('created_from'))) f.created_from = sp.get('created_from')
+  if (isValidDay(sp.get('created_to')))   f.created_to   = sp.get('created_to')
   return f
 }
 
@@ -566,11 +580,13 @@ function kanbanCard(tk) {
     </div>`
 }
 
+// Valeur inconnue : échappée (status/priority sont du texte libre côté API,
+// modifiable par tout utilisateur authentifié sur ses tickets).
 function kanbanColLabel(s) {
   return s === 'open'        ? t('tickets.status.open')
        : s === 'in_progress' ? t('tickets.status.in_progress')
        : s === 'resolved'    ? t('tickets.status.resolved')
-       : s
+       : esc(s)
 }
 
 // ─── Toggle vue ─────────────────────────────────────────────────────────────
@@ -1030,7 +1046,7 @@ function renderRelatedUsers(tk) {
         ${userLink(u.entra_id, u.display_name || u.entra_id)} ${roleBadge}
       </div>
       <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text-tertiary)"
-        onclick="tkRemoveUser('${tk.id}','${u.entra_id}')" title="${esc(t('tickets.related_users.remove'))}">
+        onclick="tkRemoveUser('${tk.id}',${jsArg(u.entra_id)})" title="${esc(t('tickets.related_users.remove'))}">
         <i class="ti ti-x" style="font-size:11px"></i>
       </button>
     </div>`
@@ -1396,7 +1412,7 @@ async function tkOpenAssigneePickerOnTicket(id) {
         list.innerHTML = users.length
           ? users.map(u => `
               <div class="user-row" style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-                onclick="window.tkPickAssignee('${u.entra_id}', ${jsArg(u.display_name)})">
+                onclick="window.tkPickAssignee(${jsArg(u.entra_id)}, ${jsArg(u.display_name)})">
                 <div style="font-size:13px">${esc(u.display_name)}</div>
                 ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
               </div>`).join('')
@@ -1439,7 +1455,7 @@ async function tkOpenRequesterPicker(id) {
         list.innerHTML = users.length
           ? users.map(u => `
               <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-                onclick="window.tkPickRequester('${u.entra_id}')">
+                onclick="window.tkPickRequester(${jsArg(u.entra_id)})">
                 <div style="font-size:13px">${esc(u.display_name)}</div>
                 ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
               </div>`).join('')
@@ -1787,8 +1803,8 @@ function renderAdvancedPanel() {
       <div>
         <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:4px">${t('tickets.filters.assignee')}</div>
         <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-sm ${_filters.assigned_to==='me'?'btn-primary':''}" onclick="tkSetAssignedFilter('me','${esc(t('tickets.filters.assignee_me'))}')">${t('tickets.filters.assignee_me')}</button>
-          <button class="btn btn-sm ${_filters.assigned_to==='unassigned'?'btn-primary':''}" onclick="tkSetAssignedFilter('unassigned','${esc(t('tickets.filters.assignee_unassigned'))}')">${t('tickets.filters.assignee_unassigned')}</button>
+          <button class="btn btn-sm ${_filters.assigned_to==='me'?'btn-primary':''}" onclick="tkSetAssignedFilter('me',${jsArg(t('tickets.filters.assignee_me'))})">${t('tickets.filters.assignee_me')}</button>
+          <button class="btn btn-sm ${_filters.assigned_to==='unassigned'?'btn-primary':''}" onclick="tkSetAssignedFilter('unassigned',${jsArg(t('tickets.filters.assignee_unassigned'))})">${t('tickets.filters.assignee_unassigned')}</button>
           <button class="btn btn-sm" onclick="tkOpenAssignedPicker()">
             ${_filters.assigned_to && _filters.assigned_to!=='me' && _filters.assigned_to!=='unassigned'
               ? `${t('tickets.filters.assignee_user')}: ${esc(_filters.assigned_label || _filters.assigned_to)}`
@@ -1871,7 +1887,7 @@ function tkOpenAssignedPicker() {
         list.innerHTML = users.length
           ? users.map(u => `
               <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-                onclick="window.tkPickAssignedFilter('${u.entra_id}', ${jsArg(u.display_name)})">
+                onclick="window.tkPickAssignedFilter(${jsArg(u.entra_id)}, ${jsArg(u.display_name)})">
                 <div style="font-size:13px">${esc(u.display_name)}</div>
                 ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
               </div>`).join('')
@@ -1942,7 +1958,7 @@ function renderActiveChips() {
 function chipHtml(label, key) {
   return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-tertiary);color:var(--text-primary);padding:2px 8px;border-radius:10px;font-size:11px">
     ${esc(label)}
-    <span style="cursor:pointer;opacity:0.7" onclick="tkRemoveChip('${key}')">×</span>
+    <span style="cursor:pointer;opacity:0.7" onclick="tkRemoveChip(${jsArg(key)})">×</span>
   </span>`
 }
 
@@ -2022,7 +2038,7 @@ function renderMailDiagConfig(diag, status) {
       <div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">${t('tickets.mail_diag.config')}</div>
       <div style="background:var(--bg-tertiary);border-radius:6px;padding:10px;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px">
         <div>${dot(c.poll_enabled)} ${t('tickets.mail_diag.poll_enabled')}</div>
-        <div style="color:var(--text-secondary)">${c.inboxes || '(aucune)'}</div>
+        <div style="color:var(--text-secondary)">${esc(c.inboxes) || '(aucune)'}</div>
         <div>${dot(c.send_enabled)} ${t('tickets.mail_diag.send_enabled')}</div>
         <div style="color:var(--text-secondary)">${esc(c.sender_address) || '(non configuré)'}</div>
         <div>${dot(c.mark_as_read_enabled)} ${t('tickets.mail_diag.mark_read_enabled')}</div>
@@ -2524,7 +2540,7 @@ function openNewTicketModal({ prefillDevice = null } = {}) {
       lst.innerHTML = users.length
         ? users.map(u => `
             <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-              onclick="window.ntApplyAssignee('${u.entra_id}', ${jsArg(u.display_name)})">
+              onclick="window.ntApplyAssignee(${jsArg(u.entra_id)}, ${jsArg(u.display_name)})">
               <div style="font-size:13px">${esc(u.display_name)}</div>
               ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
             </div>`).join('')
@@ -2577,7 +2593,7 @@ function openNewTicketModal({ prefillDevice = null } = {}) {
       lst.innerHTML = users.length
         ? users.map(u => `
             <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-              onclick="window.ntApplyRequester('${u.entra_id}', ${jsArg(u.display_name)}, ${jsArg(u.email || '')})">
+              onclick="window.ntApplyRequester(${jsArg(u.entra_id)}, ${jsArg(u.display_name)}, ${jsArg(u.email || '')})">
               <div style="font-size:13px">${esc(u.display_name)}</div>
               ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
             </div>`).join('')
@@ -2761,16 +2777,18 @@ function openNewTicketModal({ prefillDevice = null } = {}) {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+// Valeur inconnue : échappée (status/priority sont du texte libre côté API,
+// modifiable par tout utilisateur authentifié sur ses tickets).
 function statusLabel(s) {
   return s === 'open'        ? t('tickets.status.open')
        : s === 'in_progress' ? t('tickets.status.in_progress')
        : s === 'resolved'    ? t('tickets.status.resolved')
-       : s
+       : esc(s)
 }
 function prioLabel(p) {
   return p === 'low'      ? t('prio.low')
        : p === 'normal'   ? t('prio.normal')
        : p === 'high'     ? t('prio.high')
        : p === 'critical' ? t('prio.critical')
-       : p
+       : esc(p)
 }
