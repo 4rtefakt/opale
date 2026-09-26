@@ -695,6 +695,7 @@ function mTkClearAdv() {
   loadTickets()
 }
 
+// Valeur inconnue échappée : priority est du texte libre côté API.
 function prioLabel(p) {
-  return p === 'low' ? 'Basse' : p === 'normal' ? 'Normale' : p === 'high' ? 'Haute' : p === 'critical' ? 'Critique' : p
+  return p === 'low' ? 'Basse' : p === 'normal' ? 'Normale' : p === 'high' ? 'Haute' : p === 'critical' ? 'Critique' : esc(p)
 }

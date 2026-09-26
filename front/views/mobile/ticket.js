@@ -832,8 +832,9 @@ function mEditTitle() {
 function statusLabel(s) {
   return s === 'resolved' ? 'Résolu' : s === 'in_progress' ? 'En cours' : s === 'proposed' ? 'Proposé' : 'Ouvert'
 }
+// Valeur inconnue échappée : priority est du texte libre côté API.
 function prioLabel(p) {
-  return p === 'low' ? 'Basse' : p === 'normal' ? 'Normale' : p === 'high' ? 'Haute' : p === 'critical' ? 'Critique' : (p || '—')
+  return p === 'low' ? 'Basse' : p === 'normal' ? 'Normale' : p === 'high' ? 'Haute' : p === 'critical' ? 'Critique' : esc(p || '—')
 }
 function prioColor(p) {
   return p === 'critical' ? 'var(--red)' : p === 'high' ? 'var(--amber)' : 'var(--text-tertiary)'

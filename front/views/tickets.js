@@ -573,11 +573,13 @@ function kanbanCard(tk) {
     </div>`
 }
 
+// Valeur inconnue : échappée (status/priority sont du texte libre côté API,
+// modifiable par tout utilisateur authentifié sur ses tickets).
 function kanbanColLabel(s) {
   return s === 'open'        ? t('tickets.status.open')
        : s === 'in_progress' ? t('tickets.status.in_progress')
        : s === 'resolved'    ? t('tickets.status.resolved')
-       : s
+       : esc(s)
 }
 
 // ─── Toggle vue ─────────────────────────────────────────────────────────────
@@ -2029,7 +2031,7 @@ function renderMailDiagConfig(diag, status) {
       <div style="font-weight:600;margin-bottom:6px;color:var(--text-primary)">${t('tickets.mail_diag.config')}</div>
       <div style="background:var(--bg-tertiary);border-radius:6px;padding:10px;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px">
         <div>${dot(c.poll_enabled)} ${t('tickets.mail_diag.poll_enabled')}</div>
-        <div style="color:var(--text-secondary)">${c.inboxes || '(aucune)'}</div>
+        <div style="color:var(--text-secondary)">${esc(c.inboxes) || '(aucune)'}</div>
         <div>${dot(c.send_enabled)} ${t('tickets.mail_diag.send_enabled')}</div>
         <div style="color:var(--text-secondary)">${esc(c.sender_address) || '(non configuré)'}</div>
         <div>${dot(c.mark_as_read_enabled)} ${t('tickets.mail_diag.mark_read_enabled')}</div>
@@ -2768,16 +2770,18 @@ function openNewTicketModal({ prefillDevice = null } = {}) {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+// Valeur inconnue : échappée (status/priority sont du texte libre côté API,
+// modifiable par tout utilisateur authentifié sur ses tickets).
 function statusLabel(s) {
   return s === 'open'        ? t('tickets.status.open')
        : s === 'in_progress' ? t('tickets.status.in_progress')
        : s === 'resolved'    ? t('tickets.status.resolved')
-       : s
+       : esc(s)
 }
 function prioLabel(p) {
   return p === 'low'      ? t('prio.low')
        : p === 'normal'   ? t('prio.normal')
        : p === 'high'     ? t('prio.high')
        : p === 'critical' ? t('prio.critical')
-       : p
+       : esc(p)
 }

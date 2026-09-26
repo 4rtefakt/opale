@@ -182,7 +182,7 @@ function renderBody() {
             <div class="ticket-item" onclick="navigateTo('/tickets')" style="cursor:pointer">
               <div class="ti-header">
                 <span class="ti-title">${esc(tk.title)}</span>
-                <span class="badge badge-${tk.status === 'resolved' ? 'green' : 'orange'}">${tk.status}</span>
+                <span class="badge badge-${tk.status === 'resolved' ? 'green' : 'orange'}">${esc(tk.status)}</span>
               </div>
               <div class="ti-meta"><span>${formatRelative(tk.created_at)}</span></div>
             </div>`).join('')
