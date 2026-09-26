@@ -2,6 +2,7 @@ import { isIP } from 'node:net'
 import { Client } from 'ssh2'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
 import { scriptOutputForDb } from '../lib/script-output.js'
+import { makeHostVerifier, loadKnownHostKey } from '../../remote/lib/ssh-host-key.js'
 
 function sshKey() {
   const b64 = process.env.SSH_PRIVATE_KEY_B64
@@ -16,10 +17,15 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
     reply.raw.write(`data: ${JSON.stringify({ execId, deviceId: device.id, hostname: device.hostname, type, data })}\n\n`)
   }
 
+  // L'empreinte connue est chargée AVANT connect() : le hostVerifier de ssh2
+  // est synchrone (cf. remote/lib/ssh-host-key.js).
+  const knownFp = await loadKnownHostKey(fastify.db, device.id)
+
   return new Promise((resolve) => {
     const conn = new Client()
     const output = []
     const t0 = Date.now()
+    let hostKeyRejection = null
 
     conn.on('ready', () => {
       send('connected', `Connecté à ${device.hostname} (${device.ip_netbird})`)
@@ -50,8 +56,11 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
     })
 
     conn.on('error', (err) => {
-      send('error', `Connexion SSH échouée : ${err.message}`)
-      resolve({ status: 'error', output: err.message, duration: Date.now() - t0 })
+      // Clé d'hôte refusée : ssh2 lève une erreur générique, on garde le
+      // message explicite de la vérification.
+      const message = hostKeyRejection || err.message
+      send('error', `Connexion SSH échouée : ${message}`)
+      resolve({ status: 'error', output: message, duration: Date.now() - t0 })
     })
 
     conn.connect({
@@ -59,6 +68,11 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
       port:       parseInt(process.env.SSH_PORT || '22', 10),
       username:   process.env.SSH_USER || 'opale',
       privateKey: sshKey(),
+      hostVerifier: makeHostVerifier(
+        { db: fastify.db, log: fastify.log },
+        device, knownFp,
+        { onReject: (msg) => { hostKeyRejection = msg } }
+      ),
       readyTimeout: 10_000
     })
   })

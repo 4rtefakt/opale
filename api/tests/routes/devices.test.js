@@ -25,6 +25,7 @@ import { buildApp } from '../helpers/build-app.js'
 import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 
 import devicesRoute from '../../modules/inventory/routes/devices.js'
+import { startFakeSshServer, sshClientEnv } from '../helpers/fake-ssh.js'
 
 const sshUtils = ssh2.utils
 
@@ -356,4 +357,78 @@ test('POST /force-checkin — ip_netbird qui n\'est pas une IP → poste ignoré
   })
   assert.equal(res.statusCode, 200)
   assert.deepEqual(res.json(), { ok: 0, skipped: 1, errors: [] })
+})
+
+// ─── Clé d'hôte SSH (TOFU) ──────────────────────────────────────────────────
+
+test('POST /force-checkin — clé d\'hôte SSH différente de l\'empreinte connue → refus explicite, aucune commande', { skip: SKIP, timeout: 20000 }, async (t) => {
+  const impostor = await startFakeSshServer(t, { output: 'restarted: Opale-Agent' })
+  sshClientEnv(t, impostor.port)
+  const { token } = await adminAuth('oid-dev-force-hostkey')
+  const id = await insertDevice({ hostname: 'PC-FORCE-HOSTKEY' })
+  await db.query(`UPDATE devices SET ip_netbird = '127.0.0.1', ssh_host_key_fp = 'empreinte-connue' WHERE id = $1`, [id])
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/devices/force-checkin',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { ids: [id] },
+  })
+  assert.equal(res.statusCode, 200)
+  const body = res.json()
+  assert.equal(body.ok, 0)
+  assert.equal(body.errors.length, 1, JSON.stringify(body.errors))
+  assert.match(body.errors[0], /Clé d'hôte SSH inattendue/)
+  assert.equal(impostor.state.execs, 0)
+})
+
+test('DELETE /:id/ssh-host-key — non-admin → 403, empreinte conservée', { skip: SKIP }, async () => {
+  const u = await seedNonAdmin(db, { entraId: 'oid-dev-hostkey-na' })
+  const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const id = await insertDevice({ hostname: 'PC-HOSTKEY-NA' })
+  await db.query(`UPDATE devices SET ssh_host_key_fp = 'empreinte-na' WHERE id = $1`, [id])
+  const res = await fastify.inject({
+    method: 'DELETE', url: `/api/devices/${id}/ssh-host-key`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
+  const { rows: [d] } = await db.query(`SELECT ssh_host_key_fp FROM devices WHERE id = $1`, [id])
+  assert.equal(d.ssh_host_key_fp, 'empreinte-na')
+})
+
+test('DELETE /:id/ssh-host-key — admin → 204, empreinte effacée, action auditée', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-dev-hostkey-admin')
+  const id = await insertDevice({ hostname: 'PC-HOSTKEY-RESET' })
+  await db.query(`UPDATE devices SET ssh_host_key_fp = 'empreinte-avant', ssh_host_key_learned_at = now() WHERE id = $1`, [id])
+  const res = await fastify.inject({
+    method: 'DELETE', url: `/api/devices/${id}/ssh-host-key`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 204)
+  const { rows: [d] } = await db.query(`SELECT ssh_host_key_fp, ssh_host_key_learned_at FROM devices WHERE id = $1`, [id])
+  assert.equal(d.ssh_host_key_fp, null)
+  assert.equal(d.ssh_host_key_learned_at, null)
+  const { rows: audit } = await db.query(
+    `SELECT details FROM audit_logs WHERE action = 'ssh_host_key_reset' AND target = $1`, [id])
+  assert.equal(audit.length, 1)
+  assert.equal(audit[0].details.previous_fingerprint, 'empreinte-avant')
+  assert.equal(audit[0].details.hostname, 'PC-HOSTKEY-RESET')
+})
+
+test('DELETE /:id/ssh-host-key — poste inconnu → 404', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-dev-hostkey-404')
+  const res = await fastify.inject({
+    method: 'DELETE', url: '/api/devices/00000000-0000-0000-0000-000000000000/ssh-host-key',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 404)
+})
+
+test('GET /:id — expose l\'empreinte d\'hôte SSH apprise (fiche du poste)', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-dev-hostkey-get')
+  const id = await insertDevice({ hostname: 'PC-HOSTKEY-GET' })
+  await db.query(`UPDATE devices SET ssh_host_key_fp = 'empreinte-fiche', ssh_host_key_learned_at = now() WHERE id = $1`, [id])
+  const res = await fastify.inject({ method: 'GET', url: `/api/devices/${id}`, headers: { authorization: `Bearer ${token}` } })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().ssh_host_key_fp, 'empreinte-fiche')
+  assert.ok(res.json().ssh_host_key_learned_at)
 })

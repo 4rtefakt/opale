@@ -22,6 +22,7 @@ import { seedDevice } from '../fixtures/devices.js'
 
 import sshRoute from '../../modules/remote/routes/ssh.js'
 import websocket from '@fastify/websocket'
+import { startFakeSshServer, sshClientEnv } from '../helpers/fake-ssh.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
@@ -189,4 +190,34 @@ test('WS /:deviceId — ip_netbird qui n\'est pas une IP → erreur, aucune sess
   assert.ok(!messages.some(m => m.type === 'status'), 'aucune tentative de connexion')
   const { rows } = await db.query(`SELECT count(*)::int AS n FROM remote_sessions WHERE device_id = $1`, [device.id])
   assert.equal(rows[0].n, 0, 'aucune session SSH journalisée')
+})
+
+test('WS /:deviceId — clé d\'hôte SSH différente de l\'empreinte connue → erreur explicite, aucun shell ouvert', { skip: SKIP, timeout: 20000 }, async (t) => {
+  const impostor = await startFakeSshServer(t)
+  sshClientEnv(t, impostor.port)
+  const { token } = await adminJwt('oid-ssh-hostkey')
+  const device = await seedDevice(db, { hostname: 'PC-SSH-HOSTKEY', ipNetbird: '127.0.0.1' })
+  await db.query(`UPDATE devices SET ssh_host_key_fp = 'empreinte-connue' WHERE id = $1`, [device.id])
+  const grant = await fastify.inject({
+    method: 'POST', url: '/api/ssh/grant',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { deviceId: device.id, reason: { category: 'maintenance', note: 'test clé d\'hôte' } },
+  })
+  assert.equal(grant.statusCode, 200)
+
+  const messages = []
+  let closed
+  const closedP = new Promise((r) => { closed = r })
+  const ws = await fastify.injectWS(`/api/ssh/${device.id}?nonce=${grant.json().nonce}`, {}, {
+    onInit: (sock) => {
+      sock.on('message', (m) => messages.push(JSON.parse(m.toString())))
+      sock.on('close', () => closed())
+    },
+  })
+  await Promise.race([closedP, new Promise((r) => setTimeout(r, 8000))])
+  ws.terminate()
+
+  const errors = messages.filter(m => m.type === 'error').map(m => m.data)
+  assert.ok(errors.some(e => /Clé d'hôte SSH inattendue/.test(e)), JSON.stringify(messages))
+  assert.equal(impostor.state.execs, 0, 'aucun shell ouvert chez l\'imposteur')
 })
