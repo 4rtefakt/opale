@@ -289,7 +289,9 @@ git pull
 
 **Applying a new migration** — nothing to do: new files in
 `api/migrations/` are applied when the updated API starts (see §5). With
-`DB_AUTO_MIGRATE=false`, apply them by hand:
+`DB_AUTO_MIGRATE=false`, apply them with
+`docker compose -f docker-compose.example.yml exec api node scripts/run-migrations.js`
+(same runner, records them in `schema_migrations`) or by hand:
 ```bash
 docker compose -f docker-compose.example.yml exec -T db \
   psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
@@ -297,26 +299,93 @@ docker compose -f docker-compose.example.yml exec -T db \
 ```
 
 **First start of the migration runner on an existing instance** (a database
-whose migrations were applied by hand, without a `schema_migrations` table):
+whose migrations were applied by hand, without a `schema_migrations` table).
+The runner cannot know which files were really applied by hand, so it
+**re-runs every file once**, then records them. Every migration is written
+to be idempotent on a populated database (tested), and this also applies the
+files you may have missed (e.g. `071`, `075`). A file that fails because of
+manual drift in your database (a constraint or index added by hand, duplicate
+data) stops the start. Rehearse first:
 
-1. Back up the database first:
-   ```bash
-   docker compose -f docker-compose.example.yml exec -T db \
-     pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > opale-before-runner.dump
-   ```
-2. Deploy and start the new API as usual. The runner cannot know which files
-   were really applied by hand, so it **re-runs every file once** (a warning
-   `base existante sans historique` is logged), then records them. This is
-   safe: every migration is idempotent on a populated database (tested),
-   and it also applies the files you may have missed (e.g. `071`, `075`).
-   It takes a few seconds; the API only starts listening afterwards.
-   Close any open `psql` session first: a table lock held for more than
-   60 s makes the start fail (it is retried by Docker).
-3. Check: `SELECT filename, applied_at FROM schema_migrations ORDER BY 1;`
-   lists every file.
+```bash
+DC="docker compose -f docker-compose.example.yml"   # adapt to your compose file
+
+# 1. Back up the production database.
+$DC exec -T db pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > opale-before-runner.dump
+
+# 2. Pre-flight on production: both must be as shown.
+$DC exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
+  "SELECT current_schema(), to_regclass('schema_migrations') IS NULL"
+#    → public|t   (no schema_migrations table left over from another tool)
+
+# 3. Rehearsal: restore the dump into a scratch database and run ONLY the
+#    runner on it, with the new image (build it first). The API itself is not
+#    started, so nothing is sent (mail, Graph) from the copy.
+$DC build api
+$DC exec -T db createdb -U "$POSTGRES_USER" opale_rehearsal
+$DC exec -T db pg_restore -U "$POSTGRES_USER" -d opale_rehearsal < opale-before-runner.dump
+$DC run --rm --no-deps -e POSTGRES_DB=opale_rehearsal api node scripts/run-migrations.js
+#    → exit 0 and "64 migration(s) appliquée(s)". Anything else: read the
+#      error (file, line, SQLSTATE) and fix the drift before deploying.
+
+# 4. Compare the seeded tables between production (before) and the rehearsal
+#    (after). Seed migrations use INSERT … ON CONFLICT DO NOTHING: a row you
+#    deleted by hand, or that came with a migration you never applied, is
+#    (re-)created.
+q() { $DC exec -T db psql -U "$POSTGRES_USER" -d "$1" -AtF '|' -c "$2"; }
+for sql in "SELECT key, value FROM settings WHERE key NOT LIKE 'mail.%cursor%' ORDER BY key" \
+           "SELECT action_type, estimated_minutes FROM automation_costs ORDER BY action_type" \
+           "SELECT builtin_key, name FROM scripts WHERE is_builtin ORDER BY builtin_key"; do
+  diff <(q "$POSTGRES_DB" "$sql") <(q opale_rehearsal "$sql")
+done
+$DC exec -T db dropdb -U "$POSTGRES_USER" opale_rehearsal
+```
+
+What to look for in step 4: lines only on the rehearsal side (`>`) are rows
+the first boot will add. Most are harmless defaults, and the `mail.*` switches
+all default to `false`. Two settings default to **`true`**:
+`tickets.assistant.enabled` (AI suggestions on tickets, Ollama at
+`http://ollama:11434`) and `ask.enabled` (Ask Opale, which answers 503 until
+`OPALE_ASK_API_KEY` is set). If they show up and you don't want them, set
+them to `false` right after the deploy:
+`UPDATE settings SET value = 'false' WHERE key IN ('tickets.assistant.enabled', 'ask.enabled');`.
+Re-created `automation_costs` rows count again in the Rapports KPI;
+re-created built-in scripts reappear in the script library.
+
+Then deploy and start the new API as usual. A warning
+`base existante sans historique` is logged, followed by one
+`migration appliquée` line per file; it takes a few seconds and the API only
+starts listening afterwards. Close any open `psql` session first: a table lock
+held for more than 60 s makes the start fail (it is retried by Docker).
+Check: `SELECT count(*), max(filename) FROM schema_migrations;` → `64`,
+`075_strip_onboarding_temp_passwords.sql`, and `GET /api/health` → 200.
+
+**If the API crash-loops on a migration** (log
+`Migration NNN_….sql en échec …`): set `DB_AUTO_MIGRATE=false` in `.env` and
+`$DC up -d api` to restore service immediately (the checkin keeps working
+even if `071` is missing), then fix the cause, apply with
+`$DC exec api node scripts/run-migrations.js`, and remove the setting.
+Restore the dump only if the data itself is damaged.
 
 To keep applying migrations by hand, set `DB_AUTO_MIGRATE=false` before
-deploying.
+deploying (and use `node scripts/run-migrations.js` or `psql`).
+
+**After the upgrade** (same release, not migrations):
+- Agent scripts stuck in `running` for more than 1 hour (and SSH executions
+  for more than 6 hours) are marked `error` with a timeout message at the
+  first start, then every 15 minutes.
+- Routine agent checkins no longer write an `agent_checkin` audit row (only
+  enrolment, rename, serial mismatch, agent version change and rejected
+  Netbird IP do). The old routine rows stay until the 365-day purge; to drop
+  them at once (smaller table, faster Audit view):
+  `DELETE FROM audit_logs WHERE action = 'agent_checkin' AND NOT (details ? 'events');`
+- Retention: the daily purge now keeps `bandwidth_stats`, `ping_stats` and
+  `system_perf_stats` 7 days (bandwidth/ping were 30 days; the checkin already
+  trimmed active devices to 7 days, and the UI never shows more).
+- A checkin whose inventory contains a value PostgreSQL rejects now fails as
+  a whole, `last_seen` included, so the device can look offline. NUL bytes
+  are stripped at the API boundary; any other case shows up as a 500 on
+  `POST /api/agent/checkin` in the API log.
 
 **One-off data migration scripts** (`api/scripts/`)
 
