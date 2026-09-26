@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+// rolledBackRetryAfter — délai avant de retenter une version annulée par
+// rollback (cf. HandleAgentUpdate).
+const rolledBackRetryAfter = 24 * time.Hour
+
 // MaxFailedSinceUpdate — au-delà de ce nombre de checkins échoués
 // consécutifs après une mise à jour, on rollback vers le binaire précédent.
 const MaxFailedSinceUpdate = 2
@@ -47,13 +51,17 @@ func HandleAgentUpdate(ctx context.Context, cfg *Config, st *State, upd *AgentUp
 		// Le serveur peut ré-envoyer la même version par paranoïa ; ignore.
 		return nil
 	}
-	if st.RolledBackVersion != "" && upd.LatestVersion == st.RolledBackVersion {
-		// Cette version a déjà échoué ici (rollback) : la réinstaller
-		// relancerait la boucle update → 2 checkins KO → rollback, avec un
-		// téléchargement complet à chaque tour. Une version plus récente
-		// est acceptée.
-		logInfo("update-skipped-rolled-back", "version déjà annulée par rollback sur ce poste", LogFields{
-			"version": upd.LatestVersion,
+	if st.RolledBackVersion != "" && upd.LatestVersion == st.RolledBackVersion &&
+		time.Since(st.RolledBackAt) < rolledBackRetryAfter {
+		// Cette version a échoué ici récemment (rollback) : la réinstaller
+		// tout de suite relancerait la boucle update → 2 checkins KO →
+		// rollback, avec un téléchargement complet à chaque tour. Elle est
+		// retentée après rolledBackRetryAfter (le rollback a pu venir d'une
+		// panne serveur, pas du binaire) ; une version plus récente est
+		// acceptée immédiatement.
+		logInfo("update-skipped-rolled-back", "version annulée par rollback sur ce poste, nouvel essai plus tard", LogFields{
+			"version":     upd.LatestVersion,
+			"retry_after": st.RolledBackAt.Add(rolledBackRetryAfter).Format(time.RFC3339),
 		})
 		return nil
 	}
@@ -212,6 +220,7 @@ func CheckRollback(st *State, lastCheckinErr error) {
 	// Mémorise la version annulée : elle ne sera plus réinstallée (cf.
 	// HandleAgentUpdate), seule une version plus récente le sera.
 	st.RolledBackVersion = st.LastUpdateVersion
+	st.RolledBackAt = time.Now().UTC()
 	// Baseline anti-tamper = binaire restauré. Sinon l'ancienne version,
 	// au redémarrage, ne correspondrait plus au hash de la version annulée
 	// et remonterait une fausse alerte tamper à chaque checkin.

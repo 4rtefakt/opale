@@ -301,8 +301,8 @@ func TestCheckRollback_RecordsAndSkipsRolledBackVersion(t *testing.T) {
 	if restarts.Load() != 1 {
 		t.Fatalf("rollback attendu (redémarrages=%d)", restarts.Load())
 	}
-	if st.RolledBackVersion != "9.9.9" {
-		t.Fatalf("version annulée non mémorisée : %q", st.RolledBackVersion)
+	if st.RolledBackVersion != "9.9.9" || time.Since(st.RolledBackAt) > time.Minute {
+		t.Fatalf("version annulée non mémorisée : %q à %v", st.RolledBackVersion, st.RolledBackAt)
 	}
 	if raw, _ := os.ReadFile(binaryPath()); string(raw) != "old" {
 		t.Fatalf("binaire non restauré : %q", raw)
@@ -324,5 +324,22 @@ func TestCheckRollback_RecordsAndSkipsRolledBackVersion(t *testing.T) {
 		LatestVersion: "9.9.10", SHA256: "00", Signature: "AA==",
 	}); err == nil || !strings.Contains(err.Error(), "download") {
 		t.Fatalf("version plus récente : téléchargement attendu, reçu %v", err)
+	}
+}
+
+// Le refus d'une version annulée expire (24 h) : un rollback dû à une panne
+// serveur ne doit pas bloquer le poste sur l'ancienne version jusqu'à la
+// release suivante.
+func TestHandleAgentUpdate_RolledBackSkipExpires(t *testing.T) {
+	cfg := &Config{Token: "t", URL: "http://127.0.0.1:1"} // injoignable
+	upd := &AgentUpdate{LatestVersion: "9.9.9", SHA256: "00", Signature: "AA=="}
+
+	recent := &State{RolledBackVersion: "9.9.9", RolledBackAt: time.Now().UTC().Add(-time.Hour)}
+	if err := HandleAgentUpdate(context.Background(), cfg, recent, upd); err != nil {
+		t.Fatalf("rollback récent : version ignorée attendue, reçu %v", err)
+	}
+	old := &State{RolledBackVersion: "9.9.9", RolledBackAt: time.Now().UTC().Add(-25 * time.Hour)}
+	if err := HandleAgentUpdate(context.Background(), cfg, old, upd); err == nil || !strings.Contains(err.Error(), "download") {
+		t.Fatalf("rollback de plus de 24 h : nouvel essai (téléchargement) attendu, reçu %v", err)
 	}
 }

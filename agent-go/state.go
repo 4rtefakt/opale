@@ -18,9 +18,11 @@ type State struct {
 	LastUpdateAt        time.Time          `json:"last_update_at,omitempty"`
 	LastUpdateVersion   string             `json:"last_update_version,omitempty"`
 	FailedSinceUpdate   int                `json:"failed_since_update,omitempty"`
-	// RolledBackVersion : dernière version annulée par rollback sur ce
-	// poste ; le serveur peut continuer à la proposer, elle est ignorée.
-	RolledBackVersion string `json:"rolled_back_version,omitempty"`
+	// RolledBackVersion / RolledBackAt : dernière version annulée par
+	// rollback sur ce poste ; si le serveur la repropose, elle est ignorée
+	// pendant 24 h (cf. rolledBackRetryAfter).
+	RolledBackVersion string    `json:"rolled_back_version,omitempty"`
+	RolledBackAt      time.Time `json:"rolled_back_at,omitempty"`
 	PendingDeployments  []DeploymentResult `json:"pending_deployments,omitempty"`
 	PendingDetections   []DetectionResult  `json:"pending_detections,omitempty"`
 
