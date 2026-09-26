@@ -13,7 +13,7 @@
 //             mails déjà ingérés sont dédoublonnés par internet_message_id ;
 //   - done  : ids Graph des mails déjà traités (ou volontairement ignorés) à
 //             l'horodatage `at` ;
-//   - retry : { id, attempts, error, first_at } du mail en échec qui bloque
+//   - retry : { id, attempts, error, first_at, memo } du mail en échec qui bloque
 //             la boîte. Clé = id Graph : il change si le mail est déplacé
 //             de dossier pendant les reprises, le compteur repart alors de
 //             zéro (retarde l'abandon, ne perd rien — acceptable).
@@ -110,8 +110,9 @@ async function abandon(db, log, { mailbox, message, key, dateField, attempts, er
 // progression.
 //   list(mailbox, since, { top, inclusive, nextLink }) → page Graph
 //     (`value` = mails à traiter, `scanned` = tous les mails de la page) ;
-//   handle(message) → traite un mail de `value` ; { retry: true, error }
-//     si l'échec est transitoire (rien d'écrit, à retenter) ;
+//   handle(message, { memo }) → traite un mail de `value` ; { retry: true,
+//     error, memo? } si l'échec est transitoire (rien d'écrit, à retenter) —
+//     `memo` est rendu au handle à la reprise suivante du même mail ;
 //   now() → horloge (injectable pour les tests).
 // Retourne { errors, abandoned } (échecs de listing / mails abandonnés,
 // déjà loggés).
@@ -159,7 +160,7 @@ export async function pollMailboxCursor(db, log, {
 
       if (toProcess.has(m)) {
         processed++
-        const r = await handle(m)
+        const r = await handle(m, { memo: retry?.id === key ? retry.memo : undefined })
         if (r?.retry) {
           const error = String(r.error || 'erreur inconnue').slice(0, 500)
           if (suspect) {
@@ -178,7 +179,7 @@ export async function pollMailboxCursor(db, log, {
           const same = retry?.id === key
           const attempts = (same ? retry.attempts : 0) + 1
           const firstAt = (same && retry.first_at) || new Date(now()).toISOString()
-          const record = { id: key, attempts, error, first_at: firstAt }
+          const record = { id: key, attempts, error, first_at: firstAt, memo: r.memo ?? (same ? retry.memo : undefined) }
           if (attempts < MAX_INGEST_ATTEMPTS || now() - Date.parse(firstAt) < MIN_POISON_AGE_MS) {
             // Curseur laissé avant ce mail : retenté au tick suivant.
             retry = record

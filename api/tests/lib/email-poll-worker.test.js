@@ -316,6 +316,38 @@ test('pollOnce : transaction en échec sur un mail → curseur arrêté avant lu
   }
 )
 
+test('pollOnce : mail retenté → classifieur (LLM) appelé une seule fois, résultat mémorisé entre les reprises',
+  { skip: SKIP }, async () => {
+    const setClassifier = enabled => db.query(`
+      UPDATE settings SET value = CASE key
+        WHEN 'mail.classifier.enabled' THEN $1
+        WHEN 'mail.classifier.url'     THEN $2
+        WHEN 'mail.classifier.model'   THEN $3 END
+      WHERE key IN ('mail.classifier.enabled', 'mail.classifier.url', 'mail.classifier.model')
+    `, enabled ? ['true', 'http://stub', 'stub-model'] : ['false', '', ''])
+    await setClassifier(true)
+    const mail = fakeMail({ receivedDateTime: at(1) })
+    useGraph({ inbox: [mail] })
+    await failMappingInsertFor(mail)
+    let calls = 0
+    const classifierFn = async () => { calls++; return { intent: 'new_ticket', confidence: 0.8, reason: 'stub' } }
+    try {
+      for (let tick = 0; tick < 3; tick++) await pollOnce(db, null, { classifierFn })
+      await db.query(`TRUNCATE TABLE test_failing_mail`)
+      await pollOnce(db, null, { classifierFn })
+
+      assert.deepEqual(await ingestedIds(), ids([mail]))
+      assert.equal(calls, 1, 'une seule classification pour 4 tentatives')
+      const { rows } = await db.query(
+        `SELECT classifier_result FROM email_thread_mapping WHERE internet_message_id = $1`, [mail.internetMessageId])
+      assert.equal(rows[0].classifier_result.intent, 'new_ticket', 'résultat mémorisé réutilisé')
+    } finally {
+      graph.restore()
+      await setClassifier(false)
+    }
+  }
+)
+
 test('pollOnce : mail « poison » → abandonné après MAX_INGEST_ATTEMPTS échecs ET MIN_POISON_AGE_MS, le mail suivant passant',
   { skip: SKIP }, async () => {
     const poison = fakeMail({ receivedDateTime: at(1) })

@@ -107,9 +107,13 @@ export async function pollOnce(db, log, injection = {}) {
       cursor = cursorIso
     }
 
-    const handle = async (m) => {
+    // `memo` : données gardées par poll-cursor entre deux reprises du même
+    // mail — ici la classification, pour ne pas rappeler le LLM.
+    const handle = async (m, { memo } = {}) => {
       try {
-        const out = await processOne(db, log, { graphMessage: m, mailbox, classifierFn })
+        const out = await processOne(db, log, {
+          graphMessage: m, mailbox, classifierFn, classifierResult: memo?.classifier,
+        })
         if (out?.action && stats.actions[out.action] !== undefined) stats.actions[out.action]++
         if (out?.action === 'proposal_created' || out?.action === 'message_appended') {
           log?.info({
@@ -121,7 +125,9 @@ export async function pollOnce(db, log, injection = {}) {
         }
         // Transaction annulée : rien d'écrit → retenté (curseur non avancé).
         // Les autres 'skipped_error' sont définitifs (mail inexploitable).
-        if (out?.retryable) return { retry: true, error: out.error }
+        if (out?.retryable) {
+          return { retry: true, error: out.error, memo: out.classifier ? { classifier: out.classifier } : undefined }
+        }
       } catch (err) {
         stats.errors++
         log?.warn({ err: err.message, mailbox, internetMessageId: m.internetMessageId },

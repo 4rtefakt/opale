@@ -144,7 +144,8 @@ async function appendReplyToProposal(client, { proposalId, graphMessage, sender,
 //   retryable : true si la transaction a échoué (rien d'écrit, à retenter) ;
 //            absent pour un 'skipped_error' définitif (mail sans
 //            internetMessageId, proposal disparue — mapping déjà écrit).
-export async function processOne(db, log, { graphMessage, mailbox, classifierFn }) {
+//            Accompagné de `classifier` (réutilisable via `classifierResult`).
+export async function processOne(db, log, { graphMessage, mailbox, classifierFn, classifierResult }) {
   const internetMessageId = graphMessage.internetMessageId
   if (!internetMessageId) {
     log?.warn({ mailbox, graphId: graphMessage.id }, 'process: mail sans internetMessageId, skip')
@@ -188,7 +189,9 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
     intent = 'reply'
     classifier = { intent: 'reply', confidence: 1, reason: 'thread match (pending proposal)' }
   } else {
-    classifier = await classifySafe(db, log, {
+    // `classifierResult` : classification d'une tentative précédente de ce
+    // mail (transaction annulée) — évite de rappeler le LLM à chaque reprise.
+    classifier = classifierResult || await classifySafe(db, log, {
       from: fromAddress, subject: graphMessage.subject, bodyPreview: safeBodyPreview(graphMessage),
     }, { classifierFn })
     intent = classifier.intent
@@ -292,7 +295,10 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
     log?.warn({ err: err.message, mailbox, internetMessageId }, 'email-bridge: tx process échouée')
     // Rien n'a été écrit (rollback) : `retryable` → le worker n'avance pas
     // son curseur au-delà de ce mail et le retente au tick suivant.
-    return { action: 'skipped_error', error: err.message, retryable: true }
+    // `classifier` (vraie classification seulement, pas un fallback) : à
+    // repasser en `classifierResult` à la reprise.
+    const reusable = !threadMatch && !classifier?.fallback ? classifier : undefined
+    return { action: 'skipped_error', error: err.message, retryable: true, classifier: reusable }
   } finally {
     client.release()
   }
