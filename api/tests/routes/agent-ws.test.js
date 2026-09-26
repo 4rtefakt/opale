@@ -696,3 +696,68 @@ test('frames console.* : session du même poste portée par une autre connexion 
   assert.deepEqual(sess.buffer.frames, [])
   await fastify.consoleSessions.close(sess.id, 'test-cleanup')
 })
+
+// ─── Ouverture console : connexion agent perdue pendant la création ────────
+
+// Exécute `action` pendant l'INSERT remote_sessions de consoleSessions.create
+// (la route console a déjà capturé la connexion agent).
+function duringSessionInsert(action) {
+  let done
+  interceptQuery = (sql, params, next) => {
+    if (!/INSERT INTO remote_sessions/.test(sql)) return next()
+    interceptQuery = null
+    done = Promise.resolve(action())
+    return done.then(() => next())
+  }
+  return () => done
+}
+
+async function assertConsoleAborted(device, browser, endReason) {
+  await within(browser.closed, 2000, 'browser fermé')
+  assert.ok(browser.frames.some(f => f.type === 'error'), `erreur au browser : ${JSON.stringify(browser.frames)}`)
+  assert.equal(fastify.consoleSessions.findActiveByDevice(device.id), null, 'poste libéré')
+  await settleDb()
+  const { rows } = await db.query(
+    'SELECT ended_at, end_reason FROM remote_sessions WHERE device_id = $1', [device.id]
+  )
+  assert.equal(rows.length, 1)
+  assert.ok(rows[0].ended_at, 'session marquée terminée')
+  assert.equal(rows[0].end_reason, endReason)
+}
+
+test('console : token de l\'agent révoqué pendant la création de la session → erreur au browser, poste libéré', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-WS-OPEN-REVOKE' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-open-revoke' })
+  await connectAgent(tok.secret, device.id)
+  const g = await grantConsole(device.id)
+  assert.equal(g.statusCode, 200)
+
+  const revoked = duringSessionInsert(() => fastify.inject({
+    method: 'DELETE', url: `/api/settings/tokens/${tok.id}`, headers: adminAuth,
+  }))
+  const browser = await openWs(`/api/console/${device.id}?nonce=${g.json().nonce}`)
+  await assertConsoleAborted(device, browser, 'token-revoked')
+  assert.equal((await revoked()).statusCode, 204)
+})
+
+test('console : agent reconnecté pendant la création de la session → erreur au browser, poste libéré, nouvelle console possible', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-WS-OPEN-RECONNECT' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-open-reconnect' })
+  await connectAgent(tok.secret, device.id)
+  const g = await grantConsole(device.id)
+  assert.equal(g.statusCode, 200)
+
+  let agent2
+  const reconnected = duringSessionInsert(async () => { agent2 = await connectAgent(tok.secret, device.id) })
+  const browser = await openWs(`/api/console/${device.id}?nonce=${g.json().nonce}`)
+  await assertConsoleAborted(device, browser, 'agent-disconnected')
+  await reconnected()
+
+  // La nouvelle connexion sert une nouvelle console normalement.
+  const browser2 = await openConsole(device.id, agent2)
+  agent2.send('console.data', { b64: b64('après reconnexion') }, browser2.sessionId)
+  await waitFor(
+    () => browser2.frames.some(f => f.type === 'data' && f.data?.b64 === b64('après reconnexion')),
+    'data transmise sur la nouvelle connexion'
+  )
+})
