@@ -1,5 +1,6 @@
-// Parcours d'une boîte mail par curseur, pour le worker de polling inbound
-// (poll-worker.js).
+// Parcours d'une boîte mail par curseur, commun au worker de polling
+// inbound (poll-worker.js, receivedDateTime) et à celui des Éléments
+// envoyés (sent-poll-worker.js, sentDateTime).
 //
 // Curseur : setting `<cursorKey>` = horodatage ISO 8601 du dernier mail
 // traité (format inchangé : lu tel quel par /api/email/status et par une

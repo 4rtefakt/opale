@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildListSentMessagesPath } from '../../modules/email-bridge/lib/graph-mail.js'
+import { buildListSentMessagesPath, listSentMessagesSince } from '../../modules/email-bridge/lib/graph-mail.js'
 
 test('buildListSentMessagesPath : cible le dossier sentitems', () => {
   const path = buildListSentMessagesPath('box@example.com', null)
@@ -41,4 +41,34 @@ test('buildListSentMessagesPath : top clampé entre 1 et 100', () => {
 test('buildListSentMessagesPath : mailbox URL-encodée', () => {
   const path = buildListSentMessagesPath('user+alias@example.com', null)
   assert.match(path, /\/users\/user%2Balias%40example\.com\//)
+})
+
+test('buildListSentMessagesPath : inclusive → filtre `ge` (curseur du worker)', () => {
+  const path = buildListSentMessagesPath('box@example.com', '2026-05-16T10:40:32.000Z', { inclusive: true })
+  assert.match(path, /sentDateTime\+ge\+2026-05-16T10%3A40%3A32\.000Z/)
+})
+
+test('listSentMessagesSince : nextLink suivi tel quel ; hors Graph v1.0 refusé', async () => {
+  const nextLink = 'https://graph.microsoft.com/v1.0/users/box%40example.com/mailFolders/sentitems/messages?%24skip=50'
+  const calls = []
+  const original = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    calls.push(String(url))
+    const body = /login\.microsoftonline\.com/.test(String(url))
+      ? { access_token: 'tok', expires_in: 3600 }
+      : { value: [{ id: 's1' }] }
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) }
+  }
+  try {
+    const page = await listSentMessagesSince('box@example.com', null, { nextLink })
+    assert.deepEqual(page.value.map(m => m.id), ['s1'])
+    assert.deepEqual(calls.filter(u => u.includes('/messages')), [nextLink])
+
+    await assert.rejects(
+      listSentMessagesSince('box@example.com', null, { nextLink: 'https://evil.example.com/v1.0/x' }),
+      /nextLink inattendu/)
+    assert.ok(!calls.some(u => u.includes('evil.example.com')), 'jeton jamais envoyé hors Graph')
+  } finally {
+    globalThis.fetch = original
+  }
 })

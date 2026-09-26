@@ -3,18 +3,23 @@
 // Toutes les `intervalMs` (30 s par défaut) :
 //   1. Pour chaque boîte de `mail.sent_mailboxes` :
 //      a. lit les mails envoyés depuis le curseur `mail.sent_cursor.<address>`
+//         (pages suivies, bornées)
 //      b. pour chaque mail → processSentOne() : append au ticket SI threadé
-//      c. avance le curseur au max(sentDateTime) de la page
+//      c. avance le curseur au sentDateTime du dernier mail parcouru —
+//         jamais au-delà d'un mail en échec, retenté au tick suivant puis
+//         abandonné après MAX_INGEST_ATTEMPTS échecs (cf. poll-cursor.js)
 //
 // Curseur : bootstrap = now() (pas de backfill auto — le rattrapage du passé
-// se fait via scripts/backfill-sent-mail.js). Avancement à max(sentDateTime)
-// de la page, pas à now(), pour ne pas sauter un mail envoyé pendant le
-// traitement de la page.
+// se fait via scripts/backfill-sent-mail.js). Avancement au dernier mail
+// parcouru, pas à now(), pour ne pas sauter un mail envoyé pendant le
+// traitement de la page. État complémentaire (ids déjà traités au même
+// horodatage, retry) : `mail.sent_cursor_state.<address>`.
 //
 // Kill switch : `mail.sent_poll_enabled = 'false'` → tick no-op.
 
 import { listSentMessagesSince } from './graph-mail.js'
 import { processSentOne } from './process-sent-mail.js'
+import { pollMailboxCursor } from './poll-cursor.js'
 import { nonOverlapping } from '../../../lib/non-overlapping.js'
 
 const DEFAULT_INTERVAL_MS = 30_000
@@ -36,6 +41,7 @@ async function setSetting(db, key, value) {
 }
 
 function cursorKey(mailbox) { return `mail.sent_cursor.${mailbox.toLowerCase()}` }
+function cursorStateKey(mailbox) { return `mail.sent_cursor_state.${mailbox.toLowerCase()}` }
 
 function parseMailboxes(csv) {
   if (!csv) return []
@@ -62,6 +68,7 @@ export async function pollSentOnce(db, log, injection = {}) {
     mailboxes: mailboxes.length,
     actions: { message_appended: 0, skipped_no_match: 0, skipped_duplicate: 0, already_ingested: 0, skipped_error: 0 },
     errors: 0,
+    abandoned: 0,   // mails abandonnés après MAX_INGEST_ATTEMPTS échecs
   }
 
   for (const mailbox of mailboxes) {
@@ -89,22 +96,7 @@ export async function pollSentOnce(db, log, injection = {}) {
       cursor = cursorIso
     }
 
-    let page
-    try {
-      page = await list(mailbox, cursor, { top: 50 })
-    } catch (err) {
-      stats.errors++
-      log?.warn({ err: err.message, mailbox }, 'sent-worker: listSentMessages a échoué')
-      continue
-    }
-
-    const messages = page.value || []
-    let lastSentAt = null
-
-    for (const m of messages) {
-      if (m.sentDateTime && (!lastSentAt || m.sentDateTime > lastSentAt)) {
-        lastSentAt = m.sentDateTime
-      }
+    const handle = async (m) => {
       try {
         const out = await processSentOne(db, log, { graphMessage: m, mailbox })
         if (out?.action && stats.actions[out.action] !== undefined) stats.actions[out.action]++
@@ -114,14 +106,23 @@ export async function pollSentOnce(db, log, injection = {}) {
             subject: m.subject, ticket_id: out.ticket_id,
           }, 'sent-worker: réponse Outlook ajoutée au ticket')
         }
+        // Transaction annulée : rien d'écrit → retenté (curseur non avancé).
+        if (out?.retryable) return { retry: true, error: out.error }
       } catch (err) {
         stats.errors++
         log?.warn({ err: err.message, mailbox, internetMessageId: m.internetMessageId },
           'sent-worker: processSentOne a planté')
+        return { retry: true, error: err.message }
       }
     }
 
-    if (lastSentAt) await setSetting(db, key, lastSentAt)
+    const res = await pollMailboxCursor(db, log, {
+      mailbox, cursor, cursorKey: key, stateKey: cursorStateKey(mailbox),
+      dateField: 'sentDateTime', list, handle,
+      updatedBy: 'email-sent-worker', tag: 'sent-worker',
+    })
+    stats.errors += res.errors
+    stats.abandoned += res.abandoned
   }
 
   return stats

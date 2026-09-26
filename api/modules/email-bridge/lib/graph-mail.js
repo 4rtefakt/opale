@@ -164,8 +164,9 @@ export async function listMessagesSince(mailbox, sinceIso, opts = {}) {
 // sentitems : on veut justement les mails que l'agent a envoyés depuis Outlook.
 // On filtre/ordonne sur `sentDateTime` (et pas receivedDateTime, souvent absent
 // sur un mail sortant). Même précaution anti double-encoding que ci-dessus :
-// ne PAS pré-encoder sinceIso, URLSearchParams s'en charge.
-export function buildListSentMessagesPath(mailbox, sinceIso, { top = 50 } = {}) {
+// ne PAS pré-encoder sinceIso, URLSearchParams s'en charge. `inclusive` :
+// `ge` au lieu de `gt`, comme buildListMessagesPath.
+export function buildListSentMessagesPath(mailbox, sinceIso, { top = 50, inclusive = false } = {}) {
   const select = [
     'id',
     'internetMessageId',
@@ -184,16 +185,19 @@ export function buildListSentMessagesPath(mailbox, sinceIso, { top = 50 } = {}) 
   params.set('$top', String(Math.min(Math.max(top, 1), 100)))
   params.set('$orderby', 'sentDateTime asc')
   params.set('$select', select)
-  if (sinceIso) params.set('$filter', `sentDateTime gt ${sinceIso}`)
+  if (sinceIso) params.set('$filter', `sentDateTime ${inclusive ? 'ge' : 'gt'} ${sinceIso}`)
 
   return `/users/${encodeMailbox(mailbox)}/mailFolders/sentitems/messages?${params.toString()}`
 }
 
-// Liste les mails envoyés depuis `sinceIso` (exclusif) dans le dossier
-// Éléments envoyés de la boîte cible. Retourne la page brute Graph
-// (`@odata.nextLink` inclus pour la pagination côté caller).
+// Liste les mails envoyés depuis `sinceIso` (exclusif, ou inclusif avec
+// `opts.inclusive`) dans le dossier Éléments envoyés de la boîte cible.
+// `opts.nextLink` : page suivante d'un listing précédent. Retourne la page
+// brute Graph (`@odata.nextLink` inclus pour la pagination côté caller).
 export async function listSentMessagesSince(mailbox, sinceIso, opts = {}) {
-  return graphGet(buildListSentMessagesPath(mailbox, sinceIso, opts))
+  return graphGet(opts.nextLink
+    ? nextLinkPath(opts.nextLink)
+    : buildListSentMessagesPath(mailbox, sinceIso, opts))
 }
 
 // Re-fetch un message complet (corps + headers complets) — utilisé Phase 2/3
