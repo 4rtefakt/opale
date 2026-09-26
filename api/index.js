@@ -1,4 +1,3 @@
-import crypto from 'crypto'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
@@ -14,14 +13,19 @@ import cleanupPlugin      from './plugins/cleanup.js'
 import errorHandlerPlugin from './plugins/error-handler.js'
 
 import { loadModules, startModuleWorkers } from './lib/module-loader.js'
+import { parseTrustProxy, rateLimitOptions } from './lib/rate-limit.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname  = dirname(__filename)
 
 const CSP = "frame-ancestors 'self'"
 
+// TRUST_PROXY (défaut : désactivé) — cf. lib/rate-limit.js et
+// docs/CONFIGURATION.md. Derrière un reverse proxy, sans ce réglage,
+// req.ip est l'IP du proxy pour toutes les requêtes (rate-limit partagé).
 const fastify = Fastify({
-  logger: { level: process.env.NODE_ENV === 'production' ? 'info' : 'debug' }
+  logger: { level: process.env.NODE_ENV === 'production' ? 'info' : 'debug' },
+  trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
 })
 
 if (!process.env.SSH_USER) {
@@ -55,24 +59,9 @@ await fastify.register(staticFiles, {
 
 // Rate-limit en mode opt-in : aucune route limitée par défaut, les routes
 // sensibles déclarent leur quota via `config: { rateLimit: { max, timeWindow } }`.
-// La clé combine IP + 16 hex du hash du Bearer pour limiter par couple
-// (machine, token) — évite qu'un seul token spam une IP partagée sans
-// borner les hits légitimes d'autres tokens depuis la même IP.
-await fastify.register(rateLimit, {
-  global: false,
-  keyGenerator: (req) => {
-    const auth = req.headers.authorization || ''
-    if (auth.startsWith('Bearer ')) {
-      const hash = crypto.createHash('sha256').update(auth.slice(7)).digest('hex').slice(0, 16)
-      return `${req.ip}|${hash}`
-    }
-    return req.ip
-  },
-  errorResponseBuilder: (req, ctx) => ({
-    error: 'Trop de requêtes',
-    retry_after_ms: ctx.ttl
-  })
-})
+// Clé par défaut IP + hash du Bearer (routes authentifiées) ; les routes
+// sans auth surchargent avec une clé IP seule (cf. lib/rate-limit.js).
+await fastify.register(rateLimit, rateLimitOptions)
 
 // Infrastructure framework : websocket, db, auth, cleanup, error-handler,
 // sensible. Communs à tous les modules, enregistrés avant le chargement

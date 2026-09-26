@@ -27,6 +27,21 @@ consumer; the frontend gets a curated subset via `GET /env.js`.
 | `PORT` | no | `3010` | API listen port (TLS terminated by your reverse proxy) |
 | `NODE_ENV` | no | — | Set to `production` to disable verbose logs |
 
+#### Reverse proxy (`TRUST_PROXY`)
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `TRUST_PROXY` | recommended behind a proxy | off | Proxies trusted to set `X-Forwarded-For`, so the API sees the real client IP (used by rate limiting). Comma-separated proxy IPs/CIDRs (recommended, e.g. `172.16.0.0/12` for a Docker bridge network), a hop count (`1`), or `true` (trust any `X-Forwarded-For` — avoid). Invalid values stop the API at boot |
+
+Without it, every request behind Caddy/nginx carries the proxy's IP, so all
+clients share the same rate-limit buckets (e.g. `/api/agent/exchange-token`
+10/min and `/api/agent/setup-log` 60/min for the whole fleet). Only set it if
+the API port is reachable **solely** through the proxy (bind it to
+`127.0.0.1` or keep it off the public network): otherwise a client connecting
+directly could forge `X-Forwarded-For`. With the API in Docker behind a
+host-level proxy, the peer address the API sees is the Docker bridge gateway
+(e.g. `172.18.0.1`), not `127.0.0.1` — trust the bridge CIDR.
+
 ### 1.2 Database
 
 | Variable | Required | Default | Notes |
@@ -186,7 +201,7 @@ All under `/api/agent/`, agent-token Bearer auth (token created from
 | `POST` | `/exchange-token` | First-run: a one-time bootstrap token returns a per-device persistent token |
 | `POST` | `/checkin` | Main loop: send metrics + receive `commands`, `deployments`, `agent_update`, `maintenance_window` |
 | `POST` | `/result` | Report a queued script's exit code + output |
-| `POST` | `/setup-log` | Upload first-run install logs |
+| `POST` | `/setup-log` | Upload first-run install logs (no auth; body ≤ 64 KiB, 60 req/min per client IP) |
 | `POST` | `/admin-credential` | Escrow the LAPS rotation password (RSA-OAEP-SHA256 ciphertext) |
 | `POST` | `/rotate-token` | Generate a successor token, expire the old one at +24 h |
 | `GET` | `/version` | Latest agent version available on the server (semver string) |

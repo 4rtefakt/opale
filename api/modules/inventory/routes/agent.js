@@ -9,6 +9,7 @@ import { logAudit } from '../../core/lib/audit.js'
 import { SNAPSHOT_COLUMNS, snapshotSelect } from '../lib/deployment-snapshots.js'
 import { checkDeviceClaim, CLAIM_REFUSAL_MESSAGES } from '../lib/device-claim.js'
 import { isNetbirdIp, normalizeIfaceType, clipStr } from '../lib/checkin-validation.js'
+import { ipOnlyKey } from '../../../lib/rate-limit.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -173,6 +174,10 @@ function hashToken(t) {
   return crypto.createHash('sha256').update(t).digest('hex')
 }
 
+// Taille max d'un POST /setup-log (route sans auth) : large pour un log
+// d'installation, borné pour ne pas remplir audit_logs (défaut Fastify : 1 Mio).
+const SETUP_LOG_BODY_LIMIT = 64 * 1024
+
 // Vérifie le Bearer token et retourne la ligne agent_tokens, ou null.
 // Filtre les tokens révoqués et les tokens dont l'expiration programmée
 // (rotation) est dépassée — sans toucher revoked_at, qui reste réservé
@@ -222,8 +227,10 @@ export default async function agentRoute(fastify) {
   // à l'émission du nouveau : un seul credential vivant par poste.
   // Body  : { hostname (req), serial? }
   // Reply : { token, device_id, hostname }
+  // Rate-limit par IP seule : le Bearer n'est pas encore vérifié à ce stade,
+  // un Bearer aléatoire ne doit pas ouvrir un compteur neuf.
   fastify.post('/exchange-token', {
-    config: { rateLimit: { max: 10, timeWindow: '1 minute' } }
+    config: { rateLimit: { max: 10, timeWindow: '1 minute', keyGenerator: ipOnlyKey } }
   }, async (req, reply) => {
     const auth = req.headers.authorization || ''
     if (!auth.startsWith('Bearer ')) return reply.code(401).send({ error: 'Bootstrap token manquant' })
@@ -558,10 +565,13 @@ export default async function agentRoute(fastify) {
   })
 
   // POST /api/agent/setup-log — logs des scripts Intune (openssh, agent install…)
-  // Pas d'auth : tourne en SYSTEM avant tout enrôlement. Rate-limit large pour
-  // ne pas pénaliser un déploiement de masse Intune.
+  // Pas d'auth : tourne en SYSTEM avant tout enrôlement (des scripts Intune
+  // déployés hors de ce dépôt peuvent l'appeler sans token). Rate-limit large
+  // pour ne pas pénaliser un déploiement de masse Intune, mais par IP seule
+  // (un Bearer aléatoire n'ouvre plus un compteur neuf) et body plafonné.
   fastify.post('/setup-log', {
-    config: { rateLimit: { max: 60, timeWindow: '1 minute' } }
+    bodyLimit: SETUP_LOG_BODY_LIMIT,
+    config: { rateLimit: { max: 60, timeWindow: '1 minute', keyGenerator: ipOnlyKey } }
   }, async (req, reply) => {
     const { hostname, script, level = 'info', log } = req.body || {}
     if (!hostname || !log) return reply.code(400).send({ error: 'hostname et log requis' })
