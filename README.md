@@ -126,7 +126,7 @@ mature; until then, pin to a commit if you deploy it.
 
 | Component | Technology |
 |---|---|
-| Backend | Node.js 22 · Fastify 4 · ESM |
+| Backend | Node.js 22 · Fastify 5 · ESM |
 | Database | PostgreSQL 16 (raw SQL, no ORM) |
 | Frontend | Vanilla JS SPA — **no build step** |
 | Authentication | MSAL.js + Microsoft Entra ID (JWT verified server-side via JWKS) |
