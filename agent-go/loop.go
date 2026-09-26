@@ -25,8 +25,8 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 		"device_id": resp.DeviceID,
 		"is_new":    resp.New,
 	})
-	// DoCheckin draine PendingDeployments/Detections en mémoire — on
-	// persiste ici pour que le state.json reflète ce qui a été remonté.
+	// DoCheckin a retiré de PendingDeployments/Detections les résultats
+	// acceptés par le serveur — on persiste pour que le state.json le reflète.
 	st.Save()
 	// Rafraîchissement du cache runtime-config si TTL expiré (no-op
 	// sinon). Garantit que les changements UI Paramètres sont vus au
@@ -102,15 +102,15 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 	st.Save()
 
 	// Re-checkin immédiat pour remonter les résultats sans attendre 15min.
-	// DoCheckin draine PendingDeployments/Detections de l'état.
+	// DoCheckin ne retire les résultats de l'état qu'une fois acceptés.
 	if len(depResults) > 0 {
 		logInfo("recheckin-post-deploy", "", LogFields{"results": len(depResults)})
 		c2, cancel2 := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel2()
 		if _, err := DoCheckin(c2, cfg, st); err != nil {
-			logError("recheckin-fail", err, LogFields{"deferred_results": len(depResults)})
+			logError("recheckin-fail", err, LogFields{"deferred_results": len(st.PendingDeployments)})
 		} else {
-			st.Save() // état nettoyé par DoCheckin → drainXxx
+			st.Save() // résultats acquittés retirés par DoCheckin
 		}
 	}
 }
