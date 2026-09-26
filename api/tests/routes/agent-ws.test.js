@@ -318,9 +318,11 @@ test('révocation d\'un ancien token → la connexion de remplacement (autre tok
   })
   assert.equal(res.statusCode, 204)
 
-  await sleep(100)
-  assert.equal(second.closeInfo, null, 'la connexion du nouveau token n\'est pas fermée')
+  // L'évincement est synchrone dans le handler de révocation : état final
+  // dès la réponse.
+  assert.equal(second.conn.revokedReason, null, 'la connexion du nouveau token n\'est pas évincée')
   assert.equal(fastify.agentWs.get(device.id), second.conn)
+  assert.equal(second.closeInfo, null)
   assert.equal((await grantConsole(device.id)).statusCode, 200)
 })
 
@@ -387,6 +389,9 @@ test('checkin d\'un token non lié : les tokens jamais utilisés révoqués au r
 // tick du heartbeat qui revalide le token. setInterval simulé (le heartbeat
 // réel tourne à 30 s) ; setTimeout reste réel pour les attentes.
 
+// Requête de revalidation du token (routes/agent.js, recheckToken).
+const isTokenRecheck = (sql) => /FROM agent_tokens WHERE id = \$1/.test(sql)
+
 test('heartbeat : token dans sa grace de rotation → connexion conservée ; grace écoulée → WS fermée', { skip: SKIP }, async (t) => {
   t.mock.timers.enable({ apis: ['setInterval'] })
   const device = await seedDevice(db, { hostname: 'PC-WS-EXPIRY' })
@@ -399,11 +404,22 @@ test('heartbeat : token dans sa grace de rotation → connexion conservée ; gra
     headers: { authorization: `Bearer ${tok.secret}` },
   })
   assert.equal(rot.statusCode, 200)
+  await settleDb()
+  const rechecks = []
+  interceptQuery = (sql, params, next) => {
+    if (isTokenRecheck(sql)) rechecks.push(params[0])
+    return next()
+  }
   t.mock.timers.tick(30_000)
-  await waitFor(() => agent.frames.some(f => f.type === 'ping'), 'ping du heartbeat')
-  await sleep(200)
-  assert.equal(agent.closeInfo, null, 'token encore valide : connexion conservée')
+  // Barrière : la revalidation lancée par le tick et sa décision (synchrone
+  // au retour de la requête) sont terminées.
+  await settleDb()
+  assert.deepEqual(rechecks, [tok.id], 'revalidation faite au tick')
+  assert.equal(agent.conn.revokedReason, null, 'token encore valide : connexion conservée')
   assert.equal(fastify.agentWs.get(device.id), agent.conn)
+  await waitFor(() => agent.frames.some(f => f.type === 'ping'), 'ping du heartbeat')
+  assert.equal(agent.closeInfo, null)
+  interceptQuery = null
 
   // Grace écoulée.
   await db.query(`UPDATE agent_tokens SET expires_at = now() - interval '1 second' WHERE id = $1`, [tok.id])
