@@ -10,10 +10,10 @@
 //   - Phase 5 : bouton "pas un ticket" + signal d'apprentissage
 
 import emailRoute from './routes/email.js'
-import { startMailPollWorker }       from './lib/poll-worker.js'
-import { startMailSentPollWorker }   from './lib/sent-poll-worker.js'
-import { startMailOutboundWorker }   from './lib/outbound-worker.js'
-import { startMailMarkReadWorker }   from './lib/mark-read-worker.js'
+import { startMailPollWorker, stopMailPollWorker }         from './lib/poll-worker.js'
+import { startMailSentPollWorker, stopMailSentPollWorker } from './lib/sent-poll-worker.js'
+import { startMailOutboundWorker, stopMailOutboundWorker } from './lib/outbound-worker.js'
+import { startMailMarkReadWorker, stopMailMarkReadWorker } from './lib/mark-read-worker.js'
 
 export default {
   name: 'email-bridge',
@@ -32,5 +32,15 @@ export default {
     startMailSentPollWorker(fastify.db, fastify.log)
     startMailOutboundWorker(fastify.db, fastify.log)
     startMailMarkReadWorker(fastify.db, fastify.log)
+  },
+
+  // Arrêt propre : chaque worker termine son tick en cours.
+  async stopWorkers() {
+    await Promise.all([
+      stopMailPollWorker(),
+      stopMailSentPollWorker(),
+      stopMailOutboundWorker(),
+      stopMailMarkReadWorker(),
+    ])
   }
 }

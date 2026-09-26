@@ -13,7 +13,8 @@ import cleanupPlugin      from './plugins/cleanup.js'
 import errorHandlerPlugin from './plugins/error-handler.js'
 import healthPlugin       from './plugins/health.js'
 
-import { loadModules, startModuleWorkers } from './lib/module-loader.js'
+import { loadModules, startModuleWorkers, stopModuleWorkers } from './lib/module-loader.js'
+import { installShutdownHandlers } from './lib/shutdown.js'
 import { parseTrustProxy, rateLimitOptions } from './lib/rate-limit.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -79,6 +80,11 @@ await fastify.register(healthPlugin)   // GET /api/health (sans auth, cf. plugin
 // Chargement des modules activés (cf. modules.config.js).
 const modules = await loadModules(fastify)
 
+// À la fermeture, les workers s'arrêtent (tick en cours terminé) AVANT le
+// pool Postgres : les hooks onClose s'exécutent dans l'ordre inverse de leur
+// enregistrement, celui-ci passe donc avant celui du plugin db.
+fastify.addHook('onClose', () => stopModuleWorkers(modules, fastify))
+
 fastify.setNotFoundHandler((req, reply) => {
   if (!req.url.startsWith('/api')) {
     reply.header('Content-Security-Policy', CSP)
@@ -92,3 +98,6 @@ await fastify.listen({ port, host: '0.0.0.0' })
 
 // Workers / timers des modules — démarrés après listen().
 startModuleWorkers(modules, fastify)
+
+// SIGTERM / SIGINT → arrêt propre (cf. lib/shutdown.js).
+installShutdownHandlers(fastify)

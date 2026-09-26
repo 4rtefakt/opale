@@ -1,6 +1,6 @@
 import groupsRoute       from './routes/groups.js'
 import nativeGroupsRoute  from './routes/native-groups.js'
-import { startGroupSyncWorker } from './lib/group-sync.js'
+import { startGroupSyncWorker, stopGroupSyncWorker } from './lib/group-sync.js'
 import { getGroupDeviceHostnames, getGroupUserIds } from '../core/lib/graph.js'
 
 export default {
@@ -18,5 +18,9 @@ export default {
   },
   startWorkers(fastify) {
     startGroupSyncWorker(fastify.db, fastify.log)
+  },
+  // Arrêt propre : la sync en cours se termine.
+  async stopWorkers() {
+    await stopGroupSyncWorker()
   }
 }

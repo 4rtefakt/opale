@@ -2,7 +2,8 @@
 //
 // Charge les modules activés depuis modules.config.js, valide leur graphe de
 // dépendances, puis appelle leur `register(fastify)` dans l'ordre topologique.
-// Les workers (timers, queues) sont démarrés après listen() via startWorkers().
+// Les workers (timers, queues) sont démarrés après listen() via startWorkers()
+// et arrêtés à la fermeture via stopWorkers() (cf. stopModuleWorkers).
 
 import { modulesConfig as defaultConfig } from '../modules.config.js'
 
@@ -57,6 +58,21 @@ export function startModuleWorkers(modules, fastify) {
       m.startWorkers(fastify)
     }
   }
+}
+
+// Arrête les workers de tous les modules (fastify.close() → hook onClose
+// posé dans index.js). Chaque stopWorkers() attend la fin du tick en cours ;
+// l'échec d'un module n'empêche pas l'arrêt des autres.
+export async function stopModuleWorkers(modules, fastify) {
+  await Promise.all(Object.values(modules)
+    .filter(m => typeof m.stopWorkers === 'function')
+    .map(async (m) => {
+      try {
+        await m.stopWorkers(fastify)
+      } catch (err) {
+        fastify.log.warn({ err: err.message, module: m.name }, '[modules] stopWorkers a échoué')
+      }
+    }))
 }
 
 export function enabledModuleNames(config = defaultConfig) {
