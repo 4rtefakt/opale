@@ -62,6 +62,12 @@ export function buildSubject(originalSubject, ticketUuid) {
 // Retourne { inReplyTo, references }. Les deux sont des STRINGS prêts pour
 // les headers RFC, ou null si rien à inclure (premier mail d'un thread —
 // très rare pour outbound puisqu'on répond toujours à quelque chose).
+//
+// ATTENTION (appelants futurs — aucun en prod aujourd'hui) : la colonne
+// internet_message_id peut contenir une forme condensée
+// `<sha256-…@opale.invalid>` pour un Message-ID trop long (cf.
+// message-id.js). Pour des en-têtes de fil, prendre l'identifiant réel
+// dans `raw->>'internetMessageId'` plutôt que la colonne.
 export function buildThreadHeaders(mappingRows) {
   if (!Array.isArray(mappingRows) || !mappingRows.length) {
     return { inReplyTo: null, references: null }
