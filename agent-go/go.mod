@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/UserExistsError/conpty v0.1.4
-	github.com/coder/websocket v1.8.14
+	github.com/coder/websocket v1.8.15
 	github.com/yusufpapurcu/wmi v1.2.4
 	golang.org/x/sys v0.44.0
 )
