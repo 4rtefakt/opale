@@ -131,6 +131,50 @@ test('POST /api/packages — admin crée un package en draft', { skip: SKIP }, a
   assert.ok(body.id, 'id doit être présent')
 })
 
+test('POST /api/packages — winget_id au format invalide → 400 (injection d\'arguments winget)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-badwinget-admin')
+  for (const winget_id of ['--source=evil', '-h', 'My.App --override "x"', 'A'.repeat(129), ' My.App', 'My/App', ['My.App'], { id: 'x' }]) {
+    const res = await fastify.inject({
+      method: 'POST', url: '/api/packages',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: 'App invalide', type: 'winget', winget_id },
+    })
+    assert.equal(res.statusCode, 400, JSON.stringify(winget_id))
+    assert.match(res.json().error, /winget_id/)
+  }
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM packages WHERE name = 'App invalide'`)
+  assert.equal(rows[0].n, 0, 'aucun package créé')
+})
+
+test('POST /api/packages — winget_id aux formats réels acceptés', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-goodwinget-admin')
+  for (const winget_id of ['Microsoft.PowerShell', 'Notepad++.Notepad++', '9NBLGGH4NNS1', 'Mozilla.Firefox.ESR', 'Git_Git-2']) {
+    const res = await fastify.inject({
+      method: 'POST', url: '/api/packages',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: `App ${winget_id}`, type: 'winget', winget_id },
+    })
+    assert.equal(res.statusCode, 201, winget_id)
+    assert.equal(res.json().winget_id, winget_id)
+  }
+})
+
+test('PATCH /api/packages/:id — winget_id au format invalide → 400, package inchangé', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-patch-badwinget-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Patch Winget' })
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { winget_id: '--source=evil' },
+  })
+  assert.equal(res.statusCode, 400)
+  assert.match(res.json().error, /winget_id/)
+  const { rows: [row] } = await db.query(`SELECT winget_id, status FROM packages WHERE id = $1`, [pkg.id])
+  assert.equal(row.winget_id, 'Test.Package')
+  assert.equal(row.status, 'approved')
+})
+
 test('PATCH /api/packages/:id — non-admin → 403, scripts inchangés', { skip: SKIP }, async () => {
   const token = await userToken('oid-pkg-patch-user')
   const pkg = await insertPackage(db, { name: 'Pkg Patch NonAdmin', type: 'script', wingetId: null })

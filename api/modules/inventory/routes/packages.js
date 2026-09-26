@@ -3,6 +3,17 @@ import { resolveGroupMembers } from '../../groups/lib/groups.js'
 import { SNAPSHOT_COLUMNS, SNAPSHOT_UPSERT, snapshotSelect } from '../lib/deployment-snapshots.js'
 
 // Gestion des packages déployables (winget ou script PowerShell)
+
+// Format d'un identifiant winget (ex. « Microsoft.PowerShell »,
+// « Notepad++.Notepad++ », ID Microsoft Store « 9NBLGGH4NNS1 »). L'agent
+// lance `winget install --id <valeur>` : une valeur commençant par `-`
+// serait lue comme une option de winget (injection d'arguments). Premier
+// caractère alphanumérique, charset des IDs du dépôt winget-pkgs, 128 max.
+const WINGET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$/
+
+function isValidWingetId(v) {
+  return typeof v === 'string' && WINGET_ID_RE.test(v)
+}
 export default async function packagesRoute(fastify) {
 
   // GET /api/packages/winget/search — autocomplétion sur l'index officiel
@@ -59,6 +70,9 @@ export default async function packagesRoute(fastify) {
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
     if (!name) return reply.code(400).send({ error: 'name requis' })
     if (type === 'winget' && !winget_id) return reply.code(400).send({ error: 'winget_id requis pour type=winget' })
+    if (winget_id && !isValidWingetId(winget_id)) {
+      return reply.code(400).send({ error: 'winget_id invalide (format attendu : Editeur.Produit)' })
+    }
     if (type === 'script' && !install_script) return reply.code(400).send({ error: 'install_script requis pour type=script' })
 
     const { entraId } = fastify.getUserIdentity(req)
@@ -211,6 +225,9 @@ export default async function packagesRoute(fastify) {
     if (!existing) return reply.code(404).send({ error: 'Package introuvable' })
 
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
+    if (winget_id && !isValidWingetId(winget_id)) {
+      return reply.code(400).send({ error: 'winget_id invalide (format attendu : Editeur.Produit)' })
+    }
 
     // Toute modification d'un package approuvé le repasse en draft
     const newStatus = existing.status === 'approved' ? 'draft' : existing.status
