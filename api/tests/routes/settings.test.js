@@ -8,6 +8,7 @@
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
@@ -345,4 +346,80 @@ test('GET /audit — structure : { rows, total } avec pagination', { skip: SKIP 
   assert.ok(Array.isArray(body.rows))
   assert.equal(typeof body.total, 'number')
   assert.ok(body.rows.length <= 10)
+})
+
+// ─── PATCH /admins/:entraId — révocation des tokens CLI ─────────────────────
+// Les tokens CLI ne sont émis qu'aux admins : retirer le flag doit les
+// révoquer (sinon utilisables sur les routes non-admin, et ressuscités si le
+// flag est ré-accordé).
+
+async function seedCliTokenFor(entraId, { revokedAt = null } = {}) {
+  const secret = crypto.randomBytes(32).toString('hex')
+  const hash = crypto.createHash('sha256').update(secret).digest('hex')
+  const { rows } = await db.query(
+    `INSERT INTO cli_tokens (entra_id, label, token_hash, expires_at, revoked_at)
+     VALUES ($1, 'cli', $2, now() + interval '30 days', $3) RETURNING id`,
+    [entraId, hash, revokedAt]
+  )
+  return { id: rows[0].id, secret }
+}
+
+test('PATCH /admins/:entraId — retrait admin → tokens CLI révoqués (et eux seuls)', { skip: SKIP }, async () => {
+  const caller = await adminAuth('oid-set-adm-caller')
+  const target = await seedAdmin(db, { entraId: 'oid-set-adm-target', email: 'target@x' })
+  const bystander = await seedAdmin(db, { entraId: 'oid-set-adm-bystander', email: 'bystander@x' })
+  const t1 = await seedCliTokenFor(target.entraId)
+  const t2 = await seedCliTokenFor(target.entraId)
+  const oldRevokedAt = new Date('2026-01-01T00:00:00Z')
+  const t3 = await seedCliTokenFor(target.entraId, { revokedAt: oldRevokedAt })
+  const other = await seedCliTokenFor(bystander.entraId)
+
+  // Le token du futur ex-admin fonctionne avant le retrait.
+  const before = await fastify.inject({
+    method: 'GET', url: '/api/settings/', headers: { authorization: `Bearer opl_${t1.secret}` },
+  })
+  assert.equal(before.statusCode, 200)
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/settings/admins/${target.entraId}`,
+    headers: { authorization: `Bearer ${caller.token}` },
+    payload: { is_admin: false },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { entra_id: target.entraId, display_name: target.displayName, is_admin: false })
+
+  const { rows } = await db.query('SELECT id, revoked_at FROM cli_tokens WHERE entra_id = $1', [target.entraId])
+  const byId = Object.fromEntries(rows.map(r => [r.id, r.revoked_at]))
+  assert.ok(byId[t1.id] && byId[t2.id], 'tokens actifs révoqués')
+  assert.equal(byId[t3.id].toISOString(), oldRevokedAt.toISOString(), 'révocation antérieure conservée')
+  const { rows: [o] } = await db.query('SELECT revoked_at FROM cli_tokens WHERE id = $1', [other.id])
+  assert.equal(o.revoked_at, null, 'tokens des autres admins intacts')
+
+  // Token révoqué → 401 (et plus seulement 403 faute d'admin), y compris
+  // après ré-attribution du flag admin.
+  await db.query('UPDATE users_cache SET is_admin = true WHERE entra_id = $1', [target.entraId])
+  const after = await fastify.inject({
+    method: 'GET', url: '/api/settings/', headers: { authorization: `Bearer opl_${t2.secret}` },
+  })
+  assert.equal(after.statusCode, 401)
+
+  const { rows: audit } = await db.query(
+    `SELECT details FROM audit_logs WHERE action = 'admin_revoked' AND details->>'entra_id' = $1`, [target.entraId]
+  )
+  assert.equal(audit[0].details.cli_tokens_revoked, 2)
+})
+
+test('PATCH /admins/:entraId — octroi admin → aucun token révoqué', { skip: SKIP }, async () => {
+  const caller = await adminAuth('oid-set-adm-caller2')
+  const target = await seedNonAdmin(db, { entraId: 'oid-set-adm-grant', email: 'grant@x' })
+  const tok = await seedCliTokenFor(target.entraId)
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/settings/admins/${target.entraId}`,
+    headers: { authorization: `Bearer ${caller.token}` },
+    payload: { is_admin: true },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().is_admin, true)
+  const { rows: [r] } = await db.query('SELECT revoked_at FROM cli_tokens WHERE id = $1', [tok.id])
+  assert.equal(r.revoked_at, null)
 })

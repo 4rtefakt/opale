@@ -1123,3 +1123,274 @@ test('POST /:id/merge — email_thread_mapping repointé vers target',
     assert.equal(rows[0].ticket_id, tgt.json().id)
   }
 )
+
+// ─── ACL non-admin : champs réservés, types de messages, contenu interne ────
+// Un non-admin (requester / assignee) ne réassigne pas, ne change pas le
+// demandeur, ne rattache que SON poste, ne poste que des commentaires et ne
+// voit jamais les notes internes ni les suggestions IA.
+
+async function insertOwnedDevice(hostname, assignedUserId = null) {
+  const { rows } = await db.query(
+    'INSERT INTO devices (hostname, assigned_user_id) VALUES ($1, $2) RETURNING id',
+    [hostname, assignedUserId]
+  )
+  return rows[0].id
+}
+
+test('POST / — non-admin : assignation, demandeur tiers, poste d\'autrui, tags → 403', { skip: SKIP }, async () => {
+  const me    = await userAuth('oid-tk-acl-create-me', 'Requester Create')
+  const other = await userAuth('oid-tk-acl-create-other', 'Other')
+  const otherDevice = await insertOwnedDevice('PC-ACL-OTHER', other.user.entraId)
+  const { rows: [tag] } = await db.query(`INSERT INTO tags (name) VALUES ('acl-tag') RETURNING id`)
+
+  for (const extra of [
+    { assigned_to_entra_id: me.user.entraId, assigned_to_name: 'Moi' },
+    { user_id: other.user.entraId },
+    { device_id: otherDevice },
+    { tag_ids: [tag.id] },
+  ]) {
+    const res = await createTicketAs(me.token, { title: 'Tentative', ...extra })
+    assert.equal(res.statusCode, 403, `attendu 403 pour ${JSON.stringify(extra)}`)
+  }
+  const { rows } = await db.query(`SELECT 1 FROM tickets WHERE created_by_entra_id = $1`, [me.user.entraId])
+  assert.equal(rows.length, 0, 'aucun ticket créé')
+})
+
+test('POST / — non-admin : ticket pour soi avec son propre poste → 201', { skip: SKIP }, async () => {
+  const me = await userAuth('oid-tk-acl-create-ok', 'Requester OK')
+  const myDevice = await insertOwnedDevice('PC-ACL-MINE', me.user.entraId)
+  const res = await createTicketAs(me.token, { title: 'Mon PC', user_id: me.user.entraId, device_id: myDevice })
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.json().user_id, me.user.entraId)
+  assert.equal(res.json().device_id, myDevice)
+})
+
+test('PATCH /:id — requester non-admin : assignation, demandeur, poste d\'autrui → 403 ; statut et son poste OK', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-acl-patch-admin')
+  const me    = await userAuth('oid-tk-acl-patch-me', 'Requester Patch')
+  const other = await userAuth('oid-tk-acl-patch-other', 'Other Patch')
+  const otherDevice = await insertOwnedDevice('PC-ACL-P-OTHER', other.user.entraId)
+  const myDevice    = await insertOwnedDevice('PC-ACL-P-MINE', me.user.entraId)
+  const id = (await createTicketAs(admin.token, { title: 'Mon ticket', user_id: me.user.entraId })).json().id
+  const patch = (payload) => fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${id}`,
+    headers: { authorization: `Bearer ${me.token}` }, payload,
+  })
+
+  for (const payload of [
+    { assigned_to_entra_id: me.user.entraId },
+    { assigned_to_name: 'Moi' },
+    { user_id: other.user.entraId },
+    { device_id: otherDevice },
+  ]) {
+    assert.equal((await patch(payload)).statusCode, 403, `attendu 403 pour ${JSON.stringify(payload)}`)
+  }
+  const { rows: [tk] } = await db.query('SELECT user_id, assigned_to_entra_id, device_id FROM tickets WHERE id = $1', [id])
+  assert.deepEqual(tk, { user_id: me.user.entraId, assigned_to_entra_id: null, device_id: null })
+
+  assert.equal((await patch({ device_id: myDevice })).statusCode, 200)
+  assert.equal((await patch({ status: 'resolved' })).statusCode, 200)
+})
+
+test('PATCH /:id — assignee non-admin (pas requester) : rattacher un poste → 403', { skip: SKIP }, async () => {
+  const admin    = await adminAuth('oid-tk-acl-assignee-admin')
+  const assignee = await userAuth('oid-tk-acl-assignee', 'Assignee NA')
+  const myDevice = await insertOwnedDevice('PC-ACL-ASSIGNEE', assignee.user.entraId)
+  const id = (await createTicketAs(admin.token, {
+    title: 'Assigné', assigned_to_entra_id: assignee.user.entraId, assigned_to_name: 'Assignee NA',
+  })).json().id
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${id}`,
+    headers: { authorization: `Bearer ${assignee.token}` }, payload: { device_id: myDevice },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
+test('POST /:id/messages — requester non-admin : system / resolution / note interne → 403, défaut = comment', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-acl-msg-admin')
+  const me    = await userAuth('oid-tk-acl-msg-me', 'Requester Msg')
+  const id = (await createTicketAs(admin.token, { title: 'Fil', user_id: me.user.entraId })).json().id
+  const post = (payload) => fastify.inject({
+    method: 'POST', url: `/api/tickets/${id}/messages`,
+    headers: { authorization: `Bearer ${me.token}` }, payload,
+  })
+
+  for (const type of ['system', 'resolution', 'internal_note']) {
+    assert.equal((await post({ content: 'x', type })).statusCode, 403, `type ${type}`)
+  }
+  const ok = await post({ content: 'Toujours en panne' })
+  assert.equal(ok.statusCode, 201)
+  assert.equal(ok.json().type, 'comment')
+
+  const { rows } = await db.query('SELECT type FROM ticket_messages WHERE ticket_id = $1', [id])
+  assert.deepEqual(rows.map(r => r.type), ['comment'])
+})
+
+test('GET /:id et GET /?q= — requester non-admin : ni notes internes ni suggestions IA', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-acl-read-admin')
+  const me    = await userAuth('oid-tk-acl-read-me', 'Requester Read')
+  const id = (await createTicketAs(admin.token, { title: 'Lecture', user_id: me.user.entraId })).json().id
+  await db.query(`
+    INSERT INTO ticket_messages (ticket_id, type, author, content) VALUES
+      ($1, 'comment',       'Tech', 'Réponse publique'),
+      ($1, 'internal_note', 'Tech', 'NOTEINTERNE mot de passe wifi'),
+      ($1, 'ai_suggestion', 'Assistant IA', 'SUGGESTIONIA brouillon'),
+      ($1, 'system',        'Tech', 'Ticket pris en charge')
+  `, [id])
+
+  const det = await fastify.inject({
+    method: 'GET', url: `/api/tickets/${id}`, headers: { authorization: `Bearer ${me.token}` },
+  })
+  assert.equal(det.statusCode, 200)
+  assert.deepEqual(det.json().messages.map(m => m.type).sort(), ['comment', 'system'])
+  assert.doesNotMatch(det.body, /NOTEINTERNE|SUGGESTIONIA/)
+
+  const adminDet = await fastify.inject({
+    method: 'GET', url: `/api/tickets/${id}`, headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.equal(adminDet.json().messages.length, 4, 'l\'admin voit tout le fil')
+
+  for (const q of ['NOTEINTERNE', 'SUGGESTIONIA']) {
+    const list = await fastify.inject({
+      method: 'GET', url: `/api/tickets/?q=${q}`, headers: { authorization: `Bearer ${me.token}` },
+    })
+    assert.equal(list.statusCode, 200)
+    assert.deepEqual(list.json(), [], `recherche ${q} ne doit pas matcher pour un non-admin`)
+  }
+  const adminList = await fastify.inject({
+    method: 'GET', url: '/api/tickets/?q=NOTEINTERNE', headers: { authorization: `Bearer ${admin.token}` },
+  })
+  assert.ok(adminList.json().some(t => t.id === id), 'l\'admin cherche dans les notes internes')
+})
+
+test('ai-suggest et send-by-mail — requester non-admin → 403, rien d\'exposé', { skip: SKIP }, async () => {
+  _aiStub = async () => 'SUGGESTION qui cite la note interne'
+  const admin = await adminAuth('oid-tk-acl-ai-admin')
+  const me    = await userAuth('oid-tk-acl-ai-me', 'Requester AI')
+  const id = (await createTicketAs(admin.token, { title: 'IA', user_id: me.user.entraId })).json().id
+  const { rows: [note] } = await db.query(`
+    INSERT INTO ticket_messages (ticket_id, type, author, content, email_sent_at)
+    VALUES ($1, 'internal_note', 'Tech', 'note privée', now()) RETURNING id
+  `, [id])
+  await db.query(`
+    INSERT INTO email_thread_mapping (internet_message_id, mailbox, direction, received_at, ticket_id)
+    VALUES ($1, 'helpdesk@test', 'inbound', now(), $2)
+  `, [`<acl-${id}@x>`, id])
+
+  const ai = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${id}/ai-suggest`, headers: { authorization: `Bearer ${me.token}` },
+  })
+  assert.equal(ai.statusCode, 403)
+  assert.doesNotMatch(ai.body, /SUGGESTION/)
+
+  const send = await fastify.inject({
+    method: 'POST', url: `/api/tickets/${id}/messages/${note.id}/send-by-mail`,
+    headers: { authorization: `Bearer ${me.token}` },
+  })
+  assert.equal(send.statusCode, 403)
+
+  const { rows } = await db.query('SELECT type FROM ticket_messages WHERE ticket_id = $1 ORDER BY created_at', [id])
+  assert.deepEqual(rows.map(r => r.type), ['internal_note'], 'ni suggestion créée ni note convertie')
+  _aiStub = async () => 'Suggestion IA de test.'
+})
+
+// ─── Validation status / priority / source (XSS stockée) ────────────────────
+// Ces colonnes sont du TEXT libre et le front admin les rend dans ses vues :
+// toute valeur hors liste doit être refusée côté serveur, quel que soit
+// l'appelant. 'merged' et les sources système restent réservés aux admins.
+
+const XSS = '<img src=x onerror=alert(document.domain)>'
+
+test('POST / — priority ou source hors liste → 400 (admin comme non-admin), rien stocké', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-enum-post-admin')
+  const me    = await userAuth('oid-tk-enum-post-user')
+  for (const token of [admin.token, me.token]) {
+    for (const extra of [{ priority: XSS }, { priority: null }, { priority: 'urgent' }, { source: XSS }]) {
+      const res = await createTicketAs(token, { title: 'Enum POST', ...extra })
+      assert.equal(res.statusCode, 400, `attendu 400 pour ${JSON.stringify(extra)}`)
+    }
+  }
+  const { rows } = await db.query(`SELECT 1 FROM tickets WHERE title = 'Enum POST'`)
+  assert.equal(rows.length, 0)
+
+  // Valeurs de la liste toujours acceptées (front : low/normal/high ; CLI idem).
+  for (const priority of ['low', 'normal', 'high', 'critical']) {
+    assert.equal((await createTicketAs(me.token, { title: `Prio ${priority}`, priority })).statusCode, 201)
+  }
+})
+
+test('POST / — non-admin : source système (auto, email…) → 403 ; admin : source=auto OK', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-enum-src-admin')
+  const me    = await userAuth('oid-tk-enum-src-user')
+  for (const source of ['auto', 'email', 'alert', 'script']) {
+    assert.equal((await createTicketAs(me.token, { title: 'Src', source })).statusCode, 403, source)
+  }
+  assert.equal((await createTicketAs(me.token, { title: 'Src manual', source: 'manual' })).statusCode, 201)
+  const res = await createTicketAs(admin.token, { title: 'Src auto', source: 'auto' })
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.json().is_auto, true)
+})
+
+test('PATCH /:id — status / priority hors liste → 400 ; merged réservé aux admins', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-enum-patch-admin')
+  const me    = await userAuth('oid-tk-enum-patch-user')
+  const id = (await createTicketAs(admin.token, { title: 'Enum PATCH', user_id: me.user.entraId })).json().id
+  const patch = (token, payload) => fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${id}`,
+    headers: { authorization: `Bearer ${token}` }, payload,
+  })
+
+  for (const token of [admin.token, me.token]) {
+    for (const payload of [{ status: XSS }, { priority: XSS }, { status: 'reopened' }, { priority: null }]) {
+      assert.equal((await patch(token, payload)).statusCode, 400, `attendu 400 pour ${JSON.stringify(payload)}`)
+    }
+  }
+  assert.equal((await patch(me.token, { status: 'merged' })).statusCode, 403)
+  const { rows: [tk] } = await db.query('SELECT status, priority FROM tickets WHERE id = $1', [id])
+  assert.deepEqual(tk, { status: 'open', priority: 'normal' })
+
+  // Transitions utilisées par le front / le CLI toujours acceptées.
+  for (const status of ['in_progress', 'resolved', 'open', 'closed']) {
+    assert.equal((await patch(me.token, { status })).statusCode, 200, status)
+  }
+  assert.equal((await patch(me.token, { priority: 'high' })).statusCode, 200)
+})
+
+// ─── awaiting_reply : les messages internes ne fuient pas au requester ─────
+// Le flag se base sur l'auteur du dernier message : si une note interne ou
+// une suggestion IA comptait, le requester verrait le flag basculer à chaque
+// activité interne de l'équipe IT.
+
+test('awaiting_reply — requester non-admin : notes internes / suggestions IA ignorées (GET / et GET /:id)', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-await-admin', 'Await Admin')
+  const me    = await userAuth('oid-tk-await-me', 'Await Requester')
+  const id = (await createTicketAs(admin.token, { title: 'Await', user_id: me.user.entraId })).json().id
+  // Dernier message visible = celui du requester, puis activité interne.
+  await db.query(`
+    INSERT INTO ticket_messages (ticket_id, type, author, content, created_at) VALUES
+      ($1, 'comment',       'Await Requester', 'Ça ne marche toujours pas', now() - interval '3 minutes'),
+      ($1, 'internal_note', 'Autre Tech',      'On regarde',                now() - interval '2 minutes'),
+      ($1, 'ai_suggestion', 'Assistant IA',    'Brouillon',                 now() - interval '1 minute')
+  `, [id])
+
+  const get = async (token, url) => fastify.inject({ method: 'GET', url, headers: { authorization: `Bearer ${token}` } })
+
+  const det = await get(me.token, `/api/tickets/${id}`)
+  assert.equal(det.statusCode, 200)
+  assert.equal(det.json().awaiting_reply, false, 'détail : le dernier message visible est le sien')
+  const list = await get(me.token, '/api/tickets/')
+  assert.equal(list.statusCode, 200)
+  assert.equal(list.json().find(t => t.id === id).awaiting_reply, false, 'liste : idem')
+
+  // L'admin, lui, voit l'activité interne (dernier message d'un autre).
+  assert.equal((await get(admin.token, `/api/tickets/${id}`)).json().awaiting_reply, true)
+  assert.equal((await get(admin.token, '/api/tickets/?limit=200')).json().find(t => t.id === id).awaiting_reply, true)
+
+  // Une vraie réponse visible bascule bien le flag côté requester.
+  await db.query(
+    `INSERT INTO ticket_messages (ticket_id, type, author, content) VALUES ($1, 'comment', 'Autre Tech', 'Pouvez-vous redémarrer ?')`,
+    [id]
+  )
+  assert.equal((await get(me.token, `/api/tickets/${id}`)).json().awaiting_reply, true)
+  assert.equal((await get(me.token, '/api/tickets/')).json().find(t => t.id === id).awaiting_reply, true)
+})

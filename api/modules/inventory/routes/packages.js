@@ -1,5 +1,6 @@
 import { getGroupDeviceHostnames } from '../../core/lib/graph.js'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
+import { SNAPSHOT_COLUMNS, SNAPSHOT_UPSERT, snapshotSelect } from '../lib/deployment-snapshots.js'
 
 // Gestion des packages déployables (winget ou script PowerShell)
 export default async function packagesRoute(fastify) {
@@ -52,8 +53,9 @@ export default async function packagesRoute(fastify) {
     reply.send(rows)
   })
 
-  // POST /api/packages — créer un package (draft)
-  fastify.post('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // POST /api/packages — créer un package (draft). Admin requis : le contenu
+  // (scripts PowerShell) finit exécuté en SYSTEM sur les postes.
+  fastify.post('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
     if (!name) return reply.code(400).send({ error: 'name requis' })
     if (type === 'winget' && !winget_id) return reply.code(400).send({ error: 'winget_id requis pour type=winget' })
@@ -202,8 +204,9 @@ export default async function packagesRoute(fastify) {
     reply.send({ id: rows[0].id, status: 'cancelled' })
   })
 
-  // PATCH /api/packages/:id — modifier (repasse en draft si approuvé)
-  fastify.patch('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // PATCH /api/packages/:id — modifier (repasse en draft si approuvé).
+  // Admin requis (scripts exécutés en SYSTEM).
+  fastify.patch('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: [existing] } = await fastify.db.query(`SELECT * FROM packages WHERE id = $1`, [req.params.id])
     if (!existing) return reply.code(404).send({ error: 'Package introuvable' })
 
@@ -235,8 +238,8 @@ export default async function packagesRoute(fastify) {
     reply.send(rows[0])
   })
 
-  // DELETE /api/packages/:id — supprimer (bloqué si déploiements actifs)
-  fastify.delete('/:id', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // DELETE /api/packages/:id — supprimer (bloqué si déploiements actifs). Admin requis.
+  fastify.delete('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: active } = await fastify.db.query(`
       SELECT id FROM deployments WHERE package_id = $1 AND status IN ('pending','running') LIMIT 1
     `, [req.params.id])
@@ -253,13 +256,36 @@ export default async function packagesRoute(fastify) {
     if (pkg.status === 'approved') return reply.code(409).send({ error: 'Package déjà approuvé' })
 
     const { entraId } = fastify.getUserIdentity(req)
-    const { rows } = await fastify.db.query(`
-      UPDATE packages SET status = 'approved', approved_by = $1, approved_at = now(), updated_at = now()
-      WHERE id = $2
-      RETURNING *
-    `, [entraId, req.params.id])
+    // Approbation + rafraîchissement des snapshots des déploiements encore
+    // 'pending' dans la même transaction : ils partiront avec le contenu
+    // que l'admin vient d'approuver (jamais un mélange ancien/nouveau).
+    const client = await fastify.db.connect()
+    let approved
+    try {
+      await client.query('BEGIN')
+      const upd = await client.query(`
+        UPDATE packages SET status = 'approved', approved_by = $1, approved_at = now(), updated_at = now()
+        WHERE id = $2
+        RETURNING *
+      `, [entraId, req.params.id])
+      approved = upd.rows[0]
+      await client.query(`
+        INSERT INTO deployment_snapshots (${SNAPSHOT_COLUMNS})
+        SELECT ${snapshotSelect('d', 'p')}
+        FROM deployments d
+        JOIN packages p ON p.id = d.package_id
+        WHERE d.package_id = $1 AND d.status = 'pending' AND p.status = 'approved'
+        ${SNAPSHOT_UPSERT}
+      `, [req.params.id])
+      await client.query('COMMIT')
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw err
+    } finally {
+      client.release()
+    }
 
-    reply.send(rows[0])
+    reply.send(approved)
   })
 
   // POST /api/packages/:id/deploy — créer des déploiements (1-par-1, groupe Entra, ou global)
@@ -372,13 +398,25 @@ export default async function packagesRoute(fastify) {
       job = j
     }
 
+    // Chaque déploiement créé reçoit dans la même requête le snapshot du
+    // contenu approuvé du package (cf. lib/deployment-snapshots.js) : c'est
+    // ce contenu, et non celui de `packages` au moment du checkin, qui
+    // partira sur le poste.
     let queued = 0
     for (const deviceId of resolvedDeviceIds) {
       try {
         await fastify.db.query(`
-          INSERT INTO deployments (package_id, device_id, deployed_by, job_id)
-          VALUES ($1, $2, $3, $4)
-          ON CONFLICT DO NOTHING
+          WITH ins AS (
+            INSERT INTO deployments (package_id, device_id, deployed_by, job_id)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT DO NOTHING
+            RETURNING id, package_id
+          )
+          INSERT INTO deployment_snapshots (${SNAPSHOT_COLUMNS})
+          SELECT ${snapshotSelect('ins', 'p')}
+          FROM ins
+          JOIN packages p ON p.id = ins.package_id
+          WHERE p.status = 'approved'
         `, [pkg.id, deviceId, entraId, job?.id ?? null])
         queued++
       } catch (err) {

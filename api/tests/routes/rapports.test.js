@@ -49,6 +49,16 @@ test('GET / — sans Bearer → 401', { skip: SKIP }, async () => {
   assert.equal(res.statusCode, 401)
 })
 
+test('GET / — non-admin → 403', { skip: SKIP }, async () => {
+  const u = await seedNonAdmin(db, { entraId: 'oid-rpt-na', email: 'oid-rpt-na@x' })
+  const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const res = await fastify.inject({
+    method: 'GET', url: '/api/rapports/',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
+})
+
 // ─── Shape de retour ─────────────────────────────────────────────────────────
 
 test('GET / — retourne les clés attendues', { skip: SKIP }, async () => {

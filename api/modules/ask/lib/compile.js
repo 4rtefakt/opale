@@ -9,7 +9,7 @@
 import { REGISTRY } from './registry.js'
 
 export function compile(spec, opts = {}) {
-  const res = REGISTRY[spec.resource]
+  const res = Object.hasOwn(REGISTRY, spec.resource) ? REGISTRY[spec.resource] : null
   if (!res) throw new Error(`compile: resource inconnue ${spec.resource}`)
 
   const params = []

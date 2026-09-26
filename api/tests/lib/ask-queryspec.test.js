@@ -97,3 +97,34 @@ test('defaults appliqués quand sort/limit absents', () => {
   assert.deepEqual(r.spec.sort, { field: 'created_at', dir: 'desc' })
   assert.equal(r.spec.limit, 100)
 })
+
+// Clés héritées du prototype : `REGISTRY['__proto__']`, `defs['constructor']`,
+// `sort['toString']`… sont truthy via la chaîne de prototypes. Le QuerySpec
+// vient d'un JSON.parse de la sortie LLM : `__proto__` y est une clé propre.
+const PROTO_KEYS = ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']
+
+test('resource héritée du prototype → rejet', () => {
+  for (const k of PROTO_KEYS) {
+    const r = validateQuerySpec(JSON.parse(`{"resource": ${JSON.stringify(k)}}`))
+    assert.equal(r.ok, false, `resource ${k} doit être rejetée`)
+    assert.match(r.errors[0], /resource inconnue/)
+  }
+})
+
+test('filtre / cross-filtre hérité du prototype → rejet « inconnu »', () => {
+  for (const k of PROTO_KEYS) {
+    for (const group of ['filters', 'cross']) {
+      const r = validateQuerySpec(JSON.parse(`{"resource": "devices", "${group}": {${JSON.stringify(k)}: "x"}}`))
+      assert.equal(r.ok, false, `${group}.${k} doit être rejeté`)
+      assert.match(r.errors[0], /inconnu/, `${group}.${k} : ${r.errors[0]}`)
+    }
+  }
+})
+
+test('sort.field hérité du prototype → rejet', () => {
+  for (const k of PROTO_KEYS) {
+    const r = validateQuerySpec({ resource: 'devices', sort: { field: k, dir: 'asc' } })
+    assert.equal(r.ok, false, `sort ${k} doit être rejeté`)
+    assert.match(r.errors[0], /sort\.field inconnu/)
+  }
+})

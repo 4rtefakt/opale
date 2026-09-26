@@ -14,8 +14,10 @@ async function getThresholds(fastify) {
 }
 
 export default async function devicesRoute(fastify) {
-  // Liste des postes
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // Liste des postes — admin-only (hostnames, IP NetBird, utilisateurs
+  // assignés). Le front et le CLI (tokens émis aux seuls admins) sont
+  // réservés aux admins.
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { status, search, limit = 100, offset = 0 } = req.query
     const thr = await getThresholds(fastify)
 

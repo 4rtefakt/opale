@@ -19,12 +19,20 @@ function initVapid() {
   _vapidConfigured = true
 }
 
-// Envoi d'une notification push à tous les admins abonnés
+// Envoi d'une notification push à tous les admins abonnés. Seules les
+// souscriptions d'utilisateurs ACTUELLEMENT admins (users_cache.is_admin)
+// sont servies : /subscribe est ouvert à tout authentifié, et un admin
+// révoqué garde sa souscription en base.
 export async function sendPushToAll(fastify, payload) {
   initVapid()
   if (!_vapidConfigured) return
 
-  const { rows } = await fastify.db.query(`SELECT subscription FROM push_subscriptions`)
+  const { rows } = await fastify.db.query(`
+    SELECT ps.subscription
+    FROM push_subscriptions ps
+    JOIN users_cache uc ON uc.entra_id = ps.user_entra_id
+    WHERE uc.is_admin = true
+  `)
   for (const row of rows) {
     try {
       await webpush.sendNotification(row.subscription, JSON.stringify(payload))

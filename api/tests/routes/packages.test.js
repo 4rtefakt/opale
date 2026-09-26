@@ -101,22 +101,93 @@ test('POST /api/packages — sans Bearer → 401', { skip: SKIP }, async () => {
 
 // ─── POST / — création ────────────────────────────────────────────────────────
 
-test('POST /api/packages — non-admin peut créer (pas requireAdmin)', { skip: SKIP }, async () => {
+// Sécu : le contenu d'un package (install/post-install/detection script)
+// finit exécuté en SYSTEM sur les postes → création/édition/suppression
+// réservées aux admins. Ce test affirmait auparavant le comportement
+// inverse (« non-admin peut créer ») : mis à jour vers le comportement sûr.
+test('POST /api/packages — non-admin → 403 (requireAdmin)', { skip: SKIP }, async () => {
   const token = await userToken('oid-pkg-create-user')
   const res = await fastify.inject({
     method: 'POST', url: '/api/packages',
     headers: { authorization: `Bearer ${token}` },
-    payload: { name: 'Mon App', type: 'winget', winget_id: 'My.App' },
+    payload: { name: 'Mon App', type: 'script', install_script: 'Write-Output pwned' },
+  })
+  assert.equal(res.statusCode, 403)
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM packages WHERE name = 'Mon App'`)
+  assert.equal(rows[0].n, 0, 'aucun package ne doit être créé')
+})
+
+test('POST /api/packages — admin crée un package en draft', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-create-admin')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/packages',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { name: 'Mon App Admin', type: 'winget', winget_id: 'My.App' },
   })
   assert.equal(res.statusCode, 201)
   const body = res.json()
-  assert.equal(body.name, 'Mon App')
+  assert.equal(body.name, 'Mon App Admin')
   assert.equal(body.status, 'draft')
   assert.ok(body.id, 'id doit être présent')
 })
 
+test('PATCH /api/packages/:id — non-admin → 403, scripts inchangés', { skip: SKIP }, async () => {
+  const token = await userToken('oid-pkg-patch-user')
+  const pkg = await insertPackage(db, { name: 'Pkg Patch NonAdmin', type: 'script', wingetId: null })
+  await db.query(`UPDATE packages SET install_script = 'Write-Output ok' WHERE id = $1`, [pkg.id])
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { install_script: 'Write-Output pwned' },
+  })
+  assert.equal(res.statusCode, 403)
+  const { rows: [row] } = await db.query(`SELECT install_script, status FROM packages WHERE id = $1`, [pkg.id])
+  assert.equal(row.install_script, 'Write-Output ok')
+  assert.equal(row.status, 'approved')
+})
+
+test('PATCH /api/packages/:id — admin modifie un package approuvé → repasse en draft', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-patch-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Patch Admin' })
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { description: 'maj' },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().status, 'draft')
+})
+
+test('DELETE /api/packages/:id — non-admin → 403, package conservé', { skip: SKIP }, async () => {
+  const token = await userToken('oid-pkg-delete-user')
+  const pkg = await insertPackage(db, { name: 'Pkg Delete NonAdmin' })
+
+  const res = await fastify.inject({
+    method: 'DELETE', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM packages WHERE id = $1`, [pkg.id])
+  assert.equal(rows[0].n, 1)
+})
+
+test('DELETE /api/packages/:id — admin supprime → 204', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-delete-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Delete Admin' })
+
+  const res = await fastify.inject({
+    method: 'DELETE', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 204)
+})
+
+// Les tests de validation passent désormais par un admin (un non-admin est
+// rejeté en 403 avant la validation du body).
 test('POST /api/packages — name manquant → 400', { skip: SKIP }, async () => {
-  const token = await userToken('oid-pkg-noname-user')
+  const token = await adminToken('oid-pkg-noname-admin')
   const res = await fastify.inject({
     method: 'POST', url: '/api/packages',
     headers: { authorization: `Bearer ${token}` },
@@ -127,7 +198,7 @@ test('POST /api/packages — name manquant → 400', { skip: SKIP }, async () =>
 })
 
 test('POST /api/packages — type=winget sans winget_id → 400', { skip: SKIP }, async () => {
-  const token = await userToken('oid-pkg-nowinget-user')
+  const token = await adminToken('oid-pkg-nowinget-admin')
   const res = await fastify.inject({
     method: 'POST', url: '/api/packages',
     headers: { authorization: `Bearer ${token}` },
@@ -457,4 +528,90 @@ test('POST /jobs/:jobId/cancel — job introuvable → 404', { skip: SKIP }, asy
     headers: { authorization: `Bearer ${token}` },
   })
   assert.equal(res.statusCode, 404)
+})
+
+// ─── Snapshot du contenu à la mise en file (migration 071) ──────────────────
+
+async function snapshotOf(db, deploymentId) {
+  const { rows } = await db.query(
+    'SELECT * FROM deployment_snapshots WHERE deployment_id = $1', [deploymentId]
+  )
+  return rows[0] || null
+}
+
+test('POST /:id/deploy — fige le contenu approuvé dans deployment_snapshots', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-snap-deploy-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Snap Deploy', type: 'script', wingetId: null })
+  await db.query(
+    `UPDATE packages SET install_script = 'Write-Output v1', post_install_script = 'Write-Output post',
+       detection_script = 'exit 0' WHERE id = $1`,
+    [pkg.id]
+  )
+  const dev = await seedDevice(db, { hostname: 'PC-SNAP-DEPLOY' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/deploy`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { scope: 'device', device_ids: [dev.id] },
+  })
+  assert.equal(res.statusCode, 201)
+
+  const { rows: [dep] } = await db.query(
+    'SELECT id FROM deployments WHERE package_id = $1 AND device_id = $2', [pkg.id, dev.id]
+  )
+  const snap = await snapshotOf(db, dep.id)
+  assert.ok(snap, 'un snapshot doit être créé avec le déploiement')
+  assert.equal(snap.name, 'Pkg Snap Deploy')
+  assert.equal(snap.type, 'script')
+  assert.equal(snap.install_script, 'Write-Output v1')
+  assert.equal(snap.post_install_script, 'Write-Output post')
+  assert.equal(snap.detection_script, 'exit 0')
+})
+
+test('POST /:id/approve — rafraîchit le snapshot des déploiements encore pending', { skip: SKIP }, async () => {
+  // Package déployé (v1), puis modifié par un admin (→ draft, v2) : les
+  // pending sont gelés ; la ré-approbation leur fige le contenu v2 approuvé.
+  const token = await adminToken('oid-pkg-snap-approve-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Snap Approve', type: 'script', wingetId: null })
+  await db.query(`UPDATE packages SET install_script = 'Write-Output v1' WHERE id = $1`, [pkg.id])
+  const dev = await seedDevice(db, { hostname: 'PC-SNAP-APPROVE' })
+  const devDone = await seedDevice(db, { hostname: 'PC-SNAP-APPROVE-DONE' })
+
+  const dep = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/deploy`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { scope: 'device', device_ids: [dev.id, devDone.id] },
+  })
+  assert.equal(dep.statusCode, 201)
+  const { rows: [pending] } = await db.query(
+    'SELECT id FROM deployments WHERE package_id = $1 AND device_id = $2', [pkg.id, dev.id]
+  )
+  const { rows: [done] } = await db.query(
+    'SELECT id FROM deployments WHERE package_id = $1 AND device_id = $2', [pkg.id, devDone.id]
+  )
+  // Le second a déjà tourné : son snapshot (trace de ce qui a été exécuté)
+  // ne doit pas bouger.
+  await db.query(`UPDATE deployments SET status = 'success' WHERE id = $1`, [done.id])
+
+  const patch = await fastify.inject({
+    method: 'PATCH', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { install_script: 'Write-Output v2' },
+  })
+  assert.equal(patch.statusCode, 200)
+  assert.equal(patch.json().status, 'draft')
+  assert.equal((await snapshotOf(db, pending.id)).install_script, 'Write-Output v1',
+    'la modification seule ne touche pas le snapshot')
+
+  const approve = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/approve`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(approve.statusCode, 200)
+  assert.equal(approve.json().status, 'approved')
+
+  const snap = await snapshotOf(db, pending.id)
+  assert.equal(snap.install_script, 'Write-Output v2')
+  assert.equal(snap.package_approved_by, 'oid-pkg-snap-approve-admin')
+  assert.equal((await snapshotOf(db, done.id)).install_script, 'Write-Output v1')
 })

@@ -298,3 +298,85 @@ test('POST /retry-bulk — 2 failed → 2 retried', { skip: SKIP }, async () => 
     assert.equal(dep.status, 'pending')
   }
 })
+
+// ─── Retry : package approuvé exigé + snapshot re-figé (migration 071) ──────
+
+async function insertFailedDeployment(db, packageId, deviceId) {
+  const { rows: [dep] } = await db.query(
+    `INSERT INTO deployments (package_id, device_id, status) VALUES ($1, $2, 'failed') RETURNING id`,
+    [packageId, deviceId]
+  )
+  return dep
+}
+
+async function snapshotScript(db, deploymentId) {
+  const { rows } = await db.query(
+    'SELECT install_script FROM deployment_snapshots WHERE deployment_id = $1', [deploymentId]
+  )
+  return rows[0]?.install_script
+}
+
+test('POST /:id/retry — package draft → 409, reste failed', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-dep-retry-draft-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Retry Draft', status: 'draft' })
+  const dev = await seedDevice(db, { hostname: 'PC-RETRY-DRAFT' })
+  const dep = await insertFailedDeployment(db, pkg.id, dev.id)
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/deployments/${dep.id}/retry`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 409)
+  assert.match(res.json().error, /approuvé/)
+  const { rows: [row] } = await db.query('SELECT status FROM deployments WHERE id = $1', [dep.id])
+  assert.equal(row.status, 'failed')
+})
+
+test('POST /:id/retry — re-fige le contenu approuvé courant', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-dep-retry-snap-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Retry Snap', type: 'script', wingetId: null })
+  await db.query(`UPDATE packages SET install_script = 'Write-Output v1' WHERE id = $1`, [pkg.id])
+  const dev = await seedDevice(db, { hostname: 'PC-RETRY-SNAP' })
+  const dep = await insertFailedDeployment(db, pkg.id, dev.id)
+  await db.query(
+    `INSERT INTO deployment_snapshots (deployment_id, name, type, install_script)
+     VALUES ($1, 'Pkg Retry Snap', 'script', 'Write-Output v0')`,
+    [dep.id]
+  )
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/deployments/${dep.id}/retry`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().status, 'pending')
+  assert.equal(res.json().id, dep.id)
+  assert.equal(await snapshotScript(db, dep.id), 'Write-Output v1')
+})
+
+test('POST /retry-bulk — skip les packages non approuvés, snapshot pour les autres', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-dep-rbulk-snap-admin')
+  const ok = await insertPackage(db, { name: 'Pkg RBulk Approved', type: 'script', wingetId: null })
+  await db.query(`UPDATE packages SET install_script = 'Write-Output ok' WHERE id = $1`, [ok.id])
+  const draft = await insertPackage(db, { name: 'Pkg RBulk Draft', status: 'draft' })
+  const dev = await seedDevice(db, { hostname: 'PC-RBULK-SNAP' })
+  const depOk = await insertFailedDeployment(db, ok.id, dev.id)
+  const depDraft = await insertFailedDeployment(db, draft.id, dev.id)
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/deployments/retry-bulk',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { ids: [depOk.id, depDraft.id] },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { retried: 1, skipped: 1 })
+
+  const { rows } = await db.query(
+    'SELECT id, status FROM deployments WHERE id = ANY($1::uuid[])', [[depOk.id, depDraft.id]]
+  )
+  const byId = Object.fromEntries(rows.map(r => [r.id, r.status]))
+  assert.equal(byId[depOk.id], 'pending')
+  assert.equal(byId[depDraft.id], 'failed')
+  assert.equal(await snapshotScript(db, depOk.id), 'Write-Output ok')
+  assert.equal(await snapshotScript(db, depDraft.id), undefined)
+})

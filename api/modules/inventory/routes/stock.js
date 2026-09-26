@@ -1,8 +1,11 @@
 export default async function stockRoute(fastify) {
+  // Toutes les routes sont admin-only : les mouvements exposent hostnames et
+  // destinataires, et aucun client non-admin n'utilise le stock (le front
+  // refuse les non-admins après /users/sync-me).
 
   // GET /api/stock?q=&category=
   fastify.get('/', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       querystring: {
         type: 'object',
@@ -32,7 +35,7 @@ export default async function stockRoute(fastify) {
 
   // POST /api/stock
   fastify.post('/', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       body: {
         type: 'object',
@@ -61,7 +64,7 @@ export default async function stockRoute(fastify) {
 
   // PATCH /api/stock/:id
   fastify.patch('/:id', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       params: {
         type: 'object',
@@ -110,7 +113,7 @@ export default async function stockRoute(fastify) {
 
   // POST /api/stock/:id/movements
   fastify.post('/:id/movements', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       params: {
         type: 'object',
@@ -179,7 +182,7 @@ export default async function stockRoute(fastify) {
 
   // GET /api/stock/:id/movements
   fastify.get('/:id/movements', {
-    preHandler: [fastify.authenticate],
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
     schema: {
       params: {
         type: 'object',

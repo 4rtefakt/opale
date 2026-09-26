@@ -16,7 +16,33 @@ const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 // Couleurs autorisées pour les tags : palette fermée alignée avec le front.
 const TAG_COLORS = ['slate', 'blue', 'green', 'amber', 'red', 'violet', 'pink', 'teal']
 const PRIORITIES = ['low', 'normal', 'high', 'critical']
+// Valeurs de tickets.status (colonne TEXT libre en base) : celles du front
+// (open / in_progress / resolved / closed = archives) et 'merged', posé par
+// POST /:id/merge. Toute autre valeur est refusée (stockée puis rendue dans
+// les vues admin, elle ouvrait une XSS stockée).
+const STATUSES = ['open', 'in_progress', 'resolved', 'closed', 'merged']
+// Valeurs de tickets.source : 'manual' (UI/CLI), 'auto' (hook, is_auto),
+// 'email' (email-bridge) et les sources des propositions acceptées.
+const SOURCES = ['manual', 'auto', 'alert', 'script', 'email']
 const USER_ROLES = ['requester', 'involved']
+// Messages internes à l'équipe IT : jamais renvoyés à un non-admin (requester
+// ou assignee non-admin), ni cherchables par lui via ?q=.
+const INTERNAL_MESSAGE_TYPES = ['internal_note', 'ai_suggestion']
+
+// Valeur fournie dans un body (null / '' = absent, cf. `x || null` à l'INSERT).
+function isSet(v) {
+  return v !== undefined && v !== null && v !== ''
+}
+
+// Un non-admin ne peut rattacher à un ticket qu'un poste qui lui est assigné.
+// id::text : un device_id non-UUID ne doit pas lever d'erreur SQL (→ 403).
+async function isOwnDevice(db, deviceId, entraId) {
+  const { rows } = await db.query(
+    'SELECT 1 FROM devices WHERE id::text = $1 AND assigned_user_id = $2',
+    [String(deviceId), entraId]
+  )
+  return rows.length > 0
+}
 
 function parseCsv(v) {
   if (!v) return null
@@ -48,8 +74,9 @@ async function loadTagsFor(db, ticketIds) {
 }
 
 // Vérifie l'accès à un ticket : admin OU requester (user_id) OU assignee
-// (assigned_to_entra_id). Renvoie l'identité résolue + le flag isAdmin pour
-// éviter une seconde requête. Si pas d'accès, répond 403/404 et renvoie null.
+// (assigned_to_entra_id). Renvoie l'identité résolue + le flag isAdmin (+ la
+// ligne ticket user_id/assigned_to_entra_id) pour éviter une seconde requête.
+// Si pas d'accès, répond 403/404 et renvoie null.
 async function checkTicketAccess(fastify, request, reply, ticketId) {
   const { rows } = await fastify.db.query(
     'SELECT user_id, assigned_to_entra_id FROM tickets WHERE id = $1', [ticketId]
@@ -63,7 +90,7 @@ async function checkTicketAccess(fastify, request, reply, ticketId) {
     reply.code(403).send({ error: 'Non autorisé' })
     return null
   }
-  return { isAdmin, ...identity }
+  return { isAdmin, ...identity, ticket: rows[0] }
 }
 
 export default async function ticketsRoute(fastify) {
@@ -149,6 +176,10 @@ export default async function ticketsRoute(fastify) {
 
     // ACL : un non-admin ne voit que ses propres tickets (requester ou assignee).
     const isAdmin = await fastify.isAdmin(req)
+    // Types de messages ignorés pour un non-admin (recherche ?q= et
+    // awaiting_reply) : notes internes et suggestions IA ne doivent rien
+    // révéler, ni leur contenu ni leur existence.
+    const hiddenTypes = isAdmin ? ['system'] : ['system', ...INTERNAL_MESSAGE_TYPES]
     if (!isAdmin) {
       const { entraId } = fastify.getUserIdentity(req)
       conds.push(`(t.user_id = $${i} OR t.assigned_to_entra_id = $${i})`)
@@ -170,13 +201,15 @@ export default async function ticketsRoute(fastify) {
       // Recherche : titre, description, messages (commentaires/résolutions/
       // notes internes), ET personnes concernées (requester + involved,
       // par display_name ou email). Tous les sous-critères en OR sur le
-      // même paramètre $i pour rester un seul slot.
+      // même paramètre $i pour rester un seul slot ; $i+1 = types de
+      // messages exclus (un non-admin ne cherche pas dans les notes
+      // internes / suggestions IA : sinon oracle sur leur contenu).
       conds.push(`(
         t.title ILIKE $${i} OR t.description ILIKE $${i}
         OR EXISTS (
           SELECT 1 FROM ticket_messages tm
           WHERE tm.ticket_id = t.id
-            AND tm.type != 'system'
+            AND tm.type <> ALL($${i + 1}::text[])
             AND tm.content ILIKE $${i}
         )
         OR EXISTS (
@@ -186,7 +219,7 @@ export default async function ticketsRoute(fastify) {
             AND (u.display_name ILIKE $${i} OR u.email ILIKE $${i})
         )
       )`)
-      params.push(`%${q}%`); i++
+      params.push(`%${q}%`, hiddenTypes); i += 2
     }
     if (is_auto === 'true' || is_auto === 'false') {
       conds.push(`t.is_auto = $${i++}`); params.push(is_auto === 'true')
@@ -222,10 +255,12 @@ export default async function ticketsRoute(fastify) {
 
     const where = conds.length ? 'WHERE ' + conds.join(' AND ') : ''
     const { displayName: meName } = fastify.getUserIdentity(req)
-    params.push(meName, limit, offset)
+    params.push(meName, hiddenTypes, limit, offset)
     const meIdx = i
 
-    // awaiting_reply : ticket open/in_progress dont le dernier message non-system n'est pas de moi
+    // awaiting_reply : ticket open/in_progress dont le dernier message visible
+    // (hors system ; hors notes internes / suggestions IA pour un non-admin)
+    // n'est pas de moi
     const { rows } = await fastify.db.query(`
       SELECT t.*, d.hostname, d.assigned_user_id AS assigned_user,
              u.display_name AS requester_name, u.email AS requester_email,
@@ -240,7 +275,7 @@ export default async function ticketsRoute(fastify) {
       LEFT JOIN users_cache u ON u.entra_id = t.user_id
       LEFT JOIN LATERAL (
         SELECT author FROM ticket_messages
-        WHERE ticket_id = t.id AND type <> 'system'
+        WHERE ticket_id = t.id AND type <> ALL($${meIdx + 1}::text[])
         ORDER BY created_at DESC LIMIT 1
       ) lm ON true
       ${where}
@@ -266,7 +301,7 @@ export default async function ticketsRoute(fastify) {
           ELSE 5
         END,
         t.updated_at DESC NULLS LAST, t.created_at DESC
-      LIMIT $${i + 1} OFFSET $${i + 2}
+      LIMIT $${i + 2} OFFSET $${i + 3}
     `, params)
 
     const tagMap = await loadTagsFor(fastify.db, rows.map(r => r.id))
@@ -285,8 +320,29 @@ export default async function ticketsRoute(fastify) {
       tag_ids,
     } = req.body || {}
     if (!title) return reply.code(400).send({ error: 'Titre requis' })
+    if (!PRIORITIES.includes(priority)) return reply.code(400).send({ error: 'Priorité invalide' })
+    if (!SOURCES.includes(source))      return reply.code(400).send({ error: 'Source invalide' })
 
     const { entraId, displayName } = fastify.getUserIdentity(req)
+
+    // Non-admin : ticket pour lui-même uniquement (pas d'assignation, pas de
+    // tags, pas de demandeur tiers, pas de source système type 'auto') et
+    // seulement un poste qui lui est assigné.
+    if (!(await fastify.isAdmin(req))) {
+      if (source !== 'manual') {
+        return reply.code(403).send({ error: 'Source réservée aux admins' })
+      }
+      if (isSet(assigned_to_entra_id) || isSet(assigned_to_name)
+          || (Array.isArray(tag_ids) && tag_ids.length)) {
+        return reply.code(403).send({ error: 'Assignation et tags réservés aux admins' })
+      }
+      if (isSet(user_id) && user_id !== entraId) {
+        return reply.code(403).send({ error: 'Demandeur tiers réservé aux admins' })
+      }
+      if (isSet(device_id) && !(await isOwnDevice(fastify.db, device_id, entraId))) {
+        return reply.code(403).send({ error: 'Poste non assigné à cet utilisateur' })
+      }
+    }
 
     const client = await fastify.db.connect()
     try {
@@ -361,19 +417,25 @@ export default async function ticketsRoute(fastify) {
       FROM tickets t
       LEFT JOIN devices d     ON d.id = t.device_id
       LEFT JOIN users_cache u ON u.entra_id = t.user_id
+      -- Non-admin : notes internes / suggestions IA ignorées (cf. GET /).
       LEFT JOIN LATERAL (
         SELECT author FROM ticket_messages
-        WHERE ticket_id = t.id AND type <> 'system'
+        WHERE ticket_id = t.id AND type <> ALL($3::text[])
         ORDER BY created_at DESC LIMIT 1
       ) lm ON true
       WHERE t.id = $1
-    `, [req.params.id, meName])
+    `, [req.params.id, meName,
+        acl.isAdmin ? ['system'] : ['system', ...INTERNAL_MESSAGE_TYPES]])
 
     if (!tRows.length) return reply.code(404).send({ error: 'Ticket introuvable' })
 
+    // Non-admin (requester / assignee) : jamais les notes internes ni les
+    // suggestions IA.
     const { rows: msgs } = await fastify.db.query(`
-      SELECT * FROM ticket_messages WHERE ticket_id = $1 ORDER BY created_at ASC
-    `, [req.params.id])
+      SELECT * FROM ticket_messages
+      WHERE ticket_id = $1 AND ($2::boolean OR type <> ALL($3::text[]))
+      ORDER BY created_at ASC
+    `, [req.params.id, acl.isAdmin, INTERNAL_MESSAGE_TYPES])
 
     const tagMap = await loadTagsFor(fastify.db, [req.params.id])
     const tk = tRows[0]
@@ -404,6 +466,31 @@ export default async function ticketsRoute(fastify) {
     if (!acl) return
     const { status, priority, assigned_to_entra_id, assigned_to_name, user_id, device_id } = req.body || {}
     const { displayName } = acl
+
+    if (status !== undefined && !STATUSES.includes(status)) {
+      return reply.code(400).send({ error: 'Statut invalide' })
+    }
+    if (priority !== undefined && !PRIORITIES.includes(priority)) {
+      return reply.code(400).send({ error: 'Priorité invalide' })
+    }
+    // 'merged' : posé par POST /:id/merge (admin), jamais par un non-admin.
+    if (status === 'merged' && !acl.isAdmin) {
+      return reply.code(403).send({ error: 'Statut réservé aux admins' })
+    }
+
+    // Non-admin : ni réassignation ni changement de demandeur ; seul le
+    // requester peut (dé)rattacher un poste, et uniquement un poste à lui.
+    if (!acl.isAdmin) {
+      if (assigned_to_entra_id !== undefined || assigned_to_name !== undefined || user_id !== undefined) {
+        return reply.code(403).send({ error: 'Assignation et demandeur modifiables par un admin uniquement' })
+      }
+      if (device_id !== undefined) {
+        if (acl.ticket.user_id !== acl.entraId
+            || (device_id && !(await isOwnDevice(fastify.db, device_id, acl.entraId)))) {
+          return reply.code(403).send({ error: 'Poste non assigné à cet utilisateur' })
+        }
+      }
+    }
 
     const fields = []
     const params = []
@@ -475,10 +562,16 @@ export default async function ticketsRoute(fastify) {
   fastify.post('/:id/messages', { preHandler: [fastify.authenticate] }, async (req, reply) => {
     const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
     if (!acl) return
-    const { content, type = 'internal_note' } = req.body || {}
+    // Défaut : note interne pour un admin, commentaire pour un non-admin
+    // (qui ne voit pas les notes internes).
+    const { content, type = acl.isAdmin ? 'internal_note' : 'comment' } = req.body || {}
     if (!content) return reply.code(400).send({ error: 'Contenu requis' })
     if (!['internal_note', 'comment', 'system', 'resolution'].includes(type)) {
       return reply.code(400).send({ error: 'Type invalide' })
+    }
+    // Messages system / resolution / note interne : réservés aux admins.
+    if (!acl.isAdmin && type !== 'comment') {
+      return reply.code(403).send({ error: 'Type de message réservé aux admins' })
     }
 
     const { displayName } = acl
@@ -502,8 +595,10 @@ export default async function ticketsRoute(fastify) {
   // Garde-fous : ticket doit avoir un mapping inbound (sinon pas de
   // destinataire), et le message doit être encore une note interne (re-clic
   // = idempotent no-op, on retourne tel quel).
+  // Admin-only : envoyer une note interne au requester est une décision de
+  // l'équipe IT (un requester ne doit jamais recevoir les notes internes).
   fastify.post('/:id/messages/:msgId/send-by-mail',
-    { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
       const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
       if (!acl) return
 
@@ -563,7 +658,10 @@ export default async function ticketsRoute(fastify) {
   // diagnostic à partir du contexte du ticket, et l'ajoute au fil comme un
   // message type='ai_suggestion' (jamais envoyé par mail : l'outbox filtre
   // type='comment'). Brouillon que l'admin relit/édite avant d'envoyer.
-  fastify.post('/:id/ai-suggest', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  //
+  // Admin-only : le prompt inclut les notes internes et la suggestion est
+  // renvoyée dans la réponse — jamais à destination d'un requester.
+  fastify.post('/:id/ai-suggest', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
     if (!acl) return
 

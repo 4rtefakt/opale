@@ -24,7 +24,8 @@ function severityRank(sev) {
 }
 
 export default async function dashboardRoute(fastify) {
-  fastify.get('/', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  // Admin-only : état du parc, alertes, tickets, journal d'audit.
+  fastify.get('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     // Seuils paramétrables (settings). Mêmes defaults qu'ailleurs.
     const settingsRes = await fastify.db.query(
       `SELECT key, value FROM settings WHERE key IN ('disk_warn_pct','disk_critical_pct','agent_offline_days')`

@@ -6,6 +6,10 @@ import { sendPushToAll } from '../../core/routes/push.js'
 import { makeAgentConn, WS_FRAME_MAX_BYTES, WS_CLOSE, wsReasonFromCode } from '../lib/agent-ws.js'
 import { evaluateAndPersist as evaluateCompliance } from '../../monitoring/lib/compliance.js'
 import { logAudit } from '../../core/lib/audit.js'
+import { SNAPSHOT_COLUMNS, snapshotSelect } from '../lib/deployment-snapshots.js'
+import { checkDeviceClaim, CLAIM_REFUSAL_MESSAGES } from '../lib/device-claim.js'
+import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle } from '../lib/checkin-validation.js'
+import { ipOnlyKey } from '../../../lib/rate-limit.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -170,10 +174,21 @@ function hashToken(t) {
   return crypto.createHash('sha256').update(t).digest('hex')
 }
 
+// Taille max d'un POST /setup-log (route sans auth) : large pour un log
+// d'installation, borné pour ne pas remplir audit_logs (défaut Fastify : 1 Mio).
+const SETUP_LOG_BODY_LIMIT = 64 * 1024
+// Taille max du log effectivement stocké dans audit_logs (rétention 365 j) :
+// début + fin du log, milieu omis (cf. truncateMiddle).
+const SETUP_LOG_STORED_MAX = 8 * 1024
+
 // Vérifie le Bearer token et retourne la ligne agent_tokens, ou null.
 // Filtre les tokens révoqués et les tokens dont l'expiration programmée
 // (rotation) est dépassée — sans toucher revoked_at, qui reste réservé
 // à la révocation explicite par admin.
+// Un bootstrap token (partagé par N PCs, embarqué dans le script Intune)
+// n'est JAMAIS accepté ici : il ne sert qu'à /exchange-token. Sinon il
+// permettait de checkin (et de se lier) comme n'importe quel poste, ou
+// d'obtenir via /rotate-token un token perso non lié.
 async function authToken(fastify, req) {
   const auth = req.headers.authorization || ''
   if (!auth.startsWith('Bearer ')) return null
@@ -182,6 +197,7 @@ async function authToken(fastify, req) {
   const { rows } = await fastify.db.query(
     `SELECT * FROM agent_tokens
        WHERE token_hash = $1
+         AND is_bootstrap = FALSE
          AND revoked_at IS NULL
          AND (expires_at IS NULL OR expires_at > now())`,
     [hash]
@@ -206,10 +222,18 @@ export default async function agentRoute(fastify) {
   //   - Au runtime, chaque PC appelle ce endpoint avec son hostname/serial.
   //   - On crée (ou retrouve) le device, on génère un token perso, on le retourne.
   //   - Le bootstrap reste valide pour d'autres exchanges jusqu'à expires_at.
+  // Hostname déjà connu (cas normal pour un poste pré-créé par la sync
+  // Intune) : règles de lib/device-claim.js — série concordante si le device
+  // en a une, et aucun token actif déjà utilisé. Sinon refus (403/409) +
+  // audit `agent_bootstrap_exchange_refused` pour revue admin. Les tokens
+  // jamais utilisés du device (install précédente interrompue) sont révoqués
+  // à l'émission du nouveau : un seul credential vivant par poste.
   // Body  : { hostname (req), serial? }
   // Reply : { token, device_id, hostname }
+  // Rate-limit par IP seule : le Bearer n'est pas encore vérifié à ce stade,
+  // un Bearer aléatoire ne doit pas ouvrir un compteur neuf.
   fastify.post('/exchange-token', {
-    config: { rateLimit: { max: 10, timeWindow: '1 minute' } }
+    config: { rateLimit: { max: 10, timeWindow: '1 minute', keyGenerator: ipOnlyKey } }
   }, async (req, reply) => {
     const auth = req.headers.authorization || ''
     if (!auth.startsWith('Bearer ')) return reply.code(401).send({ error: 'Bootstrap token manquant' })
@@ -225,6 +249,7 @@ export default async function agentRoute(fastify) {
     // le check de quota et dépasser bootstrap_max_redeems.
     const client = await fastify.db.connect()
     let result
+    let refused = null
     try {
       await client.query('BEGIN')
 
@@ -244,13 +269,31 @@ export default async function agentRoute(fastify) {
         return reply.code(401).send({ error: 'Bootstrap invalide, expiré, révoqué ou quota atteint' })
       }
 
-      // Trouver ou créer le device par hostname
+      // Trouver ou créer le device par hostname. FOR UPDATE : sérialise deux
+      // exchanges concurrents sur le même poste (check + émission atomiques).
       let deviceId
+      let revokedUnused = 0
       const { rows: dev } = await client.query(
-        'SELECT id FROM devices WHERE hostname = $1', [hostname]
+        'SELECT id, serial FROM devices WHERE hostname = $1 FOR UPDATE', [hostname]
       )
       if (dev[0]) {
-        deviceId = dev[0].id
+        const refusal = await checkDeviceClaim(client, { device: dev[0], serial })
+        if (refusal) {
+          refused = { ...refusal, deviceId: dev[0].id, bootstrapLabel: bs[0].label }
+        } else {
+          deviceId = dev[0].id
+          // Jamais les tokens de rotation (émis à un agent déjà authentifié).
+          const { rowCount } = await client.query(
+            `UPDATE agent_tokens SET revoked_at = now()
+               WHERE device_id = $1
+                 AND is_bootstrap = FALSE
+                 AND revoked_at IS NULL
+                 AND last_used_at IS NULL
+                 AND created_by IS DISTINCT FROM 'agent-rotation'`,
+            [deviceId]
+          )
+          revokedUnused = rowCount
+        }
       } else {
         const { rows: nd } = await client.query(
           `INSERT INTO devices (hostname, serial, source, last_seen)
@@ -261,27 +304,32 @@ export default async function agentRoute(fastify) {
         deviceId = nd[0].id
       }
 
-      // Token perso (sans expiration — survit à la révocation du bootstrap)
-      const newToken = crypto.randomBytes(32).toString('hex')
-      const newHash  = hashToken(newToken)
-      const label    = `auto-${hostname}-${new Date().toISOString().slice(0, 10)}`
+      if (refused) {
+        // Pas de token émis, quota du bootstrap non consommé.
+        await client.query('ROLLBACK')
+      } else {
+        // Token perso (sans expiration — survit à la révocation du bootstrap)
+        const newToken = crypto.randomBytes(32).toString('hex')
+        const newHash  = hashToken(newToken)
+        const label    = `auto-${hostname}-${new Date().toISOString().slice(0, 10)}`
 
-      await client.query(
-        `INSERT INTO agent_tokens (label, token_hash, device_id, created_by)
-         VALUES ($1, $2, $3, $4)`,
-        [label, newHash, deviceId, `bootstrap:${bs[0].label}`]
-      )
+        await client.query(
+          `INSERT INTO agent_tokens (label, token_hash, device_id, created_by)
+           VALUES ($1, $2, $3, $4)`,
+          [label, newHash, deviceId, `bootstrap:${bs[0].label}`]
+        )
 
-      await client.query(
-        `UPDATE agent_tokens
-           SET bootstrap_redeemed_count = bootstrap_redeemed_count + 1,
-               bootstrap_redeemed_at    = now()
-           WHERE id = $1`,
-        [bs[0].id]
-      )
+        await client.query(
+          `UPDATE agent_tokens
+             SET bootstrap_redeemed_count = bootstrap_redeemed_count + 1,
+                 bootstrap_redeemed_at    = now()
+             WHERE id = $1`,
+          [bs[0].id]
+        )
 
-      await client.query('COMMIT')
-      result = { token: newToken, deviceId, bootstrapLabel: bs[0].label }
+        await client.query('COMMIT')
+        result = { token: newToken, deviceId, bootstrapLabel: bs[0].label, revokedUnused }
+      }
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {})
       fastify.log.error({ err: err.message }, 'exchange-token transaction failed')
@@ -290,11 +338,37 @@ export default async function agentRoute(fastify) {
       client.release()
     }
 
+    if (refused) {
+      fastify.log.warn(
+        { hostname, device_id: refused.deviceId, reason: refused.reason },
+        'exchange-token refusé : poste existant non revendicable'
+      )
+      await logAudit(fastify.db, fastify.log, {
+        action:  'agent_bootstrap_exchange_refused',
+        byUser:  hostname.slice(0, 255),
+        target:  refused.deviceId,
+        details: {
+          level:           'warn',
+          reason:          refused.reason,
+          bootstrap_label: refused.bootstrapLabel,
+          serial:          serial ? serial.slice(0, 100) : null,
+          ...(refused.token_id ? { active_token_id: refused.token_id } : {}),
+        },
+      })
+      return reply
+        .code(refused.reason === 'active_token' ? 409 : 403)
+        .send({ error: CLAIM_REFUSAL_MESSAGES[refused.reason] })
+    }
+
     logAudit(fastify.db, fastify.log, {
       action:  'agent_bootstrap_exchange',
       byUser:  hostname,
       target:  result.deviceId,
-      details: { bootstrap_label: result.bootstrapLabel, serial },
+      details: {
+        bootstrap_label: result.bootstrapLabel,
+        serial,
+        ...(result.revokedUnused ? { revoked_unused_tokens: result.revokedUnused } : {}),
+      },
     })
 
     reply.code(201).send({ token: result.token, device_id: result.deviceId, hostname })
@@ -496,10 +570,13 @@ export default async function agentRoute(fastify) {
   })
 
   // POST /api/agent/setup-log — logs des scripts Intune (openssh, agent install…)
-  // Pas d'auth : tourne en SYSTEM avant tout enrôlement. Rate-limit large pour
-  // ne pas pénaliser un déploiement de masse Intune.
+  // Pas d'auth : tourne en SYSTEM avant tout enrôlement (des scripts Intune
+  // déployés hors de ce dépôt peuvent l'appeler sans token). Rate-limit large
+  // pour ne pas pénaliser un déploiement de masse Intune, mais par IP seule
+  // (un Bearer aléatoire n'ouvre plus un compteur neuf) et body plafonné.
   fastify.post('/setup-log', {
-    config: { rateLimit: { max: 60, timeWindow: '1 minute' } }
+    bodyLimit: SETUP_LOG_BODY_LIMIT,
+    config: { rateLimit: { max: 60, timeWindow: '1 minute', keyGenerator: ipOnlyKey } }
   }, async (req, reply) => {
     const { hostname, script, level = 'info', log } = req.body || {}
     if (!hostname || !log) return reply.code(400).send({ error: 'hostname et log requis' })
@@ -509,13 +586,19 @@ export default async function agentRoute(fastify) {
       return reply.code(204).send()
     }
 
+    // Route sans auth : tout ce qui est stocké est borné (le log garde son
+    // début et sa fin, ≤ 8 Kio ; un log non-string est sérialisé en JSON).
+    const logText = typeof log === 'string' ? log : JSON.stringify(log)
     await logAudit(fastify.db, fastify.log, {
       action:  'setup_script',
-      byUser:  hostname,
-      target:  script || 'unknown',
-      details: { level, log },
+      byUser:  clipStr(hostname, 255),
+      target:  clipStr(script, 100) || 'unknown',
+      details: { level: clipStr(level, 16) || 'info', log: truncateMiddle(logText, SETUP_LOG_STORED_MAX) },
     })
-    fastify.log.info({ hostname, script, level }, 'setup-log reçu')
+    fastify.log.info(
+      { hostname: clipStr(hostname, 255), script: clipStr(script, 100), level: clipStr(level, 16) },
+      'setup-log reçu'
+    )
     reply.code(204).send()
   })
 
@@ -580,11 +663,11 @@ export default async function agentRoute(fastify) {
     // → fail unique constraint sur hostname. Avec le fallback, on tombe
     // sur la row Intune et on l'UPDATE normalement.
     let lookup = serial
-      ? await fastify.db.query(`SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE serial = $1`, [serial])
-      : await fastify.db.query(`SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`, [hostname])
+      ? await fastify.db.query(`SELECT id, serial, source, disk_used_pct, compliance_state FROM devices WHERE serial = $1`, [serial])
+      : await fastify.db.query(`SELECT id, serial, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`, [hostname])
     if (serial && !lookup.rows.length) {
       lookup = await fastify.db.query(
-        `SELECT id, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`,
+        `SELECT id, serial, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`,
         [hostname]
       )
     }
@@ -597,10 +680,109 @@ export default async function agentRoute(fastify) {
       return reply.code(403).send({ error: 'Token lié à un autre device' })
     }
 
+    // Token non lié (créé dans Paramètres → Tokens pour install.ps1) qui se
+    // présente pour un poste DÉJÀ connu : il ne s'y rattache que selon les
+    // règles d'enrôlement de /exchange-token (série concordante si le device
+    // en a une, aucun token actif déjà utilisé — cf. lib/device-claim.js).
+    // Sinon un token non lié fuité usurperait n'importe quel poste existant.
+    // Nouveau hostname : inchangé (création du device + rattachement).
+    // Contrôle + rattachement dans une transaction qui verrouille la ligne
+    // devices (FOR UPDATE, comme /exchange-token) : deux claims concurrents
+    // (deux tokens non liés, ou exchange + checkin) sont sérialisés, le
+    // second voit le token du premier comme déjà utilisé. Comme à
+    // l'exchange, les autres tokens jamais utilisés du poste (sauf rotation)
+    // sont révoqués : un seul credential vivant par poste.
+    if (!token.device_id && lookup.rows[0]) {
+      let refusal = null
+      let revokedUnused = 0
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        const { rows: [locked] } = await client.query(
+          'SELECT id, serial FROM devices WHERE id = $1 FOR UPDATE', [lookup.rows[0].id]
+        )
+        refusal = await checkDeviceClaim(client, {
+          device: locked || lookup.rows[0], serial, excludeTokenId: token.id,
+        })
+        if (!refusal) {
+          const bound = await client.query(
+            `UPDATE agent_tokens SET device_id = $1, last_used_at = now()
+               WHERE id = $2 AND (device_id IS NULL OR device_id = $1)`,
+            [lookup.rows[0].id, token.id]
+          )
+          if (!bound.rowCount) {
+            // Même token rattaché entre-temps à un autre poste.
+            await client.query('ROLLBACK')
+            return reply.code(403).send({ error: 'Token lié à un autre device' })
+          }
+          const revoked = await client.query(
+            `UPDATE agent_tokens SET revoked_at = now()
+               WHERE device_id = $1
+                 AND id <> $2
+                 AND is_bootstrap = FALSE
+                 AND revoked_at IS NULL
+                 AND last_used_at IS NULL
+                 AND created_by IS DISTINCT FROM 'agent-rotation'`,
+            [lookup.rows[0].id, token.id]
+          )
+          revokedUnused = revoked.rowCount
+        }
+        await client.query('COMMIT')
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        throw err
+      } finally {
+        client.release()
+      }
+      if (!refusal) {
+        await logAudit(fastify.db, fastify.log, {
+          action:  'agent_token_bound',
+          byUser:  clipStr(hostname, 255),
+          target:  lookup.rows[0].id,
+          details: {
+            token_id:    token.id,
+            token_label: token.label,
+            serial:      clipStr(serial, 100),
+            ...(revokedUnused ? { revoked_unused_tokens: revokedUnused } : {}),
+          },
+        })
+      }
+      if (refusal) {
+        fastify.log.warn(
+          { hostname, device_id: lookup.rows[0].id, token_id: token.id, reason: refusal.reason },
+          'checkin refusé : token non lié sur un poste existant non revendicable'
+        )
+        await logAudit(fastify.db, fastify.log, {
+          action:  'agent_token_bind_refused',
+          byUser:  clipStr(hostname, 255),
+          target:  lookup.rows[0].id,
+          details: {
+            level:       'warn',
+            reason:      refusal.reason,
+            token_id:    token.id,
+            token_label: token.label,
+            serial:      clipStr(serial, 100),
+            ...(refusal.token_id ? { active_token_id: refusal.token_id } : {}),
+          },
+        })
+        return reply
+          .code(refusal.reason === 'active_token' ? 409 : 403)
+          .send({ error: CLAIM_REFUSAL_MESSAGES[refusal.reason] })
+      }
+    }
+
     const mainDisk = disks.find(d => d.letter === 'C:') || disks[0]
 
     const healthJSON = health && typeof health === 'object' ? JSON.stringify(health) : null
     const sysInfoJSON = system_info && typeof system_info === 'object' ? JSON.stringify(system_info) : null
+
+    // ip_netbird sert de cible aux connexions SSH / scripts lancées par
+    // l'API : seule une IPv4 de la plage Netbird 100.64.0.0/10 est acceptée.
+    // Absente → valeur stockée conservée (comportement historique) ;
+    // présente mais invalide → stockée NULL + log.
+    const ipNetbirdSent   = ip_netbird !== undefined && ip_netbird !== null && ip_netbird !== ''
+    const ipNetbird       = ipNetbirdSent && isNetbirdIp(ip_netbird) ? ip_netbird : null
+    const ipNetbirdReject = ipNetbirdSent && !ipNetbird
 
     let deviceId
     if (lookup.rows.length) {
@@ -613,7 +795,7 @@ export default async function agentRoute(fastify) {
           ram_gb            = COALESCE($4, ram_gb),
           disk_used_pct     = COALESCE($5, disk_used_pct),
           disk_total_gb     = COALESCE($6, disk_total_gb),
-          ip_netbird        = COALESCE($7, ip_netbird),
+          ip_netbird        = CASE WHEN $12::boolean THEN NULL ELSE COALESCE($7, ip_netbird) END,
           agent_version     = COALESCE($8, agent_version),
           health_signals    = COALESCE($10::jsonb, health_signals),
           health_updated_at = CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE health_updated_at END,
@@ -628,11 +810,12 @@ export default async function agentRoute(fastify) {
         ram_gb        || null,
         mainDisk?.used_pct  ?? null,
         mainDisk?.size_gb   ?? null,
-        ip_netbird    || null,
+        ipNetbird,
         agent_version || null,
         deviceId,
         healthJSON,
         sysInfoJSON,
+        ipNetbirdReject,
       ])
     } else {
       const res = await fastify.db.query(`
@@ -655,12 +838,19 @@ export default async function agentRoute(fastify) {
         ram_gb        || null,
         mainDisk?.used_pct ?? null,
         mainDisk?.size_gb  ?? null,
-        ip_netbird    || null,
+        ipNetbird,
         agent_version || null,
         healthJSON,
         sysInfoJSON,
       ])
       deviceId = res.rows[0].id
+    }
+
+    if (ipNetbirdReject) {
+      fastify.log.warn(
+        { device_id: deviceId, hostname, ip_netbird: clipStr(ip_netbird, 64) },
+        'checkin : ip_netbird hors 100.64.0.0/10 — ignorée, stockée NULL'
+      )
     }
 
     // ── Upsert partitions ───────────────────────────────────────────────────
@@ -681,11 +871,20 @@ export default async function agentRoute(fastify) {
     if (network.length > 0) {
       await fastify.db.query(`DELETE FROM network_interfaces WHERE device_id = $1`, [deviceId])
       for (const iface of network) {
-        if (!iface.mac) continue
+        if (!iface?.mac) continue
+        // Type : liste blanche (eth | wifi | netbird), absent → 'eth',
+        // valeur inconnue → NULL (non stockée).
+        const type = normalizeIfaceType(iface.type)
+        if (type === null) {
+          fastify.log.debug(
+            { device_id: deviceId, type: clipStr(iface.type, 32) },
+            'checkin : type d\'interface inconnu ignoré'
+          )
+        }
         await fastify.db.query(`
           INSERT INTO network_interfaces (device_id, mac, ip, adapter, type)
           VALUES ($1, $2, $3, $4, $5)
-        `, [deviceId, iface.mac, iface.ip || null, iface.adapter || null, iface.type || 'eth'])
+        `, [deviceId, iface.mac, iface.ip || null, iface.adapter || null, type])
       }
     }
 
@@ -833,19 +1032,13 @@ export default async function agentRoute(fastify) {
     `, [deviceId, token.id])
 
     // ── Commandes script en attente (mode agent) ───────────────────────────
+    // Passage en 'running' seulement juste avant la réponse (cf. plus bas).
     const pendingScripts = await fastify.db.query(`
       SELECT id, script_name, script_content
       FROM script_executions
       WHERE device_id = $1 AND status = 'pending' AND mode = 'agent'
       ORDER BY queued_at ASC LIMIT 5
     `, [deviceId])
-
-    if (pendingScripts.rows.length) {
-      await fastify.db.query(`
-        UPDATE script_executions SET status = 'running', started_at = now()
-        WHERE id = ANY($1::uuid[])
-      `, [pendingScripts.rows.map(r => r.id)])
-    }
 
     // ── Fan-out deployment_jobs → deployments pour ce device ──────────────
     // Crée les execution rows manquantes pour les jobs scope=group|all|user
@@ -854,10 +1047,25 @@ export default async function agentRoute(fastify) {
     //   - group: device membre du groupe (cf. device_group_memberships)
     //   - user : device dont assigned_user_id matche le user du job (réassign
     //            d'un user à un nouveau PC redéclenche ses packages)
+    // Seuls les jobs de packages approuvés sont matérialisés, avec leur
+    // snapshot de contenu dans la même requête (cf. lib/deployment-snapshots.js).
+    // Un job dont le package est en draft sera matérialisé à un checkin
+    // ultérieur, une fois le package ré-approuvé.
+    //
+    // Migration 071 pas encore appliquée (table deployment_snapshots
+    // absente, code 42P01) : le fan-out et la sélection ci-dessous échouent
+    // en bloc → on journalise, on n'envoie AUCUN déploiement (jamais de
+    // repli sur le contenu courant de `packages`) et le checkin se termine
+    // normalement (inventaire, scripts, mise à jour agent). Toute autre
+    // erreur remonte.
+    let pendingRows = []
+    try {
     await fastify.db.query(`
+      WITH ins AS (
       INSERT INTO deployments (package_id, device_id, deployed_by, job_id)
       SELECT j.package_id, $1, j.deployed_by, j.id
       FROM deployment_jobs j
+      JOIN packages jp ON jp.id = j.package_id AND jp.status = 'approved'
       WHERE j.status = 'active'
         AND NOT EXISTS (
           SELECT 1 FROM deployments d WHERE d.job_id = j.id AND d.device_id = $1
@@ -875,26 +1083,55 @@ export default async function agentRoute(fastify) {
           ))
         )
       ON CONFLICT DO NOTHING
+      RETURNING id, package_id
+      )
+      INSERT INTO deployment_snapshots (${SNAPSHOT_COLUMNS})
+      SELECT ${snapshotSelect('ins', 'p')}
+      FROM ins
+      JOIN packages p ON p.id = ins.package_id
+      WHERE p.status = 'approved'
     `, [deviceId])
 
     // ── Déploiements de packages en attente ────────────────────────────────
     // Gated par la fenêtre de maintenance : hors fenêtre, on n'envoie
     // pas les deployments pour éviter de les passer en 'running' alors
     // que l'agent n'aurait pas le droit de les exécuter.
-    const pendingDeployments = inMaintWindow ? await fastify.db.query(`
-      SELECT d.id AS deployment_id, p.type, p.winget_id, p.install_script, p.post_install_script, p.detection_script, p.name
+    // Seuls les packages approuvés sont distribués : un package modifié
+    // (repassé en draft) ne part plus en SYSTEM tant qu'un admin ne l'a
+    // pas ré-approuvé — ses déploiements restent 'pending' en attendant.
+    // Le contenu envoyé est le SNAPSHOT figé à la mise en file (ou à la
+    // dernière ré-approbation / au retry), jamais le contenu courant de
+    // `packages`. Un 'pending' sans snapshot (créé hors API, ou par l'ancien
+    // code entre la migration 071 et le redémarrage) n'est PAS distribué :
+    // log + reste 'pending' (l'admin l'annule puis le rejoue, ce qui refait
+    // un snapshot). Tri : les distribuables d'abord, pour qu'un lot de
+    // lignes sans snapshot ne bloque jamais les autres.
+    pendingRows = inMaintWindow ? (await fastify.db.query(`
+      SELECT d.id AS deployment_id, (s.deployment_id IS NOT NULL) AS has_snapshot,
+             s.type, s.winget_id, s.install_script, s.post_install_script, s.detection_script, s.name
       FROM deployments d
       JOIN packages p ON p.id = d.package_id
-      WHERE d.device_id = $1 AND d.status = 'pending'
-      ORDER BY d.queued_at ASC LIMIT 10
-    `, [deviceId]) : { rows: [] }
-
-    if (pendingDeployments.rows.length) {
-      await fastify.db.query(`
-        UPDATE deployments SET status = 'running', started_at = now()
-        WHERE id = ANY($1::uuid[])
-      `, [pendingDeployments.rows.map(r => r.deployment_id)])
+      LEFT JOIN deployment_snapshots s ON s.deployment_id = d.id
+      WHERE d.device_id = $1 AND d.status = 'pending' AND p.status = 'approved'
+      ORDER BY (s.deployment_id IS NULL), d.queued_at ASC LIMIT 10
+    `, [deviceId])).rows : []
+    } catch (err) {
+      if (err.code !== '42P01') throw err
+      fastify.log.error(
+        { err: err.message, device_id: deviceId },
+        'checkin : table deployment_snapshots absente (migration 071 non appliquée) — aucun déploiement distribué'
+      )
+      pendingRows = []
     }
+
+    const missingSnapshot = pendingRows.filter(r => !r.has_snapshot)
+    if (missingSnapshot.length) {
+      fastify.log.warn(
+        { device_id: deviceId, deployment_ids: missingSnapshot.map(r => r.deployment_id) },
+        'checkin: déploiement pending sans snapshot — non distribué (annuler puis rejouer pour le re-figer)'
+      )
+    }
+    const pendingDeployments = { rows: pendingRows.filter(r => r.has_snapshot) }
 
     // ── Packages à détecter (approuvés, pas détectés depuis 24h) ──────────
     const toDetect = await fastify.db.query(`
@@ -955,15 +1192,42 @@ export default async function agentRoute(fastify) {
       action:  'agent_checkin',
       byUser:  hostname,
       target:  deviceId,
-      details: { level: 'info', disks: disks.length, ip_netbird: ip_netbird || null, new: !lookup.rows.length, agent_version: agent_version || null },
+      details: { level: 'info', disks: disks.length, ip_netbird: ipNetbird, new: !lookup.rows.length, agent_version: agent_version || null },
     })
+
+    // ── Réservation des scripts / déploiements envoyés ─────────────────────
+    // Passage en 'running' juste avant la réponse : si une étape précédente
+    // du checkin lève, rien ne reste marqué 'running' sans avoir été livré
+    // (aucun timeout ne rattrape un script bloqué en 'running'). Le filtre
+    // status = 'pending' + RETURNING ne renvoie que les lignes réservées par
+    // CE checkin (deux checkins simultanés ne livrent pas deux fois la même).
+    let scriptsToSend = []
+    if (pendingScripts.rows.length) {
+      const { rows } = await fastify.db.query(`
+        UPDATE script_executions SET status = 'running', started_at = now()
+        WHERE id = ANY($1::uuid[]) AND status = 'pending'
+        RETURNING id
+      `, [pendingScripts.rows.map(r => r.id)])
+      const claimed = new Set(rows.map(r => r.id))
+      scriptsToSend = pendingScripts.rows.filter(r => claimed.has(r.id))
+    }
+    let deploymentsToSend = []
+    if (pendingDeployments.rows.length) {
+      const { rows } = await fastify.db.query(`
+        UPDATE deployments SET status = 'running', started_at = now()
+        WHERE id = ANY($1::uuid[]) AND status = 'pending'
+        RETURNING id
+      `, [pendingDeployments.rows.map(r => r.deployment_id)])
+      const claimed = new Set(rows.map(r => r.id))
+      deploymentsToSend = pendingDeployments.rows.filter(r => claimed.has(r.deployment_id))
+    }
 
     reply.send({
       ok:         true,
       device_id:  deviceId,
       new:        !lookup.rows.length,
-      commands:   pendingScripts.rows.map(r => ({ id: r.id, name: r.script_name, script: r.script_content })),
-      deployments: pendingDeployments.rows.map(r => ({
+      commands:   scriptsToSend.map(r => ({ id: r.id, name: r.script_name, script: r.script_content })),
+      deployments: deploymentsToSend.map(r => ({
         deployment_id:       r.deployment_id,
         name:                r.name,
         type:                r.type,

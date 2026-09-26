@@ -27,6 +27,33 @@ consumer; the frontend gets a curated subset via `GET /env.js`.
 | `PORT` | no | `3010` | API listen port (TLS terminated by your reverse proxy) |
 | `NODE_ENV` | no | — | Set to `production` to disable verbose logs |
 
+#### Reverse proxy (`TRUST_PROXY`)
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `TRUST_PROXY` | **yes in production behind a reverse proxy** | off | Proxies trusted to set `X-Forwarded-For`, so the API sees the real client IP (used by rate limiting). Comma-separated proxy IPs/CIDRs, as narrow as possible (e.g. the Docker bridge gateway `172.18.0.1`, or the compose network's subnet). `true` and hop counts (`1`) are refused: they don't validate the TCP peer, so a client could pick its own IP (GHSA-3m5p-2c4r-xxw2; Fastify ≥ 5.12 ignores hop counts anyway). Invalid values stop the API at boot |
+
+**Effectively required in production behind Caddy/nginx.** Without it, every
+request carries the proxy's IP, so all clients share the same rate-limit
+buckets: `/api/agent/exchange-token` becomes 10/min and
+`/api/agent/setup-log` 60/min **for the whole fleet**, and anyone on the
+Internet can exhaust the enrolment bucket with junk requests (enrolment DoS).
+
+**Only safe if port 3010 is reachable solely through the proxy.** Otherwise a
+client connecting to 3010 directly can forge `X-Forwarded-For` and pick its
+own rate-limit key. The stock `docker-compose.yml` publishes `3010:3010` on
+**all interfaces**: change it to `127.0.0.1:3010:3010` (host-level proxy) or
+drop the `ports:` entry (proxy in the same compose network), or firewall
+3010, **before** setting `TRUST_PROXY`.
+
+Which value: with the API in Docker behind a host-level proxy, the peer
+address the API sees is the Docker bridge gateway (e.g. `172.18.0.1`), not
+`127.0.0.1` — trust exactly that address (check it with
+`docker network inspect`). With Caddy in the same compose network
+(`reverse_proxy api:3010`), trust that network's subnet. Avoid a broad range
+such as `172.16.0.0/12`: behind nginx (`$proxy_add_x_forwarded_for`), a client
+whose own address falls in it could inject its IP.
+
 ### 1.2 Database
 
 | Variable | Required | Default | Notes |
@@ -186,7 +213,7 @@ All under `/api/agent/`, agent-token Bearer auth (token created from
 | `POST` | `/exchange-token` | First-run: a one-time bootstrap token returns a per-device persistent token |
 | `POST` | `/checkin` | Main loop: send metrics + receive `commands`, `deployments`, `agent_update`, `maintenance_window` |
 | `POST` | `/result` | Report a queued script's exit code + output |
-| `POST` | `/setup-log` | Upload first-run install logs |
+| `POST` | `/setup-log` | Upload first-run install logs (no auth; body ≤ 64 KiB, 60 req/min per client IP) |
 | `POST` | `/admin-credential` | Escrow the LAPS rotation password (RSA-OAEP-SHA256 ciphertext) |
 | `POST` | `/rotate-token` | Generate a successor token, expire the old one at +24 h |
 | `GET` | `/version` | Latest agent version available on the server (semver string) |

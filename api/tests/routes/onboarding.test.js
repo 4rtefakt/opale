@@ -7,13 +7,16 @@
 // - PATCH /:id/checks/:checkId (toggle manuel + auto-status)
 //
 // POST /:id/checks/:checkId/auto : fait appel à graph.js (createEntraUser,
-// addUserToGroup, disableEntraUser, revokeUserSessions). Ces fonctions sont
-// mockées via un module-level spy pour les tests qui les touchent (step_id
-// inconnu → 500 sans Graph), ou skippées avec note pour les cas nécessitant
-// une vraie réponse Graph (create_account, assign_license, etc.).
+// addUserToGroup, disableEntraUser, revokeUserSessions). create_account est
+// couvert en stubbant globalThis.fetch (utilisé par graph.js pour le token
+// et pour Graph) ; step_id inconnu → 500 sans aucun appel Graph. Les autres
+// étapes Graph (assign_license, disable_account…) ne sont pas couvertes.
 
 import { test, before, after, mock } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
@@ -220,7 +223,10 @@ test('GET /:id — retourne onboarding + checks', { skip: SKIP }, async () => {
   assert.equal(first.done, false)
 })
 
-test('GET /:id — non-admin peut lire (route ouverte aux authentifiés)', { skip: SKIP }, async () => {
+// Sécu : l'onboarding contient des données RH (et historiquement le mot de
+// passe temporaire du nouveau compte). Ce test assertait l'inverse (route
+// ouverte aux authentifiés) — il vérifie désormais le refus aux non-admins.
+test('GET /:id — non-admin → 403 (données RH réservées aux admins)', { skip: SKIP }, async () => {
   const adminTok = await adminToken('oid-ob-get-nonadmin-setup')
   const created = (await createOnboarding(adminTok, { person_name: 'Readable' })).json()
   const token = await userToken('oid-ob-get-nonadmin')
@@ -228,7 +234,18 @@ test('GET /:id — non-admin peut lire (route ouverte aux authentifiés)', { ski
     method: 'GET', url: `/api/onboarding/${created.id}`,
     headers: { authorization: `Bearer ${token}` },
   })
-  assert.equal(res.statusCode, 200)
+  assert.equal(res.statusCode, 403)
+})
+
+test('GET / — non-admin → 403', { skip: SKIP }, async () => {
+  const adminTok = await adminToken('oid-ob-list-nonadmin-setup')
+  await createOnboarding(adminTok, { person_name: 'Listed' })
+  const token = await userToken('oid-ob-list-nonadmin')
+  const res = await fastify.inject({
+    method: 'GET', url: '/api/onboarding/',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 403)
 })
 
 // ─── PATCH /:id — update ─────────────────────────────────────────────────────
@@ -364,9 +381,8 @@ test('PATCH /:id/checks — tous done → onboarding.status passe à done', { sk
 })
 
 // ─── POST /:id/checks/:checkId/auto — étape inconnue → 500 ───────────────────
-// Les étapes auto réelles (create_account, assign_license, etc.) appellent
-// graph.js. Elles sont skippées car elles nécessitent un mock de module ESM
-// non trivial. L'étape inconnue peut être testée sans mock.
+// Les étapes auto réelles appellent graph.js : create_account est testé plus
+// bas via un stub de globalThis.fetch. L'étape inconnue se teste sans stub.
 
 test('POST /:id/checks/:checkId/auto — step_id inconnu → 500 sans appel Graph', { skip: SKIP }, async () => {
   const token = await adminToken('oid-ob-auto-unknown')
@@ -405,8 +421,234 @@ test('POST /:id/checks/:checkId/auto — check inexistant → 404', { skip: SKIP
   assert.equal(res.statusCode, 404)
 })
 
-// NOTE SKIPPÉE : POST auto avec steps Graph réels (create_account, assign_license,
-// disable_account, revoke_sessions) ne sont pas testés ici car ils nécessitent
-// un mock de module ESM (lib/graph.js) non supporté nativement par node:test
-// sans instrumentation supplémentaire. À tester en E2E ou via un refactor
-// qui injecte les fonctions Graph comme dépendances.
+// NOTE : create_account est couvert ci-dessous (stub de globalThis.fetch,
+// sans mock de module ESM). assign_license, assign_groups, disable_account et
+// revoke_sessions ne sont pas couverts : même technique applicable si besoin.
+
+// ─── create_account : mot de passe temporaire jamais stocké ──────────────────
+// createEntraUser (lib/graph.js) passe par globalThis.fetch : on le stubbe
+// (token OAuth + POST /users) plutôt que de mocker le module ESM.
+
+function mockGraphCreateUser(user) {
+  const calls = []
+  const original = globalThis.fetch
+  globalThis.fetch = async (url, opts) => {
+    const s = String(url)
+    calls.push({ url: s, opts })
+    if (/login\.microsoftonline\.com.*token/.test(s)) {
+      return { ok: true, status: 200, json: async () => ({ access_token: 'tok', expires_in: 3600 }) }
+    }
+    if (s === 'https://graph.microsoft.com/v1.0/users' && opts?.method === 'POST') {
+      return { ok: true, status: 201, json: async () => ({ '@odata.context': 'ctx', ...user }) }
+    }
+    throw new Error(`fetch inattendu : ${s}`)
+  }
+  return { calls, restore: () => { globalThis.fetch = original } }
+}
+
+test('POST auto create_account — mot de passe renvoyé une fois, jamais stocké (notes, auto_result, GET)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-auto-create')
+  const created = (await createOnboarding(token, {
+    person_name: 'Nouvelle Recrue', email: 'nouvelle.recrue@contoso.fr', notes: 'Arrivée lundi',
+  })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  const entraId = '3c4d5e6f-0000-4000-8000-000000000042'
+  const mock = mockGraphCreateUser({ id: entraId, userPrincipalName: 'nouvelle.recrue@contoso.fr' })
+
+  let res
+  try {
+    res = await fastify.inject({
+      method: 'POST', url: `/api/onboarding/${created.id}/checks/${check.id}/auto`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+  } finally {
+    mock.restore()
+  }
+  assert.equal(res.statusCode, 200)
+  const body = res.json()
+  const pwd = body.result?.temporaryPassword
+  assert.ok(pwd && pwd.length === 14, 'le mot de passe est renvoyé une fois dans la réponse')
+  assert.equal(res.headers['cache-control'], 'no-store')
+  // Le mot de passe envoyé à Graph est bien celui renvoyé à l'admin.
+  const post = mock.calls.find(c => c.opts?.method === 'POST' && c.url.endsWith('/users'))
+  assert.equal(JSON.parse(post.opts.body).passwordProfile.password, pwd)
+
+  assert.ok(!JSON.stringify(body.check).includes(pwd), 'check renvoyé sans mot de passe')
+
+  const { rows: [ob] } = await db.query('SELECT notes, entra_id_created FROM onboardings WHERE id = $1', [created.id])
+  assert.equal(ob.entra_id_created, entraId)
+  assert.ok(!ob.notes.includes(pwd), 'notes sans mot de passe')
+  assert.match(ob.notes, /Compte créé : nouvelle\.recrue@contoso\.fr/)
+  assert.match(ob.notes, /^Arrivée lundi\n/)
+
+  const { rows: [chk] } = await db.query('SELECT auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  assert.ok(!chk.auto_result.includes(pwd), 'auto_result sans mot de passe')
+  assert.ok(!chk.auto_result.includes('temporaryPassword'))
+  assert.equal(JSON.parse(chk.auto_result).id, entraId)
+
+  const detail = await fastify.inject({
+    method: 'GET', url: `/api/onboarding/${created.id}`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.ok(!detail.body.includes(pwd), 'GET /:id ne ré-expose jamais le mot de passe')
+})
+
+// ─── Migration 075 : purge des mots de passe déjà stockés ────────────────────
+// On reproduit EXACTEMENT les écritures de l'ancien code (même UPDATE notes,
+// même JSON.stringify pour auto_result) puis on rejoue le fichier SQL.
+
+const MIGRATION_075 = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../migrations/075_strip_onboarding_temp_passwords.sql'
+)
+
+test('Migration 075 : retire uniquement le mot de passe des notes et de auto_result (idempotente)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-mig075')
+  const created = (await createOnboarding(token, { person_name: 'Legacy Pwd', notes: 'Bureau 12' })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  const pwd = 'aB3$xY7!kLm9@Q'
+  const upn = 'legacy.pwd@contoso.fr'
+
+  // Écritures de l'ancien code (onboarding.js avant correctif).
+  const note = `Compte créé : ${upn}\nMot de passe temporaire : ${pwd}`
+  await db.query(
+    'UPDATE onboardings SET notes = COALESCE(notes || E\'\\n\', \'\') || $1 WHERE id = $2',
+    [note, created.id]
+  )
+  await db.query('UPDATE onboardings SET notes = notes || E\'\\n\' || $1 WHERE id = $2', ['Badge remis', created.id])
+  const legacyResult = {
+    '@odata.context': 'https://graph.microsoft.com/v1.0/$metadata#users/$entity',
+    id: '4d5e6f70-0000-4000-8000-000000000075', displayName: 'Legacy Pwd',
+    userPrincipalName: upn, temporaryPassword: pwd,
+  }
+  await db.query('UPDATE onboarding_checks SET auto_result = $1 WHERE id = $2',
+    [JSON.stringify(legacyResult), check.id])
+  // Ligne témoin sans mot de passe : ne doit pas bouger.
+  const other = (await createOnboarding(token, { person_name: 'Sans Pwd', notes: 'RAS' })).json()
+
+  const sql = await fs.readFile(MIGRATION_075, 'utf8')
+  await db.query(sql)
+
+  const { rows: [ob] } = await db.query('SELECT notes FROM onboardings WHERE id = $1', [created.id])
+  assert.equal(ob.notes, `Bureau 12\nCompte créé : ${upn}\nMot de passe temporaire : [supprimé]\nBadge remis`)
+  const { rows: [chk] } = await db.query('SELECT auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  const { temporaryPassword: _, ...expected } = legacyResult
+  assert.deepEqual(JSON.parse(chk.auto_result), expected)
+  const { rows: [untouched] } = await db.query('SELECT notes FROM onboardings WHERE id = $1', [other.id])
+  assert.equal(untouched.notes, 'RAS')
+
+  // Idempotence (CI rejoue chaque migration deux fois).
+  await db.query(sql)
+  const { rows: [ob2] } = await db.query('SELECT notes FROM onboardings WHERE id = $1', [created.id])
+  assert.equal(ob2.notes, ob.notes)
+  const { rows: [chk2] } = await db.query('SELECT auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  assert.equal(chk2.auto_result, chk.auto_result)
+})
+
+// ─── create_account : échec DB après création Entra → résultat conservé ────
+// Le compte Entra existe dès que Graph a répondu : si une écriture DB échoue
+// ensuite, la réponse doit quand même porter le mot de passe temporaire (seul
+// endroit où il existe), avec un avertissement, et non un 500 qui le perd.
+// L'échec est provoqué par un trigger Postgres réel, limité à cette fiche.
+
+test('POST auto create_account — échec DB après création Entra → 200 + mot de passe + warning', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-auto-dbfail')
+  const created = (await createOnboarding(token, {
+    person_name: 'Echec DB Onboarding', email: 'echec.db@contoso.fr',
+  })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  await db.query(`
+    CREATE OR REPLACE FUNCTION t_fail_entra_id_created() RETURNS trigger AS $$
+    BEGIN
+      IF NEW.person_name = 'Echec DB Onboarding' THEN
+        RAISE EXCEPTION 'panne DB simulée';
+      END IF;
+      RETURN NEW;
+    END $$ LANGUAGE plpgsql;
+    CREATE TRIGGER t_fail_entra_id_created BEFORE UPDATE OF entra_id_created ON onboardings
+      FOR EACH ROW EXECUTE FUNCTION t_fail_entra_id_created();
+  `)
+  const entraId = '6f708192-0000-4000-8000-0000000000db'
+  const mock = mockGraphCreateUser({ id: entraId, userPrincipalName: 'echec.db@contoso.fr' })
+
+  let res
+  try {
+    res = await fastify.inject({
+      method: 'POST', url: `/api/onboarding/${created.id}/checks/${check.id}/auto`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+  } finally {
+    mock.restore()
+    await db.query(`
+      DROP TRIGGER IF EXISTS t_fail_entra_id_created ON onboardings;
+      DROP FUNCTION IF EXISTS t_fail_entra_id_created();
+    `)
+  }
+
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.headers['cache-control'], 'no-store')
+  const body = res.json()
+  const pwd = body.result?.temporaryPassword
+  assert.ok(pwd && pwd.length === 14, 'le mot de passe est renvoyé malgré l\'échec DB')
+  assert.equal(body.result.id, entraId)
+  assert.match(body.warning, /panne DB simulée/)
+  assert.match(body.warning, /mot de passe temporaire/)
+
+  // Rien n'a été écrit (ni id, ni mot de passe) ; l'étape reste à faire.
+  const { rows: [ob] } = await db.query('SELECT notes, entra_id_created FROM onboardings WHERE id = $1', [created.id])
+  assert.equal(ob.entra_id_created, null)
+  assert.ok(!(ob.notes || '').includes(pwd))
+  const { rows: [chk] } = await db.query('SELECT done, auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  assert.equal(chk.done, false)
+  assert.equal(chk.auto_result, null)
+})
+
+test('POST auto — automatisation en échec : toujours 500 avec auto_error (inchangé)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-auto-noemail')
+  const created = (await createOnboarding(token, { person_name: 'Sans Email' })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/onboarding/${created.id}/checks/${check.id}/auto`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 500)
+  assert.match(res.json().error, /Email requis/)
+  assert.equal(res.json().check.auto_error, 'Email requis pour créer le compte')
+  assert.equal(res.json().warning, undefined)
+})
+
+test('POST auto create_account — passwordProfile renvoyé par Graph jamais stocké dans auto_result', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-auto-pwdprofile')
+  const created = (await createOnboarding(token, {
+    person_name: 'Password Profile', email: 'password.profile@contoso.fr',
+  })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  const mock = mockGraphCreateUser({
+    id: '708192a3-0000-4000-8000-0000000000ff',
+    userPrincipalName: 'password.profile@contoso.fr',
+    passwordProfile: { password: 'EchoGraph#2026', forceChangePasswordNextSignIn: true },
+  })
+  let res
+  try {
+    res = await fastify.inject({
+      method: 'POST', url: `/api/onboarding/${created.id}/checks/${check.id}/auto`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+  } finally {
+    mock.restore()
+  }
+  assert.equal(res.statusCode, 200)
+  const { rows: [chk] } = await db.query('SELECT auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  assert.ok(!chk.auto_result.includes('EchoGraph'), 'auto_result sans passwordProfile')
+  assert.ok(!chk.auto_result.includes('passwordProfile'))
+})

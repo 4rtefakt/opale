@@ -203,7 +203,7 @@ test('fetchBandwidth — calcule ds/dr/secs_since_prev sur l\'adapter unique', a
 
   const deviceId = await seedDevice(db)
   const tA = recentTime(60)
-  const tB = recentTime(45) // +15 min = 900 s
+  const tB = new Date(tA.getTime() + 15 * 60 * 1000) // +15 min = 900 s, même base d'horloge
   await seedBandwidth(db, deviceId, [
     { adapter: 'Wi-Fi', bytes_sent: 100_000_000, bytes_recv: 200_000_000, sampled_at: tA },
     { adapter: 'Wi-Fi', bytes_sent: 110_000_000, bytes_recv: 230_000_000, sampled_at: tB },
@@ -229,9 +229,11 @@ test('fetchBandwidth — exclut les doublons rapprochés (< 60s)', async (t) => 
   // (Δ = 14:30 min > 60s) mais part d'un sample qui restera dans le
   // tableau final via LAG. C'est intentionnel : le bug visé est le pic
   // calculé sur intervalle court, pas l'exclusion du delta legitimate.
+  // Une seule lecture de l'horloge : deux appels à recentTime() peuvent
+  // tomber sur des millisecondes différentes (870.001 au lieu de 870).
   const tA = recentTime(60)
-  const tDup = new Date(recentTime(60).getTime() + 30 * 1000)
-  const tB = recentTime(45)
+  const tDup = new Date(tA.getTime() + 30 * 1000)
+  const tB = new Date(tA.getTime() + 15 * 60 * 1000)
   await seedBandwidth(db, deviceId, [
     { adapter: 'Wi-Fi', bytes_sent: 100_000_000, bytes_recv: 200_000_000, sampled_at: tA },
     { adapter: 'Wi-Fi', bytes_sent: 100_001_000, bytes_recv: 200_001_000, sampled_at: tDup },
