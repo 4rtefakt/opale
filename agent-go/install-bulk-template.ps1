@@ -12,7 +12,10 @@
 #
 # Markers substituted by scripts/bulk-build-intune-single-installer.sh :
 #   ##URL##                  — RMM server URL (e.g. https://rmm.example.com)
-#   ##TOKENS_MAP##           — PowerShell block "<hostname>='<token>'; ..."
+#   TOKENS_MAP               — PowerShell block "<hostname>='<token>'; ..." replacing
+#                              the marker line inside $Tokens below (the sed rule
+#                              matches the whole line, so the marker must appear
+#                              only there — not in this comment)
 #   ##SERVICE_NAME##         — Windows Service name (e.g. Opale-Agent)
 #   ##DATA_DIR_NAME##        — ProgramData subfolder name (e.g. Opale)
 #   ##BIN_NAME##             — agent binary base name (e.g. opale-agent)
@@ -194,7 +197,9 @@ function Initialize-DataDir {
 if (Test-DataDirTrusted) { $script:DataDirTrusted = $true }
 
 function Remove-LegacyScheduledTask {
-    if ($LegacySchtasks -and $LegacySchtasks -ne '##LEGACY_SCHTASKS_NAME##') {
+    # Pas le marker littéral ici : le sed global des scripts de build le
+    # remplacerait aussi, et la condition deviendrait toujours fausse.
+    if ($LegacySchtasks -and $LegacySchtasks -notlike '##*##') {
         schtasks /delete /tn $LegacySchtasks /f 2>&1 | Out-Null
     }
 }

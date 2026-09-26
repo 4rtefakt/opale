@@ -195,7 +195,9 @@ function Initialize-DataDir {
 if (Test-DataDirTrusted) { $script:DataDirTrusted = $true }
 
 function Remove-LegacyScheduledTask {
-    if ($LegacySchtasks -and $LegacySchtasks -ne '##LEGACY_SCHTASKS_NAME##') {
+    # Pas le marker littéral ici : le sed global des scripts de build le
+    # remplacerait aussi, et la condition deviendrait toujours fausse.
+    if ($LegacySchtasks -and $LegacySchtasks -notlike '##*##') {
         schtasks /delete /tn $LegacySchtasks /f 2>&1 | Out-Null
     }
 }

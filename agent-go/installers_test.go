@@ -155,3 +155,35 @@ func TestIntuneTemplates_MarkerSet(t *testing.T) {
 		}
 	}
 }
+
+// Les scripts de build font un sed GLOBAL sur les markers (et, pour
+// TOKENS_MAP, remplacent toute la ligne par la table des tokens) : chaque
+// marker ne doit apparaître qu'une fois, sur sa ligne d'affectation, sinon
+// la table est injectée en double (script non analysable) ou une
+// comparaison au marker devient toujours fausse.
+func TestIntuneTemplates_MarkersOnlyAtAssignment(t *testing.T) {
+	re := regexp.MustCompile(`##([A-Z0-9_]+)##`)
+	for _, f := range []string{"install-bootstrap-template.ps1", "install-bulk-template.ps1"} {
+		src := readInstaller(t, f)
+		count := map[string]int{}
+		for _, m := range re.FindAllStringSubmatch(src, -1) {
+			count[m[1]]++
+		}
+		for m, n := range count {
+			if m == "TOKENS_MAP" {
+				// Ligne entière remplacée par la table : une seule occurrence
+				// dans tout le fichier, seule sur sa ligne.
+				if n != 1 || !regexp.MustCompile(`(?m)^##TOKENS_MAP##$`).MatchString(src) {
+					t.Errorf("%s : ##TOKENS_MAP## présent %d fois (la règle sed r/d injecterait la table %d fois)", f, n, n)
+				}
+				continue
+			}
+			// Les commentaires d'en-tête peuvent citer les autres markers
+			// (valeur recopiée dans le commentaire, sans effet).
+			code := strings.Count(codeOnly(src), "##"+m+"##")
+			if code != 1 {
+				t.Errorf("%s : ##%s## présent %d fois dans le code, attendu 1 (affectation)", f, m, code)
+			}
+		}
+	}
+}
