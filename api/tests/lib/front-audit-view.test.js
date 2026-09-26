@@ -126,6 +126,31 @@ test('audit : mail_ingest_second_skipped → libellé et résumé chiffré', asy
   assert.match(html, /seconde 2026-05-10 09:00:01 UTC/)
 })
 
+// front/views/tickets.js — diagnostic du pont mail : une ligne rouge par
+// boîte bloquée (champ `blocked` de /api/email/status).
+test('tickets : diagnostic mail → ligne rouge pour une boîte bloquée, champs échappés', () => {
+  const ticketsSrc = readFileSync(new URL('../../../front/views/tickets.js', import.meta.url), 'utf8')
+  const ctx = vm.createContext({
+    window: {}, t: (key, vars) => key + (vars ? JSON.stringify(vars) : ''), formatRelative: () => 'il y a 1 min',
+  })
+  vm.runInContext(escSrc, ctx)
+  ctx.esc = ctx.window.esc
+  vm.runInContext(ticketsSrc.replace(/^export /gm, ''), ctx)
+
+  const status = { mailboxes: [
+    { address: 'a@example.com', cursor: '2026-05-10T09:00:00Z', total_ingested: 3,
+      blocked: { since: '2026-05-10T10:00:00.000Z', attempts: 7, error: 'panne <b>x</b>', internet_message_id: '<id@x>' } },
+    { address: 'b@example.com', cursor: '2026-05-10T09:00:00Z', total_ingested: 1, blocked: null },
+  ] }
+  const html = ctx.renderMailDiagConfig({ config: {} }, status)
+  const red = html.match(/<div style="color:var\(--red\)[^"]*">[^\n]*<\/div>/g) || []
+  assert.equal(red.length, 1, 'une seule boîte bloquée')
+  assert.match(red[0], /tickets\.mail_diag\.blocked/)
+  assert.match(red[0], /panne &lt;b&gt;x&lt;\/b&gt;/, 'erreur échappée')
+  assert.match(red[0], /&lt;id@x&gt;/, 'internet_message_id échappé')
+  assert.doesNotMatch(html, /<b>x<\/b>/)
+})
+
 test('audit : catégorie « Pont mail » → filtre sur les actions du pont mail', async () => {
   const { ctx, auditCalls } = loadAuditView({ rows: [ABANDONED], category: 'mail' })
   const container = { innerHTML: '' }

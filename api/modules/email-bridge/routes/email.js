@@ -42,7 +42,8 @@ export default async function emailRoute(fastify) {
   // Liste les mailboxes configurées + leur curseur courant + compteur ingérés.
   fastify.get('/status', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: setRows } = await fastify.db.query(
-      `SELECT key, value FROM settings WHERE key IN ('mail.inboxes', 'mail.poll_enabled') OR key LIKE 'mail.cursor.%'`
+      `SELECT key, value FROM settings WHERE key IN ('mail.inboxes', 'mail.poll_enabled')
+         OR key LIKE 'mail.cursor.%' OR key LIKE 'mail.cursor\\_state.%'`
     )
     const settings = Object.fromEntries(setRows.map(r => [r.key, r.value]))
     const inboxes = (settings['mail.inboxes'] || '')
@@ -62,9 +63,24 @@ export default async function emailRoute(fastify) {
         cursor: settings[`mail.cursor.${m}`] || null,
         total_ingested: byMailbox.get(m)?.total || 0,
         last_received_at: byMailbox.get(m)?.last_received_at || null,
+        blocked: blockedState(settings[`mail.cursor.${m}`], settings[`mail.cursor_state.${m}`]),
       })),
     })
   })
+
+  // Mail en échec qui retient le curseur d'une boîte (cf. lib/poll-cursor.js),
+  // lu dans son état JSON — ignoré s'il se rapporte à un autre curseur,
+  // comme le fait le worker.
+  function blockedState(cursor, rawState) {
+    try {
+      const state = JSON.parse(rawState)
+      const r = state?.retry
+      if (!r || !cursor || state.at !== new Date(cursor).toISOString()) return null
+      return { since: r.first_at ?? null, attempts: r.attempts, error: r.error ?? null, internet_message_id: r.internet_message_id ?? null }
+    } catch {
+      return null
+    }
+  }
 
   // GET /api/email/stats?days=7 — breakdown des actions du pipeline sur la
   // fenêtre donnée. Utilisé par le bandeau "cette semaine" en haut de la

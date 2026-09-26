@@ -2048,7 +2048,11 @@ function renderMailDiagConfig(diag, status) {
       </div>
       ${mailboxes.length ? `
         <div style="margin-top:8px;font-size:11px;color:var(--text-tertiary)">
-          ${mailboxes.map(m => `<div>${esc(m.address)} — ${t('tickets.mail_diag.cursor')}: ${m.cursor ? formatRelative(m.cursor) : '(init)'} · ${m.total_ingested} ${t('tickets.mail_diag.ingested')}</div>`).join('')}
+          ${mailboxes.map(m => `<div>${esc(m.address)} — ${t('tickets.mail_diag.cursor')}: ${m.cursor ? formatRelative(m.cursor) : '(init)'} · ${m.total_ingested} ${t('tickets.mail_diag.ingested')}</div>${
+            // Mail en échec qui retient le curseur (cf. api email-bridge/lib/poll-cursor.js).
+            m.blocked ? `<div style="color:var(--red);font-weight:600">${esc(t('tickets.mail_diag.blocked', {
+              since: m.blocked.since ? formatRelative(m.blocked.since) : '?', attempts: m.blocked.attempts,
+              id: m.blocked.internet_message_id || '?', error: m.blocked.error || '?' }))}</div>` : ''}`).join('')}
         </div>` : ''}
     </section>`
 }
