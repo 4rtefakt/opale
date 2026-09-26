@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -41,28 +40,14 @@ func runPowerShell(ctx context.Context, script string) (int, string) {
 		return 1, fmt.Sprintf("close temp : %v", err)
 	}
 
-	c, cancel := context.WithTimeout(ctx, scriptTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(c, "powershell.exe",
+	// Timeout, WaitDelay et classification (timeout reporté en 124 avant
+	// l'ExitError du process tué) : cf. runWithTimeout.
+	return runWithTimeout(ctx, scriptTimeout, hideWindow, "powershell.exe",
 		"-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", f.Name())
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+}
 
-	out, err := cmd.CombinedOutput()
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		switch {
-		case errors.As(err, &exitErr):
-			exitCode = exitErr.ExitCode()
-		case errors.Is(c.Err(), context.DeadlineExceeded):
-			exitCode = 124 // convention Unix timeout — l'API ne fait que le stocker
-			out = append(out, []byte("\n[timeout après "+scriptTimeout.String()+"]")...)
-		default:
-			exitCode = 1
-			out = append(out, []byte("\nerror : "+err.Error())...)
-		}
-	}
-	return exitCode, strings.TrimSpace(string(out))
+func hideWindow(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 }
 
 // findWinget — winget n'est pas dans le PATH en contexte SYSTEM. On le cherche
@@ -104,27 +89,13 @@ func runWingetInstall(ctx context.Context, wingetID string) (int, string) {
 	if winget == "" {
 		return 1, "winget introuvable (contexte SYSTEM)"
 	}
-	c, cancel := context.WithTimeout(ctx, scriptTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(c, winget, "install",
+	exitCode, out := runWithTimeout(ctx, scriptTimeout, hideWindow, winget, "install",
 		"--id", wingetID,
 		"--scope", "machine",
 		"--silent",
 		"--accept-package-agreements",
 		"--accept-source-agreements",
 	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.CombinedOutput()
-
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = 1
-		}
-	}
 	// Codes "déjà installé / pas d'update dispo" → succès. Cf. inventory.ps1
 	// (les valeurs en uint32 = négatives en int32).
 	switch uint32(exitCode) {
@@ -132,7 +103,7 @@ func runWingetInstall(ctx context.Context, wingetID string) (int, string) {
 		 0x8A150019: // pas de mise à jour disponible
 		exitCode = 0
 	}
-	return exitCode, filterWingetOutput(string(out))
+	return exitCode, filterWingetOutput(out)
 }
 
 // processCommands exécute les script_executions et POSTe chaque résultat.
