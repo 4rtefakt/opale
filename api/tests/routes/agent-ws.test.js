@@ -347,3 +347,127 @@ test('heartbeat : token révoqué hors de ce process (autre instance, SQL direct
   assert.equal(g.statusCode, 409)
   assert.equal(g.json().code, 'AGENT_OFFLINE')
 })
+
+// ─── Frames console.* liées à la connexion émettrice ────────────────────────
+
+const b64 = (s) => Buffer.from(s).toString('base64')
+
+test('frames console.* portant le session_id d\'un autre poste → rien transmis, session de l\'autre poste intacte', { skip: SKIP }, async () => {
+  const devA = await seedDevice(db, { hostname: 'PC-WS-CONSOLE-A' })
+  const devB = await seedDevice(db, { hostname: 'PC-WS-CONSOLE-B' })
+  const tokA = await seedAgentToken(db, { deviceId: devA.id, label: 'ws-console-a' })
+  const tokB = await seedAgentToken(db, { deviceId: devB.id, label: 'ws-console-b' })
+  const agentA = await connectAgent(tokA.secret, devA.id)
+  const agentB = await connectAgent(tokB.secret, devB.id)
+  const browserA = await openConsole(devA.id, agentA)
+  const browserB = await openConsole(devB.id, agentB)
+  const sidB = browserB.sessionId
+
+  // L'agent A vise la session de B.
+  agentA.send('console.opened', { pid: 666 }, sidB)
+  agentA.send('console.data', { b64: b64('injection depuis A') }, sidB)
+  agentA.send('console.error', { message: 'faux' }, sidB)
+  agentA.send('console.exit', { code: 0, reason: 'exit' }, sidB)
+
+  // Barrière : frame légitime de A sur sa propre session, traitée après
+  // les précédentes (même socket, ordre conservé).
+  agentA.send('console.data', { b64: b64('marqueur A') }, browserA.sessionId)
+  await waitFor(
+    () => browserA.frames.some(f => f.type === 'data' && f.data?.b64 === b64('marqueur A')),
+    'frame légitime de A reçue par son browser'
+  )
+
+  const leaked = browserB.frames.filter(f => ['opened', 'data', 'error', 'exit'].includes(f.type))
+  assert.deepEqual(leaked, [], 'aucune frame de A transmise au browser de B')
+  assert.equal(browserB.closeInfo, null, 'browser de B non fermé')
+  const sessB = fastify.consoleSessions.get(sidB)
+  assert.ok(sessB, 'session de B toujours active')
+  assert.deepEqual(sessB.buffer.frames, [], 'rien de A dans l\'enregistrement de B')
+  assert.equal((await remoteSession(sidB)).ended_at, null)
+  assert.ok(!agentB.frames.some(f => f.type === 'console.close'), 'aucun console.close envoyé à B')
+
+  // A reçoit la même réponse que pour une session inconnue.
+  await waitFor(
+    () => agentA.frames.some(f => f.type === 'console.close' && f.id === sidB && f.data?.reason === 'no-such-session'),
+    'console.close no-such-session renvoyé à A'
+  )
+
+  // Le chemin légitime de B fonctionne toujours.
+  agentB.send('console.data', { b64: b64('sortie de B') }, sidB)
+  await waitFor(
+    () => browserB.frames.some(f => f.type === 'data' && f.data?.b64 === b64('sortie de B')),
+    'frame légitime de B reçue par son browser'
+  )
+})
+
+test('frames console.* : session légitime servie après une reprise de main puis après une reconnexion de l\'agent', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-WS-CONSOLE-TAKEOVER' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-console-takeover' })
+  const agent1 = await connectAgent(tok.secret, device.id)
+  const browser1 = await openConsole(device.id, agent1)
+
+  // Reprise de main : nouvelle session sur la même connexion agent.
+  const g = await fastify.inject({
+    method: 'POST', url: '/api/console/grant',
+    headers: adminAuth,
+    payload: { deviceId: device.id, takeover: true, reason: { category: 'troubleshoot', note: 'reprise de main test' } },
+  })
+  assert.equal(g.statusCode, 200, g.body)
+  const browser2 = await openWs(`/api/console/${device.id}?nonce=${g.json().nonce}`)
+  const open2 = await waitFor(
+    () => agent1.frames.find(f => f.type === 'console.open' && f.id !== browser1.sessionId),
+    'console.open de la session reprise'
+  )
+  await within(browser1.closed, 2000, 'ancienne session fermée (taken-over)')
+  agent1.send('console.opened', { pid: 42 }, open2.id)
+  agent1.send('console.data', { b64: b64('après reprise') }, open2.id)
+  await waitFor(() => browser2.frames.some(f => f.type === 'opened'), 'opened transmis après reprise')
+  await waitFor(
+    () => browser2.frames.some(f => f.type === 'data' && f.data?.b64 === b64('après reprise')),
+    'data transmise après reprise'
+  )
+
+  // Reconnexion de l'agent : les sessions de l'ancienne connexion sont
+  // fermées (pas de transfert), une nouvelle session sur la nouvelle
+  // connexion est servie normalement.
+  const agent2 = await connectAgent(tok.secret, device.id)
+  await within(browser2.closed, 2000, 'session de l\'ancienne connexion fermée')
+  const browser3 = await openConsole(device.id, agent2)
+  agent2.send('console.data', { b64: b64('après reconnexion') }, browser3.sessionId)
+  await waitFor(
+    () => browser3.frames.some(f => f.type === 'data' && f.data?.b64 === b64('après reconnexion')),
+    'data transmise après reconnexion'
+  )
+})
+
+test('frames console.* : session du même poste portée par une autre connexion → ignorée', { skip: SKIP }, async () => {
+  // Liaison à la connexion, pas seulement au poste : une session créée
+  // avec une autre connexion du même poste (ex. la précédente, pendant une
+  // reconnexion) n'est pas pilotable depuis celle-ci.
+  const device = await seedDevice(db, { hostname: 'PC-WS-CONSOLE-OTHERCONN' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-console-otherconn' })
+  const agent = await connectAgent(tok.secret, device.id)
+
+  const browserSent = []
+  const browserSocket = { readyState: 1, send: (m) => browserSent.push(JSON.parse(m)), close: () => {} }
+  const otherConn = { deviceId: device.id, send: () => true, close: () => {} }
+  const sess = await fastify.consoleSessions.create({
+    deviceId: device.id, agentConn: otherConn, browserSocket,
+    identity: { entraId: 'oid-other-conn', displayName: 'Other Conn' }, shell: 'powershell.exe',
+  })
+
+  agent.send('console.data', { b64: b64('mauvaise connexion') }, sess.id)
+  agent.send('console.exit', { code: 0, reason: 'exit' }, sess.id)
+  // Barrière : la réponse à console.opened arrive après le traitement des
+  // frames précédentes.
+  agent.send('console.opened', { pid: 1 }, sess.id)
+  await waitFor(
+    () => agent.frames.some(f => f.type === 'console.close' && f.id === sess.id),
+    'console.close no-such-session renvoyé à l\'agent'
+  )
+
+  assert.deepEqual(browserSent, [], 'rien transmis au browser de la session')
+  assert.ok(fastify.consoleSessions.get(sess.id), 'session toujours active')
+  assert.deepEqual(sess.buffer.frames, [])
+  await fastify.consoleSessions.close(sess.id, 'test-cleanup')
+})

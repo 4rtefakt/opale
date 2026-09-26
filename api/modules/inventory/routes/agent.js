@@ -1430,6 +1430,17 @@ export default async function agentRoute(fastify) {
       recheckToken()
     }, HEARTBEAT_INTERVAL_MS)
 
+    // Session console portée par CETTE connexion (donc par ce poste) : un
+    // session_id connu ne vaut pas autorisation. La session d'un autre
+    // poste, ou d'une connexion précédente du même poste, est traitée comme
+    // inconnue. Aucune session n'est transférée d'une connexion à l'autre :
+    // un supersede ferme celles de l'ancienne (disconnect du registry).
+    const ownConsoleSession = (id) => {
+      const sess = fastify.consoleSessions.get(id)
+      if (!sess || sess.deviceId !== token.device_id || sess.agentConn !== conn) return null
+      return sess
+    }
+
     socket.on('message', (raw) => {
       // Credential invalidé (cf. AgentWSRegistry.evict) : ws émet encore
       // les frames reçues pendant le handshake de close, on les ignore.
@@ -1480,10 +1491,12 @@ export default async function agentRoute(fastify) {
         // ── Frames console.* (PR 2) ──────────────────────────────────────
         // L'agent envoie des frames console.* avec un session_id qu'on
         // mappe à la session enregistrée dans consoleSessions (la WS
-        // browser). Si la session a déjà été fermée côté serveur, on
-        // ignore — l'agent recevra console.close au prochain cycle.
+        // browser), uniquement si elle est portée par cette connexion
+        // (cf. ownConsoleSession). Si la session a déjà été fermée côté
+        // serveur, on ignore — l'agent recevra console.close au prochain
+        // cycle.
         case 'console.opened': {
-          const sess = fastify.consoleSessions.get(msg.id)
+          const sess = ownConsoleSession(msg.id)
           if (!sess) {
             conn.send('console.close', { reason: 'no-such-session' }, msg.id)
             break
@@ -1492,7 +1505,7 @@ export default async function agentRoute(fastify) {
           break
         }
         case 'console.data': {
-          const sess = fastify.consoleSessions.get(msg.id)
+          const sess = ownConsoleSession(msg.id)
           if (!sess) break
           // Capture la sortie terminal en 'out' avant de la pousser au
           // browser. Décodage base64 → bytes bruts pour le buffer.
@@ -1503,14 +1516,14 @@ export default async function agentRoute(fastify) {
           break
         }
         case 'console.error': {
-          const sess = fastify.consoleSessions.get(msg.id)
+          const sess = ownConsoleSession(msg.id)
           if (!sess) break
           sess.sendBrowser('error', msg.data || {})
           fastify.consoleSessions.close(msg.id, 'agent-error').catch(() => {})
           break
         }
         case 'console.exit': {
-          const sess = fastify.consoleSessions.get(msg.id)
+          const sess = ownConsoleSession(msg.id)
           if (!sess) break
           sess.sendBrowser('exit', msg.data || {})
           const reason = (msg.data && typeof msg.data.reason === 'string') ? msg.data.reason : 'exit'
