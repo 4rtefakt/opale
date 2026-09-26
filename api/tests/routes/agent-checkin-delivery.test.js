@@ -318,3 +318,69 @@ test('POST /checkin — détection post-install d\'un agent ≤ 2.14 (deployment
   assert.deepEqual(await softwareRows(device.id), [{ package_id: pkg.id, detected: true }])
   assert.deepEqual(await softwareRows(other.id), [])
 })
+
+// ─── Jeton de réservation (claim_token) ─────────────────────────────────────
+
+// Comme le timeout de plugins/cleanup.js puis POST /api/deployments/:id/retry :
+// la MÊME ligne repasse en 'pending' (nouvelle tentative).
+async function timeoutThenRetry(depId) {
+  await db.query(`UPDATE deployments SET status = 'failed', completed_at = now() WHERE id = $1`, [depId])
+  await db.query(`
+    UPDATE deployments SET status = 'pending', exit_code = NULL, output = NULL,
+           queued_at = now(), started_at = NULL, completed_at = NULL
+    WHERE id = $1`, [depId])
+}
+
+test('POST /checkin — résultat d\'une tentative précédente (claim_token périmé) : ignoré, la tentative en cours garde son verdict', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-CLAIM' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const { dep } = await snapshottedDeployment(device.id, 'Pkg Claim')
+  const agent = { hostname: device.hostname, agent_version: '2.15.1' }
+
+  const first = await checkin(secret, agent)
+  const token1 = first.json().deployments[0].claim_token
+  assert.equal(typeof token1, 'string', 'claim_token livré avec le déploiement')
+
+  // Résultat de la 1re tentative retardé (réseau) : timeout, puis « Rejouer ».
+  await timeoutThenRetry(dep.id)
+  const second = await checkin(secret, agent)
+  const token2 = second.json().deployments[0].claim_token
+  assert.equal(second.json().deployments[0].deployment_id, dep.id)
+  assert.notEqual(token2, token1)
+
+  // L'ancien résultat arrive enfin : il ne doit pas trancher la 2e tentative.
+  const stale = await checkin(secret, {
+    ...agent,
+    deployment_results: [{ deployment_id: dep.id, claim_token: token1, exit_code: 1, output: '1re tentative' }],
+  })
+  assert.equal(stale.statusCode, 200, stale.body)
+  assert.equal(await statusOf('deployments', dep.id), 'running', 'verdict de la 2e tentative écrasé par un résultat périmé')
+
+  const fresh = await checkin(secret, {
+    ...agent,
+    deployment_results: [{ deployment_id: dep.id, claim_token: token2, exit_code: 0, output: '2e tentative' }],
+  })
+  assert.equal(fresh.statusCode, 200, fresh.body)
+  const row = await deploymentRow(dep.id)
+  assert.equal(row.status, 'success')
+  assert.equal(row.output, '2e tentative')
+})
+
+test('POST /checkin — résultat sans claim_token (agent ≤ 2.15.0) ou jeton illisible : comportement inchangé', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-CLAIM-LEGACY' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const { dep: a } = await snapshottedDeployment(device.id, 'Pkg Claim Legacy A')
+  const { dep: b } = await snapshottedDeployment(device.id, 'Pkg Claim Legacy B')
+  await checkin(secret, { hostname: device.hostname, agent_version: '2.14.0' })
+
+  const res = await checkin(secret, {
+    hostname: device.hostname, agent_version: '2.14.0',
+    deployment_results: [
+      { deployment_id: a.id, exit_code: 0, output: 'ok' },
+      { deployment_id: b.id, claim_token: 'pas-un-jeton', exit_code: 0, output: 'ok' },
+    ],
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(await statusOf('deployments', a.id), 'success')
+  assert.equal(await statusOf('deployments', b.id), 'success')
+})

@@ -176,6 +176,15 @@ function processesEveryResponse(agentVersion) {
     && !semverGt(AGENT_PROCESSES_EVERY_RESPONSE, agentVersion)
 }
 
+// Jeton de réservation d'un déploiement : son started_at (posé à chaque
+// réservation, remis à NULL par « Rejouer », qui réutilise la ligne) en
+// microsecondes epoch. Livré avec le déploiement, renvoyé par l'agent
+// (≥ 2.15.1) avec le résultat : un résultat d'une tentative précédente ne
+// tranche pas la tentative en cours. Même expression à la réservation et à
+// la réception : égalité exacte.
+const claimTokenSql = col => `(extract(epoch FROM ${col}) * 1000000)::bigint::text`
+const CLAIM_TOKEN_RE = /^\d{1,20}$/
+
 function semverGt(a, b) {
   const pa = String(a).split('.').map(Number)
   const pb = String(b).split('.').map(Number)
@@ -1000,8 +1009,13 @@ export default async function agentRoute(fastify) {
     }
 
     // ── Résultats des déploiements exécutés par l'agent ────────────────────
+    // Jeton de réservation (agent ≥ 2.15.1) : le résultat ne s'applique qu'à
+    // la tentative qui l'a produit. Absent ou illisible (agent plus ancien) :
+    // comportement inchangé.
     for (const r of deployment_results) {
       if (!r.deployment_id) continue
+      const claimToken = typeof r.claim_token === 'string' && CLAIM_TOKEN_RE.test(r.claim_token)
+        ? r.claim_token : null
       try {
         const upd = await fastify.db.query(`
           UPDATE deployments SET
@@ -1010,8 +1024,9 @@ export default async function agentRoute(fastify) {
             output       = $2,
             completed_at = now()
           WHERE id = $3 AND device_id = $4 AND status = 'running'
+            AND ($5::text IS NULL OR ${claimTokenSql('started_at')} = $5::text)
           RETURNING package_id, status
-        `, [r.exit_code ?? -1, r.output || null, r.deployment_id, deviceId])
+        `, [r.exit_code ?? -1, r.output || null, r.deployment_id, deviceId, claimToken])
 
         // Audit log (uniquement les déploiements réussis, pour valoriser dans Rapports)
         if (upd.rows[0]?.status === 'success') {
@@ -1322,7 +1337,8 @@ export default async function agentRoute(fastify) {
             WHERE d.id = ANY($1::uuid[]) AND d.status = 'pending'
               AND s.deployment_id = d.id
               AND p.id = d.package_id AND p.status = 'approved'
-            RETURNING d.id AS deployment_id, d.package_id, s.name, s.type, s.winget_id,
+            RETURNING d.id AS deployment_id, d.package_id, ${claimTokenSql('d.started_at')} AS claim_token,
+                      s.name, s.type, s.winget_id,
                       s.install_script, s.post_install_script, s.detection_script
           `, [pendingDeployments.rows.map(r => r.deployment_id)])
           const claimed = new Map(rows.map(r => [r.deployment_id, r]))
@@ -1347,6 +1363,8 @@ export default async function agentRoute(fastify) {
         // Ajout 2.15.1 (détection post-install) ; ignoré par les agents
         // plus anciens (champ JSON inconnu).
         package_id:          r.package_id,
+        // Ajout 2.15.1 : renvoyé avec le résultat (cf. claimTokenSql).
+        claim_token:         r.claim_token,
         name:                r.name,
         type:                r.type,
         winget_id:           r.winget_id,
