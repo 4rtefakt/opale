@@ -355,6 +355,12 @@ export async function pollMailboxCursor(db, log, {
     suspect = null
   }
 
+  // Tick non bloqué après au moins une page listée : le mail en échec
+  // (toujours en tête) a été dépassé ou n'est plus dans la plage (déplacé :
+  // nouvel id Graph, supprimé…). Son compteur ne décrit plus rien — sinon
+  // la boîte resterait affichée « bloquée » à tort.
+  if (retry && !blocked && pages + skipPages > 0) retry = null
+
   // Dernier recours : MAX_SKIP_PAGES pages d'ex aequo déjà traités sans rien
   // de nouveau (plus de MAX_SKIP_PAGES × PAGE_SIZE mails dans la même
   // seconde) — le listing inclusif ne dépasserait jamais ce paquet et la

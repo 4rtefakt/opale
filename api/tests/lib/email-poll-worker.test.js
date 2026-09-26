@@ -527,6 +527,28 @@ test('pollOnce : caractère NUL dans sujet / expéditeur / aperçu (mail externe
   }
 )
 
+test('pollOnce : mail en échec déplacé (nouvel id, exclu) → compteur d\'échecs effacé, plus de faux blocage',
+  { skip: SKIP }, async () => {
+    const a = fakeMail({ receivedDateTime: at(1) })
+    const b = fakeMail({ receivedDateTime: at(2) })
+    useGraph({ inbox: [a, b] })
+    await failMappingInsertFor(a)
+    try {
+      await pollOnce(db, null)
+      assert.ok((await cursorState()).retry, 'échec enregistré')
+
+      // L'utilisateur supprime le mail : Éléments supprimés, nouvel id Graph.
+      a.id = `moved-${a.id}`
+      a.parentFolderId = 'deleted-id'
+      await pollOnce(db, null)
+      assert.deepEqual(await ingestedIds(), ids([b]))
+      assert.equal((await cursorState()).retry, null, 'plus de mail en échec devant le curseur')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
 test('pollOnce : curseur modifié par l\'admin pendant un tick (SQL de reprise) → le tick ne l\'écrase pas',
   { skip: SKIP }, async () => {
     // Pendant un blocage, chaque tick réécrit curseur + état : l'UPDATE de
