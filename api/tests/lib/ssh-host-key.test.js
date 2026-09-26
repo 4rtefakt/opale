@@ -36,6 +36,8 @@ test('normalizeFingerprint : préfixe SHA256:, padding et espaces ignorés', () 
   assert.equal(normalizeFingerprint(`SHA256:${fp}`), fp)
   assert.equal(normalizeFingerprint(`${fp}=`), fp)
   assert.equal(normalizeFingerprint(`  SHA256:${fp}=\n`), fp)
+  assert.equal(normalizeFingerprint(`SHA256: ${fp}`), fp)
+  assert.equal(normalizeFingerprint('SHA256:'), null)
   assert.equal(normalizeFingerprint(''), null)
   assert.equal(normalizeFingerprint(null), null)
 })
@@ -189,15 +191,31 @@ test('deux premiers contacts concurrents avec la même clé : tous deux accepté
   assert.equal((await auditRows('ssh_host_key_learned')).length, 1)
 })
 
-test('rekey : la clé est revérifiée contre la base', { skip: SKIP }, async () => {
-  const guard = guardFor()
+test('rekey : comparé à la clé acceptée, sans aller-retour en base', { skip: SKIP }, async () => {
+  let dbDown = false
+  const db = { query: (...args) => dbDown ? Promise.reject(new Error('base indisponible')) : ctx.db.query(...args) }
+  const guard = hostKeyGuard({ db, log: silent }, device)
   assert.equal(await handshake(guard, KEY_A), true)
   assert.equal(await guard.confirm(), true)
-  // ssh2 rappelle le vérificateur à chaque rekey : même clé acceptée sans
-  // nouvel apprentissage, clé différente refusée.
+  // ssh2 rappelle le vérificateur à chaque rekey : une panne de base ne doit
+  // pas couper la session en cours ; une clé différente reste refusée.
+  dbDown = true
   assert.equal(await handshake(guard, KEY_A), true)
+  dbDown = false
   assert.equal(await handshake(guard, KEY_B), false)
   assert.equal((await auditRows('ssh_host_key_learned')).length, 1)
+  assert.equal((await auditRows('ssh_host_key_mismatch')).length, 1)
+})
+
+test('empreinte vide ou réduite au préfixe en base : traitée comme absente et réapprise', { skip: SKIP }, async () => {
+  for (const blank of ['', '   ', 'SHA256:', 'SHA256: =']) {
+    await storeFp(blank)
+    const guard = guardFor()
+    assert.equal(await handshake(guard, KEY_A), true, JSON.stringify(blank))
+    assert.equal(await guard.confirm(), true, JSON.stringify(blank))
+    assert.equal(await loadKnownHostKey(ctx.db, device.id), hostKeyFingerprint(KEY_A))
+  }
+  assert.equal((await auditRows('ssh_host_key_mismatch')).length, 0)
 })
 
 test('poste supprimé entre-temps : refusé', { skip: SKIP }, async () => {

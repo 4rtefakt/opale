@@ -40,9 +40,11 @@
 //
 // Déroulé d'une connexion (hostKeyGuard) :
 //   1. hostVerifier (asynchrone : ssh2 fournit un callback `verify`) relit
-//      l'empreinte en base à chaque poignée de main — rekeys compris — et
-//      refuse toute clé différente AVANT l'authentification. Poste sans
-//      empreinte : accepté en tofu, mais rien n'est encore mémorisé.
+//      l'empreinte en base à la poignée de main initiale et refuse toute clé
+//      différente AVANT l'authentification. Poste sans empreinte : accepté en
+//      tofu, mais rien n'est encore mémorisé. Les rekeys (dans le canal déjà
+//      authentifié) sont comparés en mémoire à la clé acceptée : pas d'aller-
+//      retour en base qui pourrait couper une session en cours.
 //   2. confirm(), appelé sur 'ready' AVANT toute commande, mémorise
 //      l'empreinte (UPDATE … WHERE ssh_host_key_fp IS NULL) : un hôte qui
 //      refuse la clé d'Opale (IP réattribuée à un autre pair) n'est donc pas
@@ -76,7 +78,7 @@ export function hostKeyFingerprint(key) {
 // padding, sans espaces autour.
 export function normalizeFingerprint(fp) {
   if (typeof fp !== 'string') return null
-  const v = fp.trim().replace(/^SHA256:/i, '').replace(/=+$/, '')
+  const v = fp.trim().replace(/^SHA256:/i, '').trim().replace(/=+$/, '')
   return v || null
 }
 
@@ -115,6 +117,7 @@ export async function loadKnownHostKey(db, deviceId) {
 export function hostKeyGuard({ db, log }, device, opts = {}) {
   const policy = opts.policy || hostKeyPolicy(process.env, log)
   let pendingFp = null   // clé acceptée en tofu, à mémoriser sur 'ready'
+  let acceptedFp = null  // clé acceptée à la poignée de main initiale
   let rejected = false
 
   const reject = (message) => {
@@ -156,13 +159,19 @@ export function hostKeyGuard({ db, log }, device, opts = {}) {
   // Ne retourne rien : la réponse passe par `verify`.
   function hostVerifier(key, verify) {
     const fp = hostKeyFingerprint(key)
+    if (acceptedFp) {
+      // Rekey : même clé attendue que pour la poignée de main initiale.
+      if (fp === acceptedFp) return verify(true)
+      mismatch(acceptedFp, fp).finally(() => verify(false))
+      return
+    }
     loadKnownHostKey(db, device.id).then(async (known) => {
       if (known === undefined) {
         reject(`Poste ${device.hostname} introuvable.`)
         return verify(false)
       }
       if (known) {
-        if (fp === known) return verify(true)
+        if (fp === known) { acceptedFp = fp; return verify(true) }
         await mismatch(known, fp)
         return verify(false)
       }
@@ -178,6 +187,7 @@ export function hostKeyGuard({ db, log }, device, opts = {}) {
         return verify(false)
       }
       pendingFp = fp
+      acceptedFp = fp
       verify(true)
     }).catch((err) => {
       dbFailure(err)
@@ -194,8 +204,12 @@ export function hostKeyGuard({ db, log }, device, opts = {}) {
     const fp = pendingFp
     try {
       const { rowCount } = await db.query(
+        // Une valeur vide ou réduite au préfixe (saisie manuelle ratée) compte
+        // comme absente, comme dans normalizeFingerprint.
         `UPDATE devices SET ssh_host_key_fp = $1, ssh_host_key_learned_at = now()
-         WHERE id = $2 AND ssh_host_key_fp IS NULL`,
+         WHERE id = $2
+           AND (ssh_host_key_fp IS NULL
+                OR btrim(regexp_replace(btrim(ssh_host_key_fp), '^SHA256:', '', 'i'), ' =') = '')`,
         [fp, device.id]
       )
       if (rowCount === 1) {
