@@ -240,6 +240,32 @@ test('POST /checkin — agent ≥ 2.15.1 : le re-checkin réserve le lot suivant
   assert.equal(await statusOf('deployments', eleventh.id), 'running')
 })
 
+test('POST /checkin — version non strictement X.Y.Z (rc, x, espace…) : traitée comme un ancien agent', { skip: SKIP }, async () => {
+  // Une partie non numérique valait 0 : « 2.16.0-rc1 » ou « 2.16 » passaient
+  // pour ≥ 2.15.1. Dans le doute, rien n'est réservé dans une réponse que
+  // l'agent pourrait ignorer (les travaux attendent un checkin sans résultat).
+  const followUpOf = (hostname, agent_version) => ({
+    hostname, agent_version,
+    deployment_results: [{ deployment_id: '00000000-0000-4000-8000-000000000000', exit_code: 0 }],
+  })
+  const versions = ['2.16.0-rc1', '2.16.x', ' 2.16.0', '2.16', 'v2.16.0', '2.16.0.1']
+  for (const [i, version] of versions.entries()) {
+    const device = await seedDevice(db, { hostname: `PC-SEMVER-${i}` })
+    const { secret } = await seedAgentToken(db, { deviceId: device.id })
+    const { dep } = await snapshottedDeployment(device.id, `Pkg Semver ${i}`)
+    const res = await checkin(secret, followUpOf(device.hostname, version))
+    assert.equal(res.statusCode, 200, res.body)
+    assert.deepEqual(res.json().deployments, [], `« ${version} » : déploiement réservé dans une réponse peut-être ignorée`)
+    assert.equal(await statusOf('deployments', dep.id), 'pending')
+  }
+  // Témoin : version stricte ≥ 2.15.1.
+  const device = await seedDevice(db, { hostname: 'PC-SEMVER-STRICT' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const { dep } = await snapshottedDeployment(device.id, 'Pkg Semver Strict')
+  const res = await checkin(secret, followUpOf(device.hostname, '2.16.0'))
+  assert.deepEqual(res.json().deployments.map(d => d.deployment_id), [dep.id])
+})
+
 // ─── Détection post-install : package_id ────────────────────────────────────
 
 async function softwareRows(deviceId) {

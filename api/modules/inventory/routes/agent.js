@@ -167,6 +167,15 @@ function isMaintenanceWindowActive(w, now) {
 // propose une mise à jour (exécutés avant de l'appliquer). Cf. checkin.
 const AGENT_PROCESSES_EVERY_RESPONSE = '2.15.1'
 
+// true si l'agent traite toute réponse de checkin. Version stricte X.Y.Z
+// exigée : semverGt compte une partie non numérique pour 0 (« 2.16.0-rc1 »,
+// « 2.16 », « 2.16.x » passeraient) ; dans le doute, ancien agent.
+function processesEveryResponse(agentVersion) {
+  return typeof agentVersion === 'string'
+    && /^\d+\.\d+\.\d+$/.test(agentVersion)
+    && !semverGt(AGENT_PROCESSES_EVERY_RESPONSE, agentVersion)
+}
+
 function semverGt(a, b) {
   const pa = String(a).split('.').map(Number)
   const pb = String(b).split('.').map(Number)
@@ -1280,7 +1289,7 @@ export default async function agentRoute(fastify) {
     // une ré-approbation ou un retour en draft pendant le checkin est pris
     // en compte. Ordre d'envoi : celui de la sélection.
     //
-    // Agent < 2.15.1 (ou sans version) : il ignore la réponse (1) du
+    // Agent < 2.15.1 (ou sans version stricte) : il ignore la réponse (1) du
     // re-checkin qui remonte ses résultats de déploiement, (2) de tout
     // checkin qui lui propose une mise à jour (il retourne avant les travaux :
     // ≤ 2.14 mise à jour réussie ou non, et faute de redémarrage effectif
@@ -1289,8 +1298,8 @@ export default async function agentRoute(fastify) {
     // tournerait jamais ('running' → timeout) : rien n'est réservé, les
     // lignes restent 'pending' pour le checkin suivant, dont il traite la
     // réponse.
-    const legacyAgent = !agent_version || semverGt(AGENT_PROCESSES_EVERY_RESPONSE, agent_version)
-    const responseIgnored = legacyAgent && (agentUpdate !== null || deployment_results.length > 0)
+    const responseIgnored = !processesEveryResponse(agent_version)
+      && (agentUpdate !== null || deployment_results.length > 0)
     let scriptsToSend = []
     let deploymentsToSend = []
     if (!responseIgnored && (pendingScripts.rows.length || pendingDeployments.rows.length)) {
