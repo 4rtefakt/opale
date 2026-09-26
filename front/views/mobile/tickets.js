@@ -260,7 +260,7 @@ export async function renderTickets(el) {
           lst.innerHTML = users.length
             ? users.map(u => `
                 <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-                  onclick="mNtiApplyRequester('${esc(u.entra_id)}', ${mJsArg(u.display_name || '')}, ${mJsArg(u.email || '')})">
+                  onclick="mNtiApplyRequester(${mJsArg(u.entra_id)}, ${mJsArg(u.display_name || '')}, ${mJsArg(u.email || '')})">
                   <div style="font-size:13px">${esc(u.display_name)}</div>
                   ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
                 </div>`).join('')

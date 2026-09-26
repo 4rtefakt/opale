@@ -1039,7 +1039,7 @@ function renderRelatedUsers(tk) {
         ${userLink(u.entra_id, u.display_name || u.entra_id)} ${roleBadge}
       </div>
       <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text-tertiary)"
-        onclick="tkRemoveUser('${tk.id}','${u.entra_id}')" title="${esc(t('tickets.related_users.remove'))}">
+        onclick="tkRemoveUser('${tk.id}',${jsArg(u.entra_id)})" title="${esc(t('tickets.related_users.remove'))}">
         <i class="ti ti-x" style="font-size:11px"></i>
       </button>
     </div>`
@@ -1405,7 +1405,7 @@ async function tkOpenAssigneePickerOnTicket(id) {
         list.innerHTML = users.length
           ? users.map(u => `
               <div class="user-row" style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-                onclick="window.tkPickAssignee('${u.entra_id}', ${jsArg(u.display_name)})">
+                onclick="window.tkPickAssignee(${jsArg(u.entra_id)}, ${jsArg(u.display_name)})">
                 <div style="font-size:13px">${esc(u.display_name)}</div>
                 ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
               </div>`).join('')
@@ -1448,7 +1448,7 @@ async function tkOpenRequesterPicker(id) {
         list.innerHTML = users.length
           ? users.map(u => `
               <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-                onclick="window.tkPickRequester('${u.entra_id}')">
+                onclick="window.tkPickRequester(${jsArg(u.entra_id)})">
                 <div style="font-size:13px">${esc(u.display_name)}</div>
                 ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
               </div>`).join('')
@@ -1880,7 +1880,7 @@ function tkOpenAssignedPicker() {
         list.innerHTML = users.length
           ? users.map(u => `
               <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-                onclick="window.tkPickAssignedFilter('${u.entra_id}', ${jsArg(u.display_name)})">
+                onclick="window.tkPickAssignedFilter(${jsArg(u.entra_id)}, ${jsArg(u.display_name)})">
                 <div style="font-size:13px">${esc(u.display_name)}</div>
                 ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
               </div>`).join('')
@@ -2533,7 +2533,7 @@ function openNewTicketModal({ prefillDevice = null } = {}) {
       lst.innerHTML = users.length
         ? users.map(u => `
             <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-              onclick="window.ntApplyAssignee('${u.entra_id}', ${jsArg(u.display_name)})">
+              onclick="window.ntApplyAssignee(${jsArg(u.entra_id)}, ${jsArg(u.display_name)})">
               <div style="font-size:13px">${esc(u.display_name)}</div>
               ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
             </div>`).join('')
@@ -2586,7 +2586,7 @@ function openNewTicketModal({ prefillDevice = null } = {}) {
       lst.innerHTML = users.length
         ? users.map(u => `
             <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-              onclick="window.ntApplyRequester('${u.entra_id}', ${jsArg(u.display_name)}, ${jsArg(u.email || '')})">
+              onclick="window.ntApplyRequester(${jsArg(u.entra_id)}, ${jsArg(u.display_name)}, ${jsArg(u.email || '')})">
               <div style="font-size:13px">${esc(u.display_name)}</div>
               ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
             </div>`).join('')

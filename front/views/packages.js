@@ -720,7 +720,7 @@ window.pkgUserSearch = (q) => {
       } else {
         results.innerHTML = users.map(u => `
           <div style="padding:8px 12px;cursor:pointer;font-size:13px" onmouseover="this.style.background='var(--bg-secondary)'" onmouseout="this.style.background=''"
-               onclick="pkgSelectUser('${esc(u.entra_id)}', ${jsArg(u.display_name || '')}, ${jsArg(u.email || '')})">
+               onclick="pkgSelectUser(${jsArg(u.entra_id)}, ${jsArg(u.display_name || '')}, ${jsArg(u.email || '')})">
             <div style="font-weight:500">${esc(u.display_name)}</div>
             ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
           </div>`).join('')

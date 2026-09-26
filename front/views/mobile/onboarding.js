@@ -364,7 +364,7 @@ async function mObSearchManager(q) {
       drop.style.display = 'block'
       drop.innerHTML = users.map(u => `
         <div style="padding:8px 10px;cursor:pointer;font-size:13px;border-bottom:0.5px solid var(--border)"
-          onclick="mObPickManager('${esc(u.entra_id)}', ${mObJsArg(u.display_name || '')})">
+          onclick="mObPickManager(${mObJsArg(u.entra_id)}, ${mObJsArg(u.display_name || '')})">
           <div style="font-weight:500">${esc(u.display_name)}</div>
           <div style="font-size:11px;color:var(--text-tertiary)">${esc(u.job_title || u.email || '')}</div>
         </div>`).join('')

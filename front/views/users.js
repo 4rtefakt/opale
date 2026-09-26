@@ -176,7 +176,7 @@ function tableRow(u) {
     ? `<a href="#/postes/${esc(u.device.id)}" style="color:var(--blue);text-decoration:none;font-size:12px"><i class="ti ti-device-laptop"></i> ${esc(u.device.hostname)}</a>`
     : `<span style="color:var(--text-tertiary);font-size:12px">—</span>`
 
-  return `<tr onclick="navigateTo('/users/${esc(u.entra_id)}')" style="cursor:pointer">
+  return `<tr onclick="navigateTo(${jsArg('/users/' + u.entra_id)})" style="cursor:pointer">
     <td>${avatarInner}</td>
     <td style="font-weight:500">${esc(u.display_name || '—')}</td>
     <td style="color:var(--text-secondary)">${esc(u.job_title || '—')}</td>
@@ -259,7 +259,7 @@ function userCard(u) {
     : `<div class="user-card-initials" style="display:flex;color:${fg};background:${bg}">${esc(ini)}</div>`
 
   return `
-    <div class="user-card" onclick="navigateTo('/users/${esc(u.entra_id)}')" style="cursor:pointer">
+    <div class="user-card" onclick="navigateTo(${jsArg('/users/' + u.entra_id)})" style="cursor:pointer">
       <div class="user-card-avatar" style="background:${bg}" data-uid="${esc(u.entra_id)}" data-fg="${fg}" data-bg="${bg}" data-ini="${esc(ini)}">
         ${avatarInner}
       </div>

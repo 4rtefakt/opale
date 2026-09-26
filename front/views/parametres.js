@@ -363,7 +363,7 @@ function render() {
               <div style="font-size:13px;font-weight:500">${esc(u.display_name || '—')}</div>
               <div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email || '—')}</div>
             </div>
-            <button class="btn btn-sm" onclick="revokeAdmin('${esc(u.entra_id)}')"
+            <button class="btn btn-sm" onclick="revokeAdmin(${jsArg(u.entra_id)})"
               style="color:var(--red);flex-shrink:0">
               <i class="ti ti-x"></i> ${t('settings.admins.btn.revoke')}
             </button>
@@ -644,7 +644,7 @@ async function showAddAdminModal() {
         list.innerHTML = users.length
           ? users.map(u => `
               <div style="padding:8px 10px;cursor:pointer;border-bottom:0.5px solid var(--border)"
-                onclick="window._addAdmin('${u.entra_id}')">
+                onclick="window._addAdmin(${jsArg(u.entra_id)})">
                 <div style="font-size:13px">${esc(u.display_name)}</div>
                 ${u.email ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(u.email)}</div>` : ''}
               </div>`).join('')
