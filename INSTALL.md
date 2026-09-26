@@ -98,14 +98,14 @@ keeps working.
 | Feature | Permission | Graph calls |
 |---|---|---|
 | Intune import (*Sync Intune* in the device list and in Settings) | `DeviceManagementManagedDevices.Read.All` | `GET /deviceManagement/managedDevices` |
-| Intune remote sync (*Sync Intune* button on a device page) | `DeviceManagementManagedDevices.PrivilegedOperations.All` ⚠️ | `POST /deviceManagement/managedDevices/{id}/syncDevice` |
+| Intune remote sync (*Sync Intune* in the device list's selection bar, on a device page, and in the mobile device page/list) | `DeviceManagementManagedDevices.PrivilegedOperations.All` ⚠️ | `POST /deviceManagement/managedDevices/{id}/syncDevice` |
 | Entra groups: group search, native groups imported from Entra, deployments to an Entra group and their hourly sync | `GroupMember.Read.All` | `GET /groups?$search=…`, `GET /groups/{id}/members/microsoft.graph.device`, `GET /groups/{id}/members/microsoft.graph.user` |
 | Entra groups (same) | `Device.Read.All` | Same `…/members/microsoft.graph.device` call: without it Graph returns device members with their `id` only, so no hostname matches |
 | Onboarding automation: *create account* | `User.ReadWrite.All` ⚠️ | `POST /users` |
 | Onboarding automation: *disable account* | `User.EnableDisableAccount.All` ¹ | `PATCH /users/{id}` (`accountEnabled`) |
 | Onboarding automation: *revoke sessions* | `User.RevokeSessions.All` ¹ | `POST /users/{id}/revokeSignInSessions` |
 | Onboarding automation: *assign licence*, *assign groups* | `GroupMember.ReadWrite.All` ⚠️ | `POST /groups/{id}/members/$ref` |
-| Email bridge, reading (`mail.poll_enabled`, `mail.sent_poll_enabled`, `scripts/backfill-sent-mail.js`) | `Mail.Read` ⚠️ ² | `GET /users/{mailbox}/messages`, `…/messages/{id}`, `…/mailFolders/{well-known name}`, `…/mailFolders/sentitems/messages` |
+| Email bridge, reading (`mail.poll_enabled`, `mail.sent_poll_enabled`, `api/scripts/backfill-sent-mail.js`) | `Mail.Read` ⚠️ ² | `GET /users/{mailbox}/messages`, `…/messages/{id}`, `…/mailFolders/{well-known name}`, `…/mailFolders/sentitems/messages` |
 | Email bridge, *mark as read* (`mail.mark_as_read_enabled`) and threaded replies (`mail.send_enabled`) | `Mail.ReadWrite` ⚠️ ² (replaces `Mail.Read`) | `PATCH /users/{mailbox}/messages/{id}`, `POST …/messages/{id}/createReply` |
 | Email bridge, sending (`mail.send_enabled`) | `Mail.Send` ⚠️ ² | `POST /users/{mailbox}/sendMail`, `POST …/messages/{id}/send` |
 
@@ -154,7 +154,8 @@ permission you added switches to ✅ Granted.
 
   ```powershell
   Connect-ExchangeOnline
-  # Tag every mailbox Opale may use, then build a scope on that tag
+  # Tag every mailbox Opale may use with a custom attribute your tenant
+  # doesn't already use (CustomAttribute15 here), then build a scope on it
   Set-Mailbox -Identity helpdesk@example.com -CustomAttribute15 "opale"
   New-ManagementScope -Name "Opale mailboxes" -RecipientRestrictionFilter "CustomAttribute15 -eq 'opale'"
   # ObjectId = Enterprise applications → Opale → Object ID (not the app registration's)
