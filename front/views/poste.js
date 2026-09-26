@@ -110,9 +110,9 @@ function renderBody() {
             ${d.ssh_host_key_fp ? hwRowRaw('ti-key', 'Clé d\'hôte SSH', `
               <span title="${esc('Empreinte SHA-256 apprise au premier contact' + (d.ssh_host_key_learned_at ? ' le ' + new Date(d.ssh_host_key_learned_at).toLocaleString('fr-FR') : ''))}"
                     style="font-family:var(--font-mono,monospace);font-size:11px">${esc(d.ssh_host_key_fp.slice(0, 16))}…</span>
-              <button class="btn btn-sm" style="margin-left:6px" onclick="resetSshHostKey()"
+              ${window.appState?.user?.isAdmin ? `<button class="btn btn-sm" style="margin-left:6px" onclick="resetSshHostKey()"
                       title="À faire seulement après une réinstallation du poste : l'empreinte sera réapprise au prochain accès SSH">
-                <i class="ti ti-refresh"></i> Réinitialiser</button>`) : ''}
+                <i class="ti ti-refresh"></i> Réinitialiser</button>` : ''}`) : ''}
             ${d.compliance_state ? hwRow('ti-shield-check', t('poste.hw.compliance'), complianceBadge(d.compliance_state)) : ''}
             ${d.join_type        ? hwRow('ti-cloud',         t('poste.hw.join_type'),   formatJoinType(d.join_type)) : ''}
             ${d.enrolled_at      ? hwRow('ti-calendar', t('poste.hw.enrolled'),    formatWithDate(d.enrolled_at)) : ''}
