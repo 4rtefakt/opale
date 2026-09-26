@@ -107,10 +107,12 @@ Les lectures côté source utilisent `WHERE (pk) > $cursor ORDER BY pk ASC LIMIT
 
 ### FK auto-référentielle
 
-`agent_tokens.replaced_by` pointe vers la même table. Pour éviter les violations
-FK pendant l'INSERT initial, la colonne est insérée à `NULL` en première passe,
-puis une seconde passe `UPDATE … SET replaced_by = …` rétablit le lien depuis
-les valeurs source.
+`agent_tokens.replaced_by`, `tickets.merged_into` (tickets fusionnés) et
+`remote_sessions.takeover_of` (prise de main) pointent vers la même table. Pour
+éviter les violations FK pendant l'INSERT initial (la ligne visée peut arriver
+plus tard dans l'ordre de pagination), la colonne est insérée à `NULL` en
+première passe, puis une seconde passe `UPDATE … SET <colonne> = …` rétablit le
+lien depuis les valeurs source.
 
 ### Tolérance dérive de schéma
 
@@ -118,12 +120,40 @@ Si une colonne existe d'un côté mais pas de l'autre, elle est ignorée avec un
 warning (`columns present on source but not target` ou inverse). Permet une
 migration cross-version mineure sans bloquer.
 
+### Couverture du schéma
+
+Toute table du schéma est soit copiée (`TABLES` dans `tables.js`), soit exclue
+explicitement (`EXCLUDED_TABLES`, avec la raison). Le test
+`api/tests/scripts/migrate-instance-tables.test.js` applique les migrations dans
+un schéma scratch et échoue si une table manque, si une entrée est obsolète, si
+l'ordre viole une clé étrangère ou si un `conflictTarget` ne correspond à aucune
+contrainte d'unicité : ajouter une table dans une migration impose de l'ajouter
+ici.
+
 ### Tables exclues
 
 - `schema_migrations` : chaque instance gère son propre historique (table
   du runner de migrations, remplie au démarrage de l'API cible)
 - `device_software` : cache régénéré par les agents au prochain checkin
+- `ssh_sessions_archive_pre046` : archive de rollback de la migration 046, dont
+  les lignes ont déjà été copiées dans `remote_sessions`
 - `monitors`, `ticket_history` : ces tables n'existent pas dans le schéma actuel
+
+### Scripts intégrés (migration 040)
+
+Les migrations créent sur CHAQUE instance les scripts intégrés (`is_builtin`),
+avec des `id` aléatoires différents d'une instance à l'autre mais la même
+`builtin_key` (unique). Copier ceux de la source sur une cible déjà migrée
+échoue (`scripts_builtin_key_idx`) et interrompt toute la migration. Sur la
+cible, **avant** la migration, supprimer ses scripts intégrés : ceux de la
+source sont alors copiés avec leurs `id`, que référencent ses
+`script_executions` (étape 4 de la checklist).
+
+### Pièces jointes des tickets
+
+`ticket_attachments` ne contient que les métadonnées. Les fichiers vivent sur
+disque (`ATTACHMENTS_DIR`, volume `attachments_data`) : les copier à part, en
+conservant l'arborescence `<ticket_id>/<uuid>`.
 
 ### Séquences PostgreSQL
 
@@ -146,8 +176,11 @@ l'ajout futur d'une colonne `BIGSERIAL` ne nécessitera pas de modif du script.
        → vérifier les row counts par table
 
 4. [ ] MIGRATION
+       → sur la CIBLE d'abord (scripts intégrés re-créés par ses migrations, cf. plus haut) :
+         psql "$TARGET_DSN" -c "DELETE FROM scripts WHERE is_builtin"
        SOURCE_DSN=… TARGET_DSN=… node scripts/migrate-instance/migrate.js | tee migration.jsonl
        → vérifier "migration completed" en queue, exit code 0
+       → copier les fichiers de pièces jointes (volume attachments_data)
 
 5. [ ] VERIFY
        SOURCE_DSN=… TARGET_DSN=… node scripts/migrate-instance/migrate.js --verify
@@ -183,7 +216,8 @@ done
 # 3. Peupler la source (snapshot prod ou fixtures custom)
 cat snapshot.sql | docker exec -i mig-src psql -U postgres -d src
 
-# 4. Migrer + verify
+# 4. Migrer + verify (après suppression des scripts intégrés de la cible)
+docker exec -i mig-dst psql -U postgres -d dst -c "DELETE FROM scripts WHERE is_builtin"
 SOURCE_DSN=postgres://postgres:test@localhost:55432/src \
 TARGET_DSN=postgres://postgres:test@localhost:55433/dst \
   node scripts/migrate-instance/migrate.js
