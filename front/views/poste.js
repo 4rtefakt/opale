@@ -623,7 +623,7 @@ async function lapsRequestRotation() {
     await window.api.rotateAdminCredential(_device.id)
     showToast('Rotation demandée — effective au prochain checkin', 'success')
     _device = await window.api.getDevice(_device.id)
-    renderBody()
+    renderBodyAndPanels()
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   }
