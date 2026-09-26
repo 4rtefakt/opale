@@ -47,6 +47,16 @@ func HandleAgentUpdate(ctx context.Context, cfg *Config, st *State, upd *AgentUp
 		// Le serveur peut ré-envoyer la même version par paranoïa ; ignore.
 		return nil
 	}
+	if st.RolledBackVersion != "" && upd.LatestVersion == st.RolledBackVersion {
+		// Cette version a déjà échoué ici (rollback) : la réinstaller
+		// relancerait la boucle update → 2 checkins KO → rollback, avec un
+		// téléchargement complet à chaque tour. Une version plus récente
+		// est acceptée.
+		logInfo("update-skipped-rolled-back", "version déjà annulée par rollback sur ce poste", LogFields{
+			"version": upd.LatestVersion,
+		})
+		return nil
+	}
 	logInfo("update-start", "", LogFields{"from": AgentVersion, "to": upd.LatestVersion})
 
 	// 1. Télécharger
@@ -199,6 +209,9 @@ func CheckRollback(st *State, lastCheckinErr error) {
 		return
 	}
 	logInfo("rollback-applied", "binaire restauré", LogFields{"to": "previous"})
+	// Mémorise la version annulée : elle ne sera plus réinstallée (cf.
+	// HandleAgentUpdate), seule une version plus récente le sera.
+	st.RolledBackVersion = st.LastUpdateVersion
 	// Reset l'état pour que la prochaine instance ne re-rollback pas
 	st.LastUpdateAt = time.Time{}
 	st.LastUpdateVersion = ""

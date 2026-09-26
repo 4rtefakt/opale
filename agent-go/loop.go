@@ -54,9 +54,13 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 			if err := HandleAgentUpdate(c, cfg, st, resp.AgentUpdate); err != nil {
 				logError("update-fail", err, LogFields{"target_version": resp.AgentUpdate.LatestVersion})
 			}
-			// Si l'update a abouti, le service va redémarrer ; on évite de
-			// déclencher des déploiements potentiellement longs.
-			return
+			// Binaire permuté : le service va redémarrer, on évite de
+			// déclencher des déploiements potentiellement longs. Update
+			// ignorée (version déjà annulée par rollback) ou en échec : les
+			// commandes et déploiements suivent normalement.
+			if swappedVersion != "" {
+				return
+			}
 		}
 	}
 

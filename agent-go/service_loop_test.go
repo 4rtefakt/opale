@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -272,5 +274,49 @@ func TestCheckRollback_IgnoredWhileRestartPending(t *testing.T) {
 	}
 	if st.FailedSinceUpdate != 0 || restarts.Load() != 0 {
 		t.Fatalf("échecs de l'ancienne image comptés contre le nouveau binaire : failed=%d restarts=%d", st.FailedSinceUpdate, restarts.Load())
+	}
+}
+
+// Une version qui a échoué (rollback) ne doit plus être réinstallée : sinon
+// update → 2 checkins KO → rollback → même version reproposée, en boucle.
+// Une version plus récente est acceptée.
+func TestCheckRollback_RecordsAndSkipsRolledBackVersion(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RMM_DATA_DIR", dir)
+	var restarts atomic.Int32
+	origRestart := restartServiceFn
+	restartServiceFn = func() error { restarts.Add(1); return nil }
+	defer func() { restartServiceFn = origRestart }()
+
+	// Binaire courant (nouvelle version cassée) + backup (version précédente).
+	if err := os.WriteFile(binaryPath(), []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupPath(), []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st := &State{LastUpdateAt: time.Now().UTC(), LastUpdateVersion: "9.9.9", FailedSinceUpdate: MaxFailedSinceUpdate - 1}
+	CheckRollback(st, context.DeadlineExceeded)
+	if restarts.Load() != 1 {
+		t.Fatalf("rollback attendu (redémarrages=%d)", restarts.Load())
+	}
+	if st.RolledBackVersion != "9.9.9" {
+		t.Fatalf("version annulée non mémorisée : %q", st.RolledBackVersion)
+	}
+	if raw, _ := os.ReadFile(binaryPath()); string(raw) != "old" {
+		t.Fatalf("binaire non restauré : %q", raw)
+	}
+
+	cfg := &Config{Token: "t", URL: "http://127.0.0.1:1"} // injoignable
+	if err := HandleAgentUpdate(context.Background(), cfg, st, &AgentUpdate{
+		LatestVersion: "9.9.9", SHA256: "00", Signature: "AA==",
+	}); err != nil {
+		t.Fatalf("version annulée : attendu nil sans téléchargement, reçu %v", err)
+	}
+	// Version plus récente : acceptée (le téléchargement est tenté et échoue ici).
+	if err := HandleAgentUpdate(context.Background(), cfg, st, &AgentUpdate{
+		LatestVersion: "9.9.10", SHA256: "00", Signature: "AA==",
+	}); err == nil || !strings.Contains(err.Error(), "download") {
+		t.Fatalf("version plus récente : téléchargement attendu, reçu %v", err)
 	}
 }
