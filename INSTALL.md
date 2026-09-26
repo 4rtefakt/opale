@@ -76,18 +76,119 @@ recommended → copy the **Value** immediately (it's only shown once).
 
 ### 3.2 Grant API permissions
 
+The API calls Microsoft Graph **app-only**: it gets its token with the
+OAuth 2.0 client-credentials flow (secret from step 3.1, scope
+`https://graph.microsoft.com/.default`). Every application permission
+consented here therefore applies to the **whole tenant**, whoever is
+signed in to Opale. Grant only what the features you use need: a feature
+whose permission is missing fails with a Graph 403, the rest of Opale
+keeps working.
+
 **API permissions** → **+ Add a permission** → **Microsoft Graph** →
 **Application permissions** (not delegated). Add:
 
-| Permission | What it's used for |
-|---|---|
-| `User.Read.All` | Resolve users assigned to a device, fetch profile photos |
-| `Device.Read.All` | List managed devices |
-| `DeviceManagementManagedDevices.Read.All` | Pull Intune compliance data |
-| `GroupMember.Read.All` | Verify admin groups, assign onboarding groups |
+**Core (required)**
 
-Then click **Grant admin consent for &lt;tenant&gt;**. All four permissions
-should switch to ✅ Granted.
+| Permission | Graph calls | Used for |
+|---|---|---|
+| `User.Read.All` | `GET /users` (list and `$search`), `GET /users/{id}`, `GET /users/{id}/photo/$value` | Staff directory and *sync all users*, user details, profile photos, user picker in onboarding |
+
+**Optional, per feature**
+
+| Feature | Permission | Graph calls |
+|---|---|---|
+| Intune import (*Sync Intune* in the device list and in Settings) | `DeviceManagementManagedDevices.Read.All` | `GET /deviceManagement/managedDevices` |
+| Intune remote sync (*Sync Intune* button on a device page) | `DeviceManagementManagedDevices.PrivilegedOperations.All` ⚠️ | `POST /deviceManagement/managedDevices/{id}/syncDevice` |
+| Entra groups: group search, native groups imported from Entra, deployments to an Entra group and their hourly sync | `GroupMember.Read.All` | `GET /groups?$search=…`, `GET /groups/{id}/members/microsoft.graph.device`, `GET /groups/{id}/members/microsoft.graph.user` |
+| Entra groups (same) | `Device.Read.All` | Same `…/members/microsoft.graph.device` call: without it Graph returns device members with their `id` only, so no hostname matches |
+| Onboarding automation: *create account* | `User.ReadWrite.All` ⚠️ | `POST /users` |
+| Onboarding automation: *disable account* | `User.EnableDisableAccount.All` ¹ | `PATCH /users/{id}` (`accountEnabled`) |
+| Onboarding automation: *revoke sessions* | `User.RevokeSessions.All` ¹ | `POST /users/{id}/revokeSignInSessions` |
+| Onboarding automation: *assign licence*, *assign groups* | `GroupMember.ReadWrite.All` ⚠️ | `POST /groups/{id}/members/$ref` |
+| Email bridge, reading (`mail.poll_enabled`, `mail.sent_poll_enabled`, `scripts/backfill-sent-mail.js`) | `Mail.Read` ⚠️ ² | `GET /users/{mailbox}/messages`, `…/messages/{id}`, `…/mailFolders/{well-known name}`, `…/mailFolders/sentitems/messages` |
+| Email bridge, *mark as read* (`mail.mark_as_read_enabled`) and threaded replies (`mail.send_enabled`) | `Mail.ReadWrite` ⚠️ ² (replaces `Mail.Read`) | `PATCH /users/{mailbox}/messages/{id}`, `POST …/messages/{id}/createReply` |
+| Email bridge, sending (`mail.send_enabled`) | `Mail.Send` ⚠️ ² | `POST /users/{mailbox}/sendMail`, `POST …/messages/{id}/send` |
+
+¹ Not needed when `User.ReadWrite.All` is granted, which covers both. If
+the step still returns 403 with the dedicated permission, check Microsoft's
+current Graph permissions reference.
+
+² With Exchange **RBAC for Applications** (see *Hardening* below), assign
+these in Exchange Online instead of here.
+
+Ask Opale makes no Graph call, and the code uses no other Graph permission
+(no `Directory.*`, no `Group.Read.All`). ⚠️ marks high-impact permissions:
+
+- `Mail.Read` / `Mail.ReadWrite` / `Mail.Send`: read, alter or delete mail
+  in, or send as, **any mailbox of the tenant** (executives, HR,
+  finance…). Restrict them to the helpdesk mailbox(es).
+- `User.ReadWrite.All`: write access to every non-admin user object.
+- `GroupMember.ReadWrite.All`: add anyone to any group that is not
+  role-assignable (licences, app access, Conditional Access exclusions…).
+- `DeviceManagementManagedDevices.PrivilegedOperations.All`: also allows
+  remote wipe, retire and lock of every Intune device.
+
+**Delegated side.** The web UI (MSAL) and the CLI only request Opale's own
+scope `api://<client-id>/access_as_user` (plus the standard `openid`,
+`profile`, `offline_access`). Create it under **Expose an API** as described
+in [docs/CLI.md](docs/CLI.md) (*Setup Microsoft Entra*, step 3). No
+delegated Microsoft Graph permission is needed; the default `User.Read` is
+not used.
+
+Then click **Grant admin consent for &lt;tenant&gt;** and check that every
+permission you added switches to ✅ Granted.
+
+#### Hardening (recommended)
+
+- **Restrict sign-in.** **Enterprise applications** → *Opale* →
+  **Properties** → *Assignment required?* = **Yes**, then **Users and
+  groups** → assign only your IT/admin group (the web UI only admits Opale
+  admins anyway, and the CLI uses the same app). The first admin of step 6
+  must be in that group. The API's app-only token is not affected.
+- **Scope the mail permissions to the helpdesk mailbox(es)**: every
+  address in `mail.inboxes`, `mail.sent_mailboxes` and
+  `mail.sender_address`. Preferred: Exchange Online **RBAC for
+  Applications**. Its grants add up with the Entra ones, so do **not**
+  grant `Mail.*` in Entra (remove them and revoke their consent if already
+  granted) and assign them in Exchange only:
+
+  ```powershell
+  Connect-ExchangeOnline
+  # Tag every mailbox Opale may use, then build a scope on that tag
+  Set-Mailbox -Identity helpdesk@example.com -CustomAttribute15 "opale"
+  New-ManagementScope -Name "Opale mailboxes" -RecipientRestrictionFilter "CustomAttribute15 -eq 'opale'"
+  # ObjectId = Enterprise applications → Opale → Object ID (not the app registration's)
+  New-ServicePrincipal -AppId <client-id> -ObjectId <enterprise-app-object-id> -DisplayName "Opale"
+  # Only the roles your mail features need: Mail.Read, or Mail.ReadWrite + Mail.Send
+  New-ManagementRoleAssignment -App <client-id> -Role "Application Mail.ReadWrite" -CustomResourceScope "Opale mailboxes"
+  New-ManagementRoleAssignment -App <client-id> -Role "Application Mail.Send" -CustomResourceScope "Opale mailboxes"
+  # InScope must be True for the helpdesk mailbox, False for any other one
+  Test-ServicePrincipalAuthorization -Identity <client-id> -Resource helpdesk@example.com
+  Test-ServicePrincipalAuthorization -Identity <client-id> -Resource someone.else@example.com
+  ```
+
+  Legacy alternative, which keeps the `Mail.*` grants in Entra and
+  restricts them:
+
+  ```powershell
+  New-DistributionGroup -Name "Opale mailboxes" -Alias opale-mailboxes -Type Security -Members helpdesk@example.com
+  New-ApplicationAccessPolicy -AppId <client-id> -PolicyScopeGroupId opale-mailboxes@example.com `
+    -AccessRight RestrictAccess -Description "Opale: helpdesk mailboxes only"
+  Test-ApplicationAccessPolicy -Identity helpdesk@example.com -AppId <client-id>      # Granted
+  Test-ApplicationAccessPolicy -Identity someone.else@example.com -AppId <client-id>  # Denied
+  ```
+
+  Either way, changes can take up to about two hours to apply.
+- **Remove what you don't use.** Delete every permission not needed by
+  your features (e.g. `Device.Read.All` without Entra groups,
+  `Group.Read.All`, `Directory.*`). Removing a permission from the list
+  does not revoke its consent: under *Other permissions granted for
+  &lt;tenant&gt;*, use **Revoke admin consent**.
+- **Credentials.** Prefer a secret shorter-lived than the 24 months of
+  step 3.1, store it only in `.env`, and rotate it: new secret → update
+  `ENTRA_CLIENT_SECRET` → restart the API → delete the old secret. A
+  certificate credential would be safer, but the API currently only
+  supports a client secret.
 
 ### 3.3 Add the redirect URI
 
