@@ -21,13 +21,15 @@ export function ed25519KeyPair() {
 // où `state.execs` compte les commandes réellement reçues (0 si la poignée de
 // main a été refusée côté client avant authentification). `rejectAuth` :
 // hôte qui refuse la clé d'Opale (IP réattribuée à un autre pair).
-export async function startFakeSshServer(t, { output = 'ok', exitCode = 0, rejectAuth = false } = {}) {
+// `endOnReady` : hôte qui raccroche juste après l'authentification.
+export async function startFakeSshServer(t, { output = 'ok', exitCode = 0, rejectAuth = false, endOnReady = false } = {}) {
   const hostKey = ed25519KeyPair()
   const state = { execs: 0 }
   const server = new SshServer({ hostKeys: [hostKey.private] }, (client) => {
     client.on('error', () => {})
     client.on('authentication', (ctx) => (rejectAuth ? ctx.reject() : ctx.accept()))
     client.on('ready', () => {
+      if (endOnReady) { client.end(); return }
       client.on('session', (accept) => {
         const session = accept()
         const reply = (acceptStream) => {
@@ -69,4 +71,14 @@ export function sshClientEnv(t, port) {
     SSH_USER: 'opale',
     SSH_PRIVATE_KEY_B64: Buffer.from(clientKey.private).toString('base64'),
   })
+}
+
+// Collecte les rejets de promesse non gérés pendant un test : sans
+// gestionnaire, Node 22 arrête le processus de l'API.
+export function trackUnhandledRejections(t) {
+  const seen = []
+  const onRejection = (reason) => seen.push(String(reason?.message || reason))
+  process.on('unhandledRejection', onRejection)
+  t.after(() => process.off('unhandledRejection', onRejection))
+  return seen
 }

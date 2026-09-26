@@ -22,6 +22,7 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
     const output = []
     const t0 = Date.now()
     let hostKeyRejection = null
+    let sshFailed = false
     // Clé d'hôte vérifiée avant authentification, mémorisée sur 'ready' au
     // premier contact (cf. remote/lib/ssh-host-key.js).
     const guard = hostKeyGuard(
@@ -29,8 +30,11 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
       { onReject: (msg) => { hostKeyRejection = msg } }
     )
 
-    conn.on('ready', async () => {
-      if (!(await guard.confirm())) {
+    // Pas de gestionnaire async sur 'ready' : si l'hôte raccroche pendant
+    // confirm(), conn.exec() lève « Not connected », et l'exception
+    // deviendrait un rejet non géré qui arrête l'API.
+    conn.on('ready', () => guard.confirm().then((confirmed) => {
+      if (!confirmed) {
         conn.end()
         send('error', `Connexion SSH échouée : ${hostKeyRejection}`)
         return resolve({ status: 'error', output: hostKeyRejection, duration: Date.now() - t0 })
@@ -60,9 +64,15 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
           resolve({ status, output: output.join(''), duration })
         })
       })
-    })
+    }).catch((err) => {
+      conn.end()
+      if (sshFailed) return
+      send('error', `Connexion SSH échouée : ${err.message}`)
+      resolve({ status: 'error', output: err.message, duration: Date.now() - t0 })
+    }))
 
     conn.on('error', (err) => {
+      sshFailed = true
       // Clé d'hôte refusée : ssh2 lève une erreur générique, on garde le
       // message explicite de la vérification.
       const message = hostKeyRejection || err.message

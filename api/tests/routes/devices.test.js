@@ -25,7 +25,7 @@ import { buildApp } from '../helpers/build-app.js'
 import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 
 import devicesRoute from '../../modules/inventory/routes/devices.js'
-import { startFakeSshServer, sshClientEnv } from '../helpers/fake-ssh.js'
+import { startFakeSshServer, sshClientEnv, trackUnhandledRejections } from '../helpers/fake-ssh.js'
 
 const sshUtils = ssh2.utils
 
@@ -424,6 +424,29 @@ test('POST /force-checkin — hôte qui refuse la clé d\'Opale : son empreinte 
     `SELECT 1 FROM audit_logs WHERE action = 'ssh_host_key_learned' AND target = $1`, [id]
   )
   assert.equal(audits.length, 0)
+})
+
+test('POST /force-checkin — hôte qui raccroche après authentification : erreur rapportée, API intacte', { skip: SKIP, timeout: 20000 }, async (t) => {
+  const rejections = trackUnhandledRejections(t)
+  const server = await startFakeSshServer(t, { endOnReady: true })
+  sshClientEnv(t, server.port)
+  const { token } = await adminAuth('oid-dev-force-hostkey-hangup')
+  const id = await insertDevice({ hostname: 'PC-FORCE-HANGUP' })
+  await db.query(`UPDATE devices SET ip_netbird = '127.0.0.1' WHERE id = $1`, [id])
+
+  const t0 = Date.now()
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/devices/force-checkin',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { ids: [id] },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().ok, 0)
+  assert.equal(res.json().errors.length, 1, JSON.stringify(res.json().errors))
+  assert.doesNotMatch(res.json().errors[0], /timeout/)
+  assert.ok(Date.now() - t0 < 10000, 'pas d\'attente du timeout de 15 s')
+  await new Promise(r => setTimeout(r, 50))
+  assert.deepEqual(rejections, [])
 })
 
 test('DELETE /:id/ssh-host-key — non-admin → 403, empreinte conservée', { skip: SKIP }, async () => {

@@ -18,7 +18,7 @@ import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 import { seedDevice } from '../fixtures/devices.js'
 
 import scriptsRoute from '../../modules/inventory/routes/scripts.js'
-import { startFakeSshServer, sshClientEnv } from '../helpers/fake-ssh.js'
+import { startFakeSshServer, sshClientEnv, trackUnhandledRejections } from '../helpers/fake-ssh.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
@@ -673,4 +673,29 @@ test('POST /:id/exec — clé d\'hôte SSH apprise au premier contact, puis tout
     `SELECT details FROM audit_logs WHERE action = 'ssh_host_key_mismatch' AND target = $1`, [device.id])
   assert.equal(audit.length, 1)
   assert.equal(audit[0].details.expected_fingerprint, learned)
+})
+
+test('POST /:id/exec — hôte qui raccroche après authentification : exécution en erreur, API intacte', { skip: SKIP, timeout: 20000 }, async (t) => {
+  // Sans garde, conn.exec() levait « Not connected » dans un gestionnaire
+  // asynchrone : rejet non géré, donc arrêt de l'API, et réponse SSE jamais
+  // terminée.
+  const rejections = trackUnhandledRejections(t)
+  const server = await startFakeSshServer(t, { endOnReady: true })
+  sshClientEnv(t, server.port)
+  const token = await adminToken('oid-sc-exec-hangup')
+  const script = await seedScript({ name: 'SSH hangup' })
+  const { group } = await groupWithIps('G-exec-hangup', [{ hostname: 'PC-HANGUP', ip: '127.0.0.1' }])
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+  assert.match(res.body, /"type":"end"/)
+  const { rows } = await db.query(
+    `SELECT status FROM script_executions WHERE script_id = $1`, [script.id])
+  assert.equal(rows[0].status, 'error')
+  assert.equal(server.state.execs, 0)
+  await new Promise(r => setTimeout(r, 50))
+  assert.deepEqual(rejections, [])
 })

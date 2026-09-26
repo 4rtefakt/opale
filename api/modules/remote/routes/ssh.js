@@ -123,14 +123,18 @@ export default async function sshRoute(fastify) {
     // Vérifie la clé d'hôte AVANT authentification (cf. lib/ssh-host-key.js) :
     // sinon le contenu du terminal partirait chez qui répond à l'IP.
     let hostKeyRejected = false
+    let sshFailed = false
     const guard = hostKeyGuard(
       { db: fastify.db, log: fastify.log }, device,
       { onReject: (msg) => { hostKeyRejected = true; send('error', msg) } }
     )
 
-    conn.on('ready', async () => {
+    // Pas de gestionnaire async sur 'ready' : si l'hôte raccroche pendant
+    // confirm(), conn.shell() lève « Not connected », et l'exception
+    // deviendrait un rejet non géré qui arrête l'API.
+    conn.on('ready', () => guard.confirm().then((confirmed) => {
       // Premier contact : mémorise la clé avant d'ouvrir le shell.
-      if (!(await guard.confirm())) { conn.end(); return }
+      if (!confirmed) { conn.end(); return }
       send('status', 'Connecté')
       conn.shell({ term: 'xterm-256color', cols: 220, rows: 50 }, (err, stream) => {
         if (err) { send('error', err.message); conn.end(); return }
@@ -170,11 +174,17 @@ export default async function sshRoute(fastify) {
 
         stream.on('close', () => conn.end())
       })
-    })
+    }).catch((err) => {
+      if (!sshFailed) send('error', `SSH : ${err.message}`)
+      conn.end()
+    }))
 
     // Clé d'hôte refusée : le message explicite est déjà parti, on n'y
     // ajoute pas l'erreur générique de ssh2.
-    conn.on('error', (err) => { if (!hostKeyRejected) send('error', `SSH : ${err.message}`) })
+    conn.on('error', (err) => {
+      if (!hostKeyRejected && !sshFailed) send('error', `SSH : ${err.message}`)
+      sshFailed = true
+    })
 
     conn.on('close', () => {
       const durationSeconds = Math.round((Date.now() - startedAt) / 1000)

@@ -332,8 +332,11 @@ export default async function devicesRoute(fastify) {
         { onReject: (msg) => { hostKeyRejected = true; errors.push(`[${d.hostname}] ${msg}`) } }
       )
 
-      conn.on('ready', async () => {
-        if (!(await guard.confirm())) { clearTimeout(timeout); return finish() }
+      // Pas de gestionnaire async sur 'ready' : si l'hôte raccroche pendant
+      // confirm(), conn.exec() lève « Not connected », et l'exception
+      // deviendrait un rejet non géré qui arrête l'API.
+      conn.on('ready', () => guard.confirm().then((confirmed) => {
+        if (!confirmed) { clearTimeout(timeout); return finish() }
         conn.exec(psCmd, (err, stream) => {
           if (err) {
             clearTimeout(timeout)
@@ -356,7 +359,11 @@ export default async function devicesRoute(fastify) {
             finish()
           })
         })
-      }).on('error', err => {
+      }).catch((err) => {
+        clearTimeout(timeout)
+        if (!done) errors.push(`[${d.hostname}] ${err.message}`)
+        finish()
+      })).on('error', err => {
         clearTimeout(timeout)
         // Clé d'hôte refusée : le message explicite est déjà dans `errors`.
         if (!hostKeyRejected) errors.push(`[${d.hostname}] ${err.message}`)
