@@ -444,7 +444,15 @@ func (r *lapsRotator) rotate(ctx context.Context, st *State, now time.Time) {
 	st.PendingAdminCred.Phase = lapsPhaseEscrowed
 	if err := r.save(); err != nil {
 		logError("laps-stash-save-fail", err, LogFields{"user": username, "phase": lapsPhaseEscrowed})
+		// Rien n'a été appliqué : la mémoire doit refléter "prepared" (comme
+		// le disque), sinon le cycle suivant ne réalignerait pas le serveur.
+		// On le réaligne tout de suite si l'ancien mot de passe est connu.
+		st.PendingAdminCred.Phase = lapsPhasePrepared
+		if r.restoreCurrentEscrow(ctx, st) {
+			st.PendingAdminCred = nil
+		}
 		r.fail(st, now)
+		_ = r.save()
 		return
 	}
 

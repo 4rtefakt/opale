@@ -753,6 +753,36 @@ func TestLAPS_EscrowedPhaseMustBePersistedBeforeApply(t *testing.T) {
 	if len(f.escrowed) != 1 || len(f.applied) != 0 {
 		t.Fatalf("pas d'application sans phase escrowed persistée : escrows=%v applied=%v", f.escrowed, f.applied)
 	}
+	// Rien d'appliqué : la mémoire doit dire "prepared" (comme le disque).
+	if st.PendingAdminCred == nil || st.PendingAdminCred.Phase != lapsPhasePrepared {
+		t.Fatalf("phase en mémoire attendue prepared, reçu %+v", st.PendingAdminCred)
+	}
+}
+
+// Même échec avec un ancien mot de passe connu : le serveur est réaligné
+// tout de suite et le stash soldé ; au cycle suivant, si l'escrow échoue,
+// le serveur garde bien le mot de passe en place (et non pw1, jamais
+// appliqué).
+func TestLAPS_EscrowedSaveFailure_RestoresPreviousEscrow(t *testing.T) {
+	st := &State{CurrentAdminCred: &AdminCredRecord{Username: "opale-recovery", EncB64: b64("enc(old)")}}
+	f := newLAPSFake(st)
+	r := f.rotator()
+	saves := 0
+	r.save = func() error {
+		saves++
+		if saves == 2 {
+			return errors.New("verrou antivirus")
+		}
+		return nil
+	}
+	r.run(context.Background(), st)
+	want := []string{"opale-recovery:enc(pw1)", "opale-recovery:enc(old)"}
+	if strings.Join(f.escrowed, ",") != strings.Join(want, ",") || len(f.applied) != 0 {
+		t.Fatalf("escrows=%v applied=%v, attendu %v sans application", f.escrowed, f.applied, want)
+	}
+	if st.PendingAdminCred != nil {
+		t.Fatalf("stash soldé attendu après réalignement : %+v", st.PendingAdminCred)
+	}
 }
 
 // Stash "prepared" réaligné avec succès puis compte refusé : le stash est
