@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -76,6 +80,10 @@ func parseLAPSLookup(stdout string, exitCode int) (lapsAccount, error) {
 // passe a changé (cf. classifyLAPSApplyExit) ; toute erreur non encadrée
 // (exit 1 de PowerShell) est traitée comme incertaine.
 //
+// Le SID est écrit sur stdout dès que le mot de passe est en place (avant
+// activation / groupe) : même en échec partiel (exit 12), l'agent mémorise
+// le compte qu'il vient de créer.
+//
 // Ajout au groupe : Add-LocalGroupMember -SID, en tolérant « déjà membre »,
 // plutôt que Get-LocalGroupMember qui échoue sur les postes joints Entra
 // (SID orphelins / AzureAD dans le groupe).
@@ -103,11 +111,11 @@ const lapsApplyScript = "" +
 	" try { Set-LocalUser -Name $user -Password $secure; }" +
 	" catch { [Console]::Error.WriteLine($_.Exception.Message); exit 11 };" +
 	"} else { [Console]::Error.WriteLine('mode inconnu'); exit 10 };" +
+	"try { [Console]::Out.WriteLine('SID=' + (Get-LocalUser -Name $user).SID.Value); } catch { };" +
 	"try {" +
 	" Enable-LocalUser -Name $user;" +
 	" try { Add-LocalGroupMember -SID 'S-1-5-32-544' -Member $user -ErrorAction Stop; }" +
 	" catch { if ([string]$_.FullyQualifiedErrorId -notlike 'MemberExists*') { throw }; };" +
-	" [Console]::Out.WriteLine('SID=' + (Get-LocalUser -Name $user).SID.Value);" +
 	"} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 12 };" +
 	"exit 0"
 
@@ -141,4 +149,19 @@ func parseLAPSSID(stdout string) string {
 		}
 	}
 	return ""
+}
+
+// lapsExitStatus — code de sortie d'un script LAPS terminé et s'il a été
+// tué par son timeout. Un script sorti seul (même pile à l'échéance) ou
+// dont un sous-process a gardé les pipes ouverts (exec.ErrWaitDelay,
+// statut de succès) n'est pas un timeout : son code fait foi.
+func lapsExitStatus(waitErr error, ps *os.ProcessState, ctxErr error) (exitCode int, timedOut bool) {
+	exitCode = -1
+	if ps != nil {
+		exitCode = ps.ExitCode()
+	}
+	if waitErr == nil || errors.Is(waitErr, exec.ErrWaitDelay) {
+		return exitCode, false
+	}
+	return exitCode, errors.Is(ctxErr, context.DeadlineExceeded)
 }

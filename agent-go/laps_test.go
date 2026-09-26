@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -429,6 +431,58 @@ func TestClassifyLAPSApplyExit(t *testing.T) {
 		if got := classifyLAPSApplyExit(c.started, c.code, c.timedOut); got != c.want {
 			t.Errorf("classify(started=%v code=%d timeout=%v) = %v, attendu %v", c.started, c.code, c.timedOut, got, c.want)
 		}
+	}
+}
+
+func TestLAPSExitStatus(t *testing.T) {
+	requireSh(t)
+	run := func(script string) (error, *os.ProcessState) {
+		cmd := exec.Command("sh", "-c", script)
+		err := cmd.Run()
+		return err, cmd.ProcessState
+	}
+	okErr, okPS := run("exit 0")
+	failErr, failPS := run("exit 11")
+
+	if code, to := lapsExitStatus(okErr, okPS, nil); code != 0 || to {
+		t.Fatalf("succès : code=%d timeout=%v", code, to)
+	}
+	// Sorti seul avec 0 pile à l'échéance : pas un timeout.
+	if code, to := lapsExitStatus(nil, okPS, context.DeadlineExceeded); code != 0 || to {
+		t.Fatalf("succès à l'échéance : code=%d timeout=%v", code, to)
+	}
+	// Pipes gardés par un sous-process : le statut de succès fait foi.
+	if code, to := lapsExitStatus(exec.ErrWaitDelay, okPS, nil); code != 0 || to {
+		t.Fatalf("ErrWaitDelay : code=%d timeout=%v", code, to)
+	}
+	if code, to := lapsExitStatus(failErr, failPS, nil); code != 11 || to {
+		t.Fatalf("exit 11 : code=%d timeout=%v", code, to)
+	}
+	// Tué par l'échéance : timeout (issue incertaine).
+	if _, to := lapsExitStatus(failErr, failPS, context.DeadlineExceeded); !to {
+		t.Fatal("process en erreur après l'échéance : timeout attendu")
+	}
+}
+
+// Le SID doit sortir dès que le mot de passe est en place, avant les
+// étapes qui peuvent échouer (exit 12) : sinon un compte créé par l'agent
+// n'est pas mémorisé dans LAPSManagedSIDs.
+func TestLAPSApplyScript_SIDBeforePostSteps(t *testing.T) {
+	iSID := strings.Index(lapsApplyScript, "'SID='")
+	iEnable := strings.Index(lapsApplyScript, "Enable-LocalUser")
+	iSet := strings.Index(lapsApplyScript, "Set-LocalUser -Name $user -Password")
+	if iSID < 0 || iEnable < 0 || iSet < 0 || !(iSet < iSID && iSID < iEnable) {
+		t.Fatalf("ordre attendu Set-LocalUser < SID= < Enable-LocalUser (set=%d sid=%d enable=%d)", iSet, iSID, iEnable)
+	}
+}
+
+func TestLAPS_ChangedPartial_RecordsCreatedSID(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.applyRes = lapsApplyResult{Outcome: lapsSetChangedPartial, SID: "S-1-5-21-1-2-3-1010", Err: errors.New("groupe")}
+	f.rotator().run(context.Background(), st)
+	if len(st.LAPSManagedSIDs) != 1 || st.LAPSManagedSIDs[0] != "S-1-5-21-1-2-3-1010" {
+		t.Fatalf("compte créé non mémorisé après échec partiel : %v", st.LAPSManagedSIDs)
 	}
 }
 

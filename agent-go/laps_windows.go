@@ -98,14 +98,6 @@ func runLAPSPowerShell(script string, env []string, stdin string) (stdout, stder
 		return "", "", -1, false, false, fmt.Errorf("start : %w", err)
 	}
 	err = cmd.Wait()
-	exitCode = 0
-	if err != nil {
-		exitCode = -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-	}
-	timedOut = errors.Is(c.Err(), context.DeadlineExceeded)
+	exitCode, timedOut = lapsExitStatus(err, cmd.ProcessState, c.Err())
 	return outBuf.String(), errBuf.String(), exitCode, true, timedOut, err
 }
