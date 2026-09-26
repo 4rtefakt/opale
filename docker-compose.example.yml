@@ -20,8 +20,15 @@ services:
     container_name: opale-api
     restart: unless-stopped
     env_file: .env
+    # Publié sur la boucle locale uniquement : l'API parle HTTP en clair et
+    # doit rester derrière le reverse proxy qui termine le TLS (Caddy/nginx
+    # sur l'hôte → localhost:3010, ou service proxy de cette compose → api:3010
+    # via le réseau Docker, sans passer par ce port). Si le proxy est sur une
+    # AUTRE machine, remplacer par "3010:3010" et n'autoriser que ce proxy
+    # (attention : les ports publiés par Docker contournent ufw ; filtrer
+    # dans la chaîne iptables DOCKER-USER).
     ports:
-      - "3010:3010"   # binder en 127.0.0.1:3010 si reverse proxy local
+      - "127.0.0.1:3010:3010"
     depends_on:
       db:
         condition: service_healthy
