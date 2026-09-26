@@ -1,5 +1,9 @@
 import { randomInt } from 'node:crypto'
 
+// Tous les appels Graph / token passent par graphFetch : timeout + reprise
+// bornée sur 429 (cf. graph-fetch.js).
+import { graphFetch } from './graph-fetch.js'
+
 let appToken = null
 let tokenExpiresAt = 0
 
@@ -89,7 +93,7 @@ export function invalidateUserFilterCache() {
 export async function getAppToken() {
   if (appToken && Date.now() < tokenExpiresAt - 60_000) return appToken
 
-  const res = await fetch(
+  const res = await graphFetch(
     `https://login.microsoftonline.com/${process.env.ENTRA_TENANT_ID}/oauth2/v2.0/token`,
     {
       method: 'POST',
@@ -111,7 +115,7 @@ export async function getAppToken() {
 
 async function graphGet(path) {
   const token = await getAppToken()
-  const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+  const res = await graphFetch(`https://graph.microsoft.com/v1.0${path}`, {
     headers: { Authorization: `Bearer ${token}` }
   })
   if (!res.ok) throw new Error(`Graph ${path}: ${res.status}`)
@@ -120,7 +124,7 @@ async function graphGet(path) {
 
 async function graphPost(path, body) {
   const token = await getAppToken()
-  const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+  const res = await graphFetch(`https://graph.microsoft.com/v1.0${path}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -134,7 +138,7 @@ async function graphPost(path, body) {
 
 async function graphPatch(path, body) {
   const token = await getAppToken()
-  const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+  const res = await graphFetch(`https://graph.microsoft.com/v1.0${path}`, {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -148,7 +152,7 @@ async function graphPatch(path, body) {
 
 async function graphDelete(path) {
   const token = await getAppToken()
-  const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+  const res = await graphFetch(`https://graph.microsoft.com/v1.0${path}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` }
   })
@@ -248,7 +252,7 @@ export async function getAllAADUsers(db) {
     `&$select=id,displayName,userPrincipalName,jobTitle,department,mail,officeLocation` +
     `&$top=999&$orderby=displayName&$count=true`
   while (url) {
-    const res = await fetch(url, {
+    const res = await graphFetch(url, {
       headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' }
     })
     if (!res.ok) throw new Error(`Graph getAllUsers: ${res.status}`)
@@ -262,7 +266,7 @@ export async function getAllAADUsers(db) {
 export async function getUserPhoto(userId) {
   if (!isGraphUserId(userId)) return null
   const token = await getAppToken()
-  const res = await fetch(`https://graph.microsoft.com/v1.0/users/${userSegment(userId)}/photo/$value`, {
+  const res = await graphFetch(`https://graph.microsoft.com/v1.0/users/${userSegment(userId)}/photo/$value`, {
     headers: { Authorization: `Bearer ${token}` }
   })
   if (!res.ok) return null
@@ -284,7 +288,7 @@ export async function searchAADGroups(query) {
     `?$search=` + encodeURIComponent(`"displayName:${safe}"`) +
     `&$select=id,displayName,description` +
     `&$top=15`
-  const res = await fetch(url, {
+  const res = await graphFetch(url, {
     headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' }
   })
   if (!res.ok) throw new Error(`Graph groups search: ${res.status}`)
@@ -300,7 +304,7 @@ export async function getGroupDeviceHostnames(groupId) {
     `?$select=displayName&$top=999`
   while (url) {
     const token = await getAppToken()
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    const res = await graphFetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph group devices ${groupId}: ${res.status}`)
     const data = await res.json()
     items.push(...(data.value || []))
@@ -315,7 +319,7 @@ export async function getGroupUserIds(groupId) {
     `?$select=id&$top=999`
   while (url) {
     const token = await getAppToken()
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    const res = await graphFetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph group users ${groupId}: ${res.status}`)
     const data = await res.json()
     items.push(...(data.value || []))
@@ -337,7 +341,7 @@ export async function searchAADUsers(query, db) {
     `&$filter=${encodeURIComponent(filter)}` +
     `&$select=id,displayName,userPrincipalName,jobTitle,department` +
     `&$top=15&$orderby=displayName`
-  const res = await fetch(url, {
+  const res = await graphFetch(url, {
     headers: { Authorization: `Bearer ${token}`, ConsistencyLevel: 'eventual' }
   })
   if (!res.ok) throw new Error(`Graph users search: ${res.status}`)

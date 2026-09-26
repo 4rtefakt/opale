@@ -10,6 +10,7 @@
 // au niveau application registration, pas au niveau utilisateur.
 
 import { getAppToken } from '../../core/lib/graph.js'
+import { graphFetch } from '../../core/lib/graph-fetch.js'
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
 
@@ -24,7 +25,7 @@ function encodeMailbox(addr) {
 // actionnables côté ops (ex: "permission manquante" vs "boîte n'existe pas").
 async function graphGet(path) {
   const token = await getAppToken()
-  const res = await fetch(`${GRAPH_BASE}${path}`, {
+  const res = await graphFetch(`${GRAPH_BASE}${path}`, {
     headers: { Authorization: `Bearer ${token}` }
   })
   if (!res.ok) {
@@ -190,14 +191,14 @@ export async function markMessageAsRead(mailbox, graphMessageId, { fetchImpl = f
   }
   const token = await getAppToken()
   const url = `${GRAPH_BASE}/users/${encodeMailbox(mailbox)}/messages/${encodeURIComponent(graphMessageId)}`
-  const res = await fetchImpl(url, {
+  const res = await graphFetch(url, {
     method: 'PATCH',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ isRead: true }),
-  })
+  }, { fetchImpl })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     const snippet = body ? ` — ${body.slice(0, 200)}` : ''
