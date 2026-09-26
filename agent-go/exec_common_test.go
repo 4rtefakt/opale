@@ -86,3 +86,15 @@ func TestRunWithTimeout_ExitCodeAndParentCancel(t *testing.T) {
 		t.Fatalf("échec de démarrage : code=%d sortie=%q", code, out)
 	}
 }
+
+// ErrWaitDelay signifie « sorti seul avec succès » : même si le contexte
+// est terminé entre-temps, ce n'est ni un timeout ni une interruption.
+func TestClassifyExecResult_WaitDelayWins(t *testing.T) {
+	requireSh(t)
+	cmd := exec.Command("sh", "-c", "exit 0")
+	_ = cmd.Run()
+	code, note := classifyExecResult(exec.ErrWaitDelay, cmd.ProcessState, context.DeadlineExceeded, context.Canceled, time.Minute)
+	if code != 0 || !strings.Contains(note, "sortie tronquée") {
+		t.Fatalf("code=%d note=%q", code, note)
+	}
+}

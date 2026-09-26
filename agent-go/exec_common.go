@@ -48,18 +48,19 @@ func classifyExecResult(err error, ps *os.ProcessState, runCtxErr, parentErr err
 		return 0, ""
 	}
 	switch {
-	case parentErr != nil:
-		// Arrêt de l'agent (service stoppé) : le script a été interrompu.
-		return 1, "[interrompu : arrêt de l'agent]"
-	case errors.Is(runCtxErr, context.DeadlineExceeded):
-		return execTimeoutExitCode, "[timeout après " + timeout.String() + "]"
 	case errors.Is(err, exec.ErrWaitDelay):
-		// Le script est terminé mais un sous-process garde ses pipes ouverts.
+		// Le script est sorti seul avec succès (ErrWaitDelay n'est renvoyé
+		// que dans ce cas) mais un sous-process garde ses pipes ouverts.
 		code := 0
 		if ps != nil {
 			code = ps.ExitCode()
 		}
 		return code, "[sortie tronquée : un sous-process garde la sortie ouverte]"
+	case parentErr != nil:
+		// Arrêt de l'agent (service stoppé) : le script a été interrompu.
+		return 1, "[interrompu : arrêt de l'agent]"
+	case errors.Is(runCtxErr, context.DeadlineExceeded):
+		return execTimeoutExitCode, "[timeout après " + timeout.String() + "]"
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
