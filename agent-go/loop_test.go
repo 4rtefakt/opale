@@ -28,6 +28,10 @@ type jobServer struct {
 	update    *AgentUpdate
 	window    *MaintenanceWindow
 	checkins  int
+	// noDetection — déploiements sans detection_script (les autres en ont un).
+	noDetection map[string]bool
+	// detectAt — détections périodiques demandées au n-ième checkin.
+	detectAt map[int][]Detect
 }
 
 func newJobServer(nDeployments, batch int) *jobServer {
@@ -59,12 +63,14 @@ func (s *jobServer) handler(t *testing.T) http.HandlerFunc {
 		}
 		n := min(s.batch, len(s.pending))
 		resp := CheckinResponse{OK: true, DeviceID: "dev-1", Commands: s.scriptsAt[s.checkins], AgentUpdate: s.update,
-			MaintenanceWindow: s.window}
+			MaintenanceWindow: s.window, Detect: s.detectAt[s.checkins]}
 		for _, id := range s.pending[:n] {
 			s.running[id] = true
-			resp.Deployments = append(resp.Deployments, Deployment{
-				DeploymentID: id, Name: id, Type: "script", InstallScript: "Write-Output " + id,
-			})
+			d := Deployment{DeploymentID: id, PackageID: "pkg-" + id, Name: id, Type: "script", InstallScript: "Write-Output " + id}
+			if !s.noDetection[id] {
+				d.DetectionScript = "exit 0"
+			}
+			resp.Deployments = append(resp.Deployments, d)
 		}
 		s.pending = s.pending[n:]
 		w.Header().Set("Content-Type", "application/json")
@@ -115,24 +121,39 @@ func installFakeJobs(t *testing.T) *fakeJobs {
 			f.record("cmd:" + c.ID)
 		}
 	}
+	// Même boucle que processDeployments (eachDeployment) ; installation et
+	// détection simulées comme runWithTimeout : contexte annulé → rien ne
+	// démarre, installation en échec « interrompu », détection « absent ».
 	processDeploymentsFn = func(ctx context.Context, deps []Deployment, sink resultSink) {
-		for _, d := range deps {
-			if ctx.Err() != nil {
-				// Comme runWithTimeout : contexte annulé → rien ne démarre,
-				// résultat 1 « interrompu ».
-				f.record("interrupted:" + d.DeploymentID)
-				sink.deployment(DeploymentResult{DeploymentID: d.DeploymentID, ExitCode: 1, Output: "[interrompu : arrêt de l'agent]"})
-				continue
-			}
+		eachDeployment(ctx, deps, func(d Deployment) {
 			if f.beforeDeployment != nil {
 				f.beforeDeployment(d.DeploymentID)
 			}
-			f.record("dep:" + d.DeploymentID)
-			sink.deployment(DeploymentResult{DeploymentID: d.DeploymentID, ExitCode: 0, Output: "ok"})
-			sink.detection(DetectionResult{PackageID: "pkg-" + d.DeploymentID, Detected: true})
-		}
+			if ctx.Err() != nil {
+				f.record("interrupted:" + d.DeploymentID)
+				sink.deployment(deploymentResult(d, 1, "[interrompu : arrêt de l'agent]"))
+			} else {
+				f.record("dep:" + d.DeploymentID)
+				sink.deployment(deploymentResult(d, 0, "ok"))
+			}
+			if det, ok := postInstallDetection(ctx, d, func(ctx context.Context, _ string) (int, string) {
+				if ctx.Err() != nil {
+					return 1, "[interrompu : arrêt de l'agent]"
+				}
+				return 0, ""
+			}); ok {
+				sink.detection(det)
+			}
+		})
 	}
-	processDetectFn = func(context.Context, []Detect) []DetectionResult { return nil }
+	processDetectFn = func(ctx context.Context, dets []Detect) []DetectionResult {
+		var out []DetectionResult
+		for _, d := range dets {
+			f.record("detect:" + d.PackageID)
+			out = append(out, DetectionResult{PackageID: d.PackageID, Detected: ctx.Err() == nil})
+		}
+		return out
+	}
 	// Mise à jour réussie : binaire permuté, redémarrage en attente.
 	handleAgentUpdateFn = func(_ context.Context, _ *Config, _ *State, upd *AgentUpdate) error {
 		f.record("update:" + upd.LatestVersion)
@@ -283,17 +304,24 @@ func TestRunCheckin_DeploymentsRunEvenIfAgentThinksOutOfWindow(t *testing.T) {
 func TestRunCheckin_EachDeploymentResultPersistedImmediately(t *testing.T) {
 	f := installFakeJobs(t)
 	srv := newJobServer(4, 10)
+	// dep-02 sans detection_script : son résultat n'est suivi d'aucune
+	// détection, dont la sauvegarde persisterait aussi le résultat.
+	srv.noDetection = map[string]bool{"dep-02": true}
 	var done []string
+	detections := 0
 	var problems []string
 	f.beforeDeployment = func(id string) {
 		saved := LoadState()
 		if got := depIDs(saved.PendingDeployments); !sameIDs(got, done) {
 			problems = append(problems, fmt.Sprintf("avant %s : state.json = %v, attendu %v", id, got, done))
 		}
-		if len(saved.PendingDetections) != len(done) {
-			problems = append(problems, fmt.Sprintf("avant %s : %d détections persistées, attendu %d", id, len(saved.PendingDetections), len(done)))
+		if len(saved.PendingDetections) != detections {
+			problems = append(problems, fmt.Sprintf("avant %s : %d détections persistées, attendu %d", id, len(saved.PendingDetections), detections))
 		}
 		done = append(done, id)
+		if !srv.noDetection[id] {
+			detections++
+		}
 	}
 	st := runCheckinAgainst(t, srv)
 
@@ -365,5 +393,48 @@ func TestRunCheckin_StopDuringFollowUpLeavesItsJobsUnstarted(t *testing.T) {
 	if srv.checkins != 2 || len(srv.running) != 10 || len(srv.pending) != 1 {
 		t.Fatalf("checkins=%d running=%d pending=%d, attendu 2 / 10 (2e lot, timeout) / 1 (jamais réservé)",
 			srv.checkins, len(srv.running), len(srv.pending))
+	}
+}
+
+// Arrêt de l'agent pendant le 2e déploiement d'un lot de 5 : les 3 suivants
+// ne démarrent pas (réservés, ils relèvent du timeout) au lieu d'être
+// remontés en échec « interrompu » ; toute détection produite après
+// l'arrêt (post-install du 2e, détections périodiques) est écartée — elle
+// dirait « absent » et écrirait un inventaire faux pour 24 h.
+func TestRunCheckin_StopMidBatchReportsNoFalseResults(t *testing.T) {
+	f := installFakeJobs(t)
+	srv := newJobServer(5, 10)
+	srv.detectAt = map[int][]Detect{1: {{PackageID: "pkg-periodique", DetectionScript: "exit 0"}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.beforeDeployment = func(id string) {
+		if id == "dep-02" {
+			cancel() // Stop du service pendant l'installation de dep-02
+		}
+	}
+	st := runCheckinAgainstCtx(t, ctx, srv)
+
+	// dep-01 terminé ; dep-02 démarré puis interrompu (résultat légitime).
+	if got := depIDs(st.PendingDeployments); !sameIDs(got, []string{"dep-01", "dep-02"}) {
+		t.Fatalf("résultats en file %v, attendu [dep-01 dep-02] (dep-03..05 jamais démarrés)", got)
+	}
+	for _, id := range []string{"dep-03", "dep-04", "dep-05"} {
+		if n := f.count("interrupted:")[id] + f.count("dep:")[id]; n != 0 {
+			t.Fatalf("%s lancé après l'arrêt : %v", id, f.order)
+		}
+	}
+	for _, d := range st.PendingDetections {
+		if !d.Detected || d.PackageID != "pkg-dep-01" {
+			t.Fatalf("détection produite après l'arrêt mise en file : %+v (toutes : %+v)", d, st.PendingDetections)
+		}
+	}
+	if len(st.PendingDetections) != 1 {
+		t.Fatalf("détections en file %+v, attendu seulement pkg-dep-01", st.PendingDetections)
+	}
+	if n := len(f.count("detect:")); n != 0 {
+		t.Fatalf("détections périodiques lancées après l'arrêt : %v", f.order)
+	}
+	if saved := LoadState(); !sameIDs(depIDs(saved.PendingDeployments), []string{"dep-01", "dep-02"}) || len(saved.PendingDetections) != 1 {
+		t.Fatalf("state.json : %+v / %+v", saved.PendingDeployments, saved.PendingDetections)
 	}
 }

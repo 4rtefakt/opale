@@ -138,6 +138,10 @@ func processCheckinJobs(ctx context.Context, cfg *Config, st *State, resp *Check
 	// déploiements qu'en fenêtre : l'agent exécute ce qu'il a reçu. Les
 	// déférer ici (avis divergent : fuseau, format, horloge) les laissait
 	// 'running' sans exécution jusqu'au timeout (1 h), puis en échec.
+	// Arrêt de l'agent (ctx annulé) : plus de déploiement lancé (cf.
+	// eachDeployment) et toute détection produite après est écartée — un
+	// script de détection interrompu dirait « absent » et le serveur
+	// l'inscrirait à l'inventaire pour 24 h.
 	deployed := 0
 	if len(resp.Deployments) > 0 {
 		processDeploymentsFn(ctx, resp.Deployments, resultSink{
@@ -147,13 +151,18 @@ func processCheckinJobs(ctx context.Context, cfg *Config, st *State, resp *Check
 				deployed++
 			},
 			detection: func(r DetectionResult) {
+				if ctx.Err() != nil {
+					return
+				}
 				st.PendingDetections = append(st.PendingDetections, r)
 				st.Save()
 			},
 		})
 	}
-	if len(resp.Detect) > 0 {
-		if dets := processDetectFn(ctx, resp.Detect); len(dets) > 0 {
+	if len(resp.Detect) > 0 && ctx.Err() == nil {
+		// Écartées en bloc si l'arrêt survient pendant la série (on ne sait
+		// pas lesquelles ont tourné en entier) : reproposées au checkin suivant.
+		if dets := processDetectFn(ctx, resp.Detect); len(dets) > 0 && ctx.Err() == nil {
 			st.PendingDetections = append(st.PendingDetections, dets...)
 			st.Save()
 		}

@@ -79,6 +79,20 @@ type resultSink struct {
 	detection  func(DetectionResult)
 }
 
+// eachDeployment appelle run pour chaque déploiement du lot, dans l'ordre,
+// et s'arrête à l'arrêt de l'agent (ctx annulé) : les suivants ne démarrent
+// pas — réservés côté serveur, ils relèvent du timeout — au lieu d'être
+// remontés en échec « interrompu » sans avoir tourné.
+func eachDeployment(ctx context.Context, deps []Deployment, run func(Deployment)) {
+	for i, d := range deps {
+		if ctx.Err() != nil {
+			logWarn("deployments-skipped", "arrêt de l'agent", LogFields{"skipped": len(deps) - i})
+			return
+		}
+		run(d)
+	}
+}
+
 // deploymentResult — résultat d'un déploiement, avec le jeton de
 // réservation reçu du serveur (renvoyé tel quel).
 func deploymentResult(d Deployment, exitCode int, output string) DeploymentResult {

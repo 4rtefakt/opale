@@ -128,9 +128,10 @@ func processCommands(ctx context.Context, cfg *Config, cmds []Command) {
 
 // processDeployments exécute les déploiements (winget ou script) et leurs
 // scripts post-install + detection_script. Chaque résultat est remis à
-// sink dès qu'il est connu (persisté aussitôt, cf. resultSink).
+// sink dès qu'il est connu (persisté aussitôt, cf. resultSink). Arrêt de
+// l'agent : les déploiements suivants ne démarrent pas (eachDeployment).
 func processDeployments(ctx context.Context, deps []Deployment, sink resultSink) {
-	for _, d := range deps {
+	eachDeployment(ctx, deps, func(d Deployment) {
 		var exitCode int
 		var output string
 
@@ -170,7 +171,7 @@ func processDeployments(ctx context.Context, deps []Deployment, sink resultSink)
 		if det, ok := postInstallDetection(ctx, d, runPowerShell); ok {
 			sink.detection(det)
 		}
-	}
+	})
 }
 
 // processDetect exécute les detection_scripts d'inventaire logiciel.
