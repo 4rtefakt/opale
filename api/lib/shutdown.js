@@ -4,9 +4,10 @@
 // Sans handler, Node s'arrête net au signal : requêtes HTTP coupées en
 // plein traitement, workers interrompus au milieu d'un tick (ex. mail
 // réclamé mais résultat de l'envoi jamais enregistré), pool Postgres non
-// fermé. Ici : fastify.close() — plus de nouvelles connexions, requêtes en
-// cours terminées, WebSockets fermées, puis hooks onClose (workers arrêtés
-// après leur tick en cours, puis pool Postgres fermé) — et exit(0).
+// fermé. Ici : fastify.close() — hook preClose d'abord (workers arrêtés
+// après leur tick en cours, cf. module-loader.stopWorkersBeforeClose), plus
+// de nouvelles connexions, requêtes en cours terminées, WebSockets fermées,
+// puis hooks onClose (pool Postgres fermé) — et exit(0).
 //
 // Docker envoie SIGKILL 10 s après SIGTERM (stop_grace_period par défaut) :
 // au-delà de `timeoutMs`, on sort en code 1 plutôt que d'être tué sans
