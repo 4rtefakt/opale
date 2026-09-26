@@ -1,20 +1,8 @@
 import fp from 'fastify-plugin'
 
-// Durées de conservation RGPD (docs/rgpd.md)
-//
-// Note remote_session_logs (30j) plus court que remote_sessions (183j) :
-// les frames raw contiennent le contenu intégral du terminal (mots de
-// passe affichés, données users) — sensibilité bien plus haute que les
-// métadonnées de session. La FK ON DELETE CASCADE garantit en plus que
-// le log suit si la session parente est purgée.
-const RULES = [
-  { table: 'bandwidth_stats',      col: 'sampled_at', days: 30  },
-  { table: 'ping_stats',           col: 'sampled_at', days: 30  },
-  { table: 'remote_session_logs',  col: 'created_at', days: 30  },
-  { table: 'remote_sessions',      col: 'started_at', days: 183 },
-  { table: 'audit_logs',           col: 'created_at', days: 365 },
-  { table: 'script_executions',    col: 'started_at', days: 90  },
-]
+// Durées de conservation RGPD : définies dans lib/retention.js (seule
+// source, partagée avec le nettoyage du checkin agent).
+import { RETENTION_RULES } from '../lib/retention.js'
 
 // Timeout pour les déploiements bloqués en 'running' : si l'agent prend
 // un déploiement en charge puis crash (install qui kill le réseau / le
@@ -42,8 +30,56 @@ async function timeoutStuckDeployments(fastify) {
   }
 }
 
-async function runCleanup(fastify) {
-  for (const { table, col, days } of RULES) {
+// Même garde-fou pour les scripts lancés via l'agent (mode 'agent') :
+// réservés ('running') au checkin, ils attendent le POST /api/agent/result.
+// Si la réponse du checkin se perd (client déconnecté après la
+// réservation), si l'agent crashe ou si le poste s'éteint pendant
+// l'exécution, le résultat n'arrive jamais et la ligne restait 'running'
+// à vie. L'agent coupe chaque script à 5 min et en reçoit au plus 5 par
+// checkin : 60 min laissent une large marge. Statut 'error' (celui d'un
+// échec renvoyé par l'agent) avec un message explicite ; un résultat qui
+// arriverait plus tard écrase toujours la ligne.
+//
+// Exécutions SSH (mode 'ssh') : pilotées par l'API elle-même (requête SSE
+// de l'admin), finalisées quand la commande distante se termine. Si l'API
+// redémarre pendant l'exécution, ou si la commande ne rend jamais la main,
+// la ligne restait aussi 'running' à vie. Seuil large (6 h) : une
+// exécution SSH légitime dure au plus quelques minutes.
+const SCRIPT_RUNNING_TIMEOUT_MIN = 60
+const SSH_SCRIPT_RUNNING_TIMEOUT_HOURS = 6
+
+async function timeoutStuckScripts(fastify) {
+  try {
+    const res = await fastify.db.query(`
+      UPDATE script_executions
+      SET status       = 'error',
+          completed_at = now(),
+          -- output est VARCHAR(10000) : on garde la place du message (sinon
+          -- 22001 sur une ligne ferait échouer tout l'UPDATE, à chaque passage).
+          output       = left(COALESCE(output, ''), 9800) || CASE WHEN mode = 'agent'
+            THEN E'\n[serveur] Timeout : aucun résultat reçu de l''agent après ${SCRIPT_RUNNING_TIMEOUT_MIN} min. Relancer le script si besoin.'
+            ELSE E'\n[serveur] Timeout : exécution SSH sans résultat après ${SSH_SCRIPT_RUNNING_TIMEOUT_HOURS} h (API redémarrée ou commande bloquée). Relancer le script si besoin.'
+          END
+      WHERE status = 'running'
+        AND (   (mode = 'agent' AND started_at < now() - INTERVAL '${SCRIPT_RUNNING_TIMEOUT_MIN} minutes')
+             OR (mode = 'ssh'   AND started_at < now() - INTERVAL '${SSH_SCRIPT_RUNNING_TIMEOUT_HOURS} hours'))
+    `)
+    if (res.rowCount > 0) {
+      fastify.log.info({ count: res.rowCount }, 'cleanup: scripts (agent / SSH) stuck running → error')
+    }
+  } catch (err) {
+    fastify.log.warn({ err: err.message }, 'cleanup: timeout scripts échoué (non-bloquant)')
+  }
+}
+
+async function timeoutStuck(fastify) {
+  await timeoutStuckDeployments(fastify)
+  await timeoutStuckScripts(fastify)
+}
+
+// Exportée pour les tests.
+export async function runCleanup(fastify) {
+  for (const { table, col, days } of RETENTION_RULES) {
     try {
       const res = await fastify.db.query(
         `DELETE FROM ${table} WHERE ${col} < now() - interval '${days} days'`
@@ -63,10 +99,10 @@ async function cleanupPlugin(fastify) {
   const purgeInterval = setInterval(() => runCleanup(fastify), 24 * 60 * 60 * 1000)
   fastify.addHook('onClose', () => clearInterval(purgeInterval))
 
-  // Timeout deployments stuck running : toutes les 15 min (granularité
-  // alignée avec l'intervalle de checkin agent).
-  fastify.addHook('onReady', () => timeoutStuckDeployments(fastify))
-  const timeoutInterval = setInterval(() => timeoutStuckDeployments(fastify), 15 * 60 * 1000)
+  // Timeout deployments / scripts agent stuck running : toutes les 15 min
+  // (granularité alignée avec l'intervalle de checkin agent).
+  fastify.addHook('onReady', () => timeoutStuck(fastify))
+  const timeoutInterval = setInterval(() => timeoutStuck(fastify), 15 * 60 * 1000)
   fastify.addHook('onClose', () => clearInterval(timeoutInterval))
 }
 

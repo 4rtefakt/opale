@@ -4,10 +4,12 @@
 // - GET /executions/device/:deviceId
 // - POST /:id/exec (validation + chemins 400/404, pas l'exécution SSH réelle)
 //
-// L'exécution SSH réelle n'est pas testée (requiert un agent en ligne).
+// L'exécution SSH est testée contre un faux serveur SSH local (ssh2.Server,
+// clés ed25519 jetables) : finalisation des lignes script_executions.
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import ssh2 from 'ssh2'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
@@ -440,4 +442,129 @@ test('GET /executions/device/:deviceId — device sans executions → total 0', 
   const body = res.json()
   assert.deepEqual(body.rows, [])
   assert.equal(body.total, 0)
+})
+
+// ─── POST /:id/exec — exécution SSH (faux serveur local) ──────────────────────
+
+const { Server: SshServer, utils: sshUtils } = ssh2
+
+// utils.generateKeyPairSync('ed25519') de ssh2 produit environ 0,2 % de clés
+// que son propre parseur refuse (« Malformed OpenSSH private key », mesuré :
+// 12 sur 5 000) : c'était la cause des échecs intermittents de ces tests
+// (clé cliente illisible → exécution en 'error' en quelques ms). On
+// régénère jusqu'à obtenir une clé lisible. Sans effet sur la prod (clés
+// générées par ssh-keygen).
+function ed25519KeyPair() {
+  for (let i = 0; i < 20; i++) {
+    const k = sshUtils.generateKeyPairSync('ed25519')
+    if (!(sshUtils.parseKey(k.private) instanceof Error)) return k
+  }
+  throw new Error('ssh2 : aucune clé ed25519 lisible générée')
+}
+
+// Serveur SSH local qui accepte toute authentification et répond à exec
+// par `output` puis le code de sortie donné.
+async function fakeSshServer(t, { output, exitCode = 0 }) {
+  const hostKey = ed25519KeyPair()
+  const server = new SshServer({ hostKeys: [hostKey.private] }, (client) => {
+    client.on('error', () => {})
+    client.on('authentication', (ctx) => ctx.accept())
+    client.on('ready', () => {
+      client.on('session', (accept) => {
+        accept().on('exec', (acceptExec) => {
+          const stream = acceptExec()
+          stream.write(output)
+          stream.exit(exitCode)
+          stream.end()
+        })
+      })
+    })
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  t.after(() => server.close())
+  return server.address().port
+}
+
+function withEnv(t, vars) {
+  const saved = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]))
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k]; else process.env[k] = v
+  }
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  })
+}
+
+async function groupWithDevice(name, hostname) {
+  const device = await seedDevice(db, { hostname, ipNetbird: '127.0.0.1' })
+  const group = await seedGroup({ name })
+  await db.query(`INSERT INTO group_members (group_id, device_id, added_by) VALUES ($1, $2, 'test')`, [group.id, device.id])
+  return { device, group }
+}
+
+async function execRows(scriptId) {
+  const { rows } = await db.query(
+    `SELECT status, length(output) AS len, output FROM script_executions WHERE script_id = $1`, [scriptId])
+  return rows
+}
+
+test('POST /:id/exec — sortie SSH > 10 000 caractères : ligne finalisée (tronquée), plus de running bloqué', { skip: SKIP, timeout: 15000 }, async (t) => {
+  const port = await fakeSshServer(t, { output: 'o'.repeat(12000) })
+  const clientKey = ed25519KeyPair()
+  withEnv(t, { SSH_PORT: String(port), SSH_USER: 'opale', SSH_PRIVATE_KEY_B64: Buffer.from(clientKey.private).toString('base64') })
+  const token = await adminToken('oid-sc-exec-ssh-long')
+  const script = await seedScript({ name: 'SSH long' })
+  const { group } = await groupWithDevice('G-exec-ssh-long', 'PC-SSH-LONG')
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.match(res.body, /"type":"end"/)
+  const rows = await execRows(script.id)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].status, 'success', `sortie : ${rows[0].output?.slice(0, 300)}`)
+  assert.equal(rows[0].len, 10000, 'sortie tronquée à la taille de la colonne')
+})
+
+test('POST /:id/exec — sortie SSH avec octets NUL : ligne finalisée sans NUL (plus de running bloqué)', { skip: SKIP, timeout: 15000 }, async (t) => {
+  const port = await fakeSshServer(t, { output: 'o\u0000k' })
+  const clientKey = ed25519KeyPair()
+  withEnv(t, { SSH_PORT: String(port), SSH_USER: 'opale', SSH_PRIVATE_KEY_B64: Buffer.from(clientKey.private).toString('base64') })
+  const token = await adminToken('oid-sc-exec-ssh-nul')
+  const script = await seedScript({ name: 'SSH NUL' })
+  const { group } = await groupWithDevice('G-exec-ssh-nul', 'PC-SSH-NUL')
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+  assert.match(res.body, /"type":"end"/)
+  const rows = await execRows(script.id)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].status, 'success', `sortie : ${rows[0].output}`)
+  assert.equal(rows[0].output, 'ok')
+})
+
+test('POST /:id/exec — échec avant la connexion (clé SSH absente) : ligne en error, réponse terminée', { skip: SKIP, timeout: 15000 }, async (t) => {
+  withEnv(t, { SSH_PRIVATE_KEY_B64: undefined })
+  const token = await adminToken('oid-sc-exec-ssh-nokey')
+  const script = await seedScript({ name: 'SSH no key' })
+  const { group } = await groupWithDevice('G-exec-ssh-nokey', 'PC-SSH-NOKEY')
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+  assert.match(res.body, /"type":"end"/)
+  const rows = await execRows(script.id)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].status, 'error')
+  assert.match(rows[0].output, /SSH_PRIVATE_KEY_B64/)
 })

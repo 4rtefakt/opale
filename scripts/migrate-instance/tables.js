@@ -9,11 +9,13 @@
 //                 les migrations sur le target avec valeurs par défaut neutres et doivent être
 //                 écrasées par les valeurs de l'instance source).
 // `selfRefColumn` : nom de la colonne FK auto-référentielle (insertée en NULL puis UPDATE en
-//                   2e passe). Utilisé pour `agent_tokens.replaced_by`.
+//                   2e passe). Utilisé pour `agent_tokens.replaced_by`, `tickets.merged_into`
+//                   et `remote_sessions.takeover_of`.
 //
-// Tables EXCLUES volontairement :
-//   - schema_migrations : chaque instance gère son propre historique
-//   - device_software   : régénéré par les agents au prochain checkin (cache)
+// Toute table du schéma doit figurer ici OU dans EXCLUDED_TABLES (avec la raison) :
+// api/tests/scripts/migrate-instance-tables.test.js applique les migrations dans un
+// schéma scratch et échoue sur une table oubliée, une entrée obsolète, un ordre qui
+// viole une clé étrangère ou un conflictTarget sans contrainte d'unicité.
 //
 // Note : `monitors` et `ticket_history` mentionnés dans certaines specs n'existent pas
 // dans le schéma actuel — l'info "monitors" est dans devices.system_info (JSONB).
@@ -34,32 +36,58 @@ export const TABLES = [
   { name: 'audit_logs',          conflictTarget: ['id'] },
   { name: 'ssh_keys',            conflictTarget: ['id'] },
   { name: 'push_subscriptions',  conflictTarget: ['user_entra_id', 'endpoint'] },
+  { name: 'groups',              conflictTarget: ['id'] },
 
   // === Layer 1 : FK → users_cache ===
   { name: 'devices',             conflictTarget: ['hostname'] },
   { name: 'packages',            conflictTarget: ['id'] },
+  { name: 'cli_tokens',          conflictTarget: ['token_hash'] },
+  { name: 'user_prefs',          conflictTarget: ['entra_id'] },
 
-  // === Layer 2 : FK → devices ===
+  // === Layer 2 : FK → devices / packages / groups ===
   { name: 'disks',                     conflictTarget: ['id'] },
   { name: 'network_interfaces',        conflictTarget: ['id'] },
   { name: 'agent_tokens',              conflictTarget: ['token_hash'], selfRefColumn: 'replaced_by' },
-  { name: 'tickets',                   conflictTarget: ['id'] },
+  { name: 'tickets',                   conflictTarget: ['id'], selfRefColumn: 'merged_into' },
   { name: 'alerts',                    conflictTarget: ['id'] },
   { name: 'script_executions',         conflictTarget: ['id'] },
   { name: 'stock_movements',           conflictTarget: ['id'] },
   { name: 'onboarding_checks',         conflictTarget: ['id'] },
-  { name: 'remote_sessions',           conflictTarget: ['id'] },
+  { name: 'remote_sessions',           conflictTarget: ['id'], selfRefColumn: 'takeover_of' },
+  { name: 'deployment_jobs',           conflictTarget: ['id'] },
   { name: 'deployments',               conflictTarget: ['id'] },
   { name: 'bandwidth_stats',           conflictTarget: ['id'] },
   { name: 'ping_stats',                conflictTarget: ['id'] },
   { name: 'system_perf_stats',         conflictTarget: ['id'] },
   { name: 'device_admin_credentials',  conflictTarget: ['device_id'] },
   { name: 'alert_snoozes',             conflictTarget: ['device_id', 'alert_type'] },
+  { name: 'compliance_results',        conflictTarget: ['device_id', 'rule_id'] },
+  { name: 'device_group_memberships',  conflictTarget: ['device_id', 'group_id'] },
+  { name: 'group_members',             conflictTarget: ['id'] },
 
-  // === Layer 3 : FK → tickets / tags ===
+  // === Layer 3 : FK → tickets / tags / deployments / remote_sessions ===
+  { name: 'deployment_snapshots',      conflictTarget: ['deployment_id'] },
+  { name: 'remote_session_logs',       conflictTarget: ['session_id'] },
   { name: 'ticket_messages',           conflictTarget: ['id'] },
   { name: 'ticket_tags',               conflictTarget: ['ticket_id', 'tag_id'] },
   { name: 'ticket_proposals',          conflictTarget: ['id'] },
+  { name: 'ticket_users',              conflictTarget: ['ticket_id', 'user_entra_id'] },
+  { name: 'ticket_devices',            conflictTarget: ['ticket_id', 'device_id'] },
+  // Métadonnées seulement : les FICHIERS (volume ATTACHMENTS_DIR) se copient à part.
+  { name: 'ticket_attachments',        conflictTarget: ['id'] },
+
+  // === Layer 4 : FK → tickets + ticket_proposals ===
+  { name: 'email_thread_mapping',      conflictTarget: ['internet_message_id'] },
+];
+
+// Tables du schéma volontairement NON copiées.
+export const EXCLUDED_TABLES = [
+  { name: 'schema_migrations',
+    reason: "historique du runner de migrations : chaque instance tient le sien (rempli au démarrage de l'API cible)" },
+  { name: 'device_software',
+    reason: 'cache régénéré par les agents au prochain checkin' },
+  { name: 'ssh_sessions_archive_pre046',
+    reason: 'archive de rollback de la migration 046 ; ses lignes ont déjà été copiées dans remote_sessions' },
 ];
 
 export const TABLE_NAMES = TABLES.map(t => t.name);

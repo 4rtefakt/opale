@@ -247,15 +247,23 @@ docker compose -f docker-compose.example.yml up -d
 docker compose -f docker-compose.example.yml logs -f api
 ```
 
-The first start applies `api/migrations/001_init.sql` automatically.
-Migrations `002+` are not auto-applied — run them in order:
+The API applies the database migrations itself at startup, **before** it
+starts listening: every `api/migrations/NNN_*.sql` file not yet recorded in
+the `schema_migrations` table runs in order, each in its own transaction
+(details in [api/migrations/MIGRATIONS.md](api/migrations/MIGRATIONS.md)).
+In the logs you should see one `migration appliquée` line per file, then
+`migrations : base à jour`. If a migration fails, the API logs the file,
+line and PostgreSQL error, rolls that file back and exits (Docker restarts
+it); it never serves requests on a half-migrated schema.
+
+To apply migrations by hand instead, set `DB_AUTO_MIGRATE=false` in `.env`
+and run them in order:
 
 ```bash
 for m in api/migrations/0[0-9][0-9]_*.sql; do
-  [[ "$m" == *001_init.sql ]] && continue
   echo "→ $m"
   docker compose -f docker-compose.example.yml exec -T db \
-    psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$m"
+    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$m"
 done
 ```
 
@@ -361,18 +369,137 @@ docker compose -f docker-compose.example.yml build api
 docker compose -f docker-compose.example.yml up -d api
 ```
 
+**Health check** — `GET /api/health` (no authentication) answers
+`200 {"status":"ok"}` when the API and PostgreSQL respond, `503
+{"status":"unavailable"}` otherwise (cause in the API log; no details in the
+response). Use it for uptime monitoring or a compose healthcheck:
+
+```yaml
+  api:
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3010/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
+
 **Updating the frontend** (no rebuild needed — `front/` is volume-mounted)
 ```bash
 git pull
 # edits visible immediately at the next page refresh
 ```
 
-**Applying a new migration**
+**Applying a new migration** — nothing to do: new files in
+`api/migrations/` are applied when the updated API starts (see §5). With
+`DB_AUTO_MIGRATE=false`, apply them with
+`docker compose -f docker-compose.example.yml exec -e DATABASE_URL= -e PGURL= api sh -c 'node scripts/run-migrations.js --database "$POSTGRES_DB"'`
+(same runner, records them in `schema_migrations`; it prints its target and
+refuses to run unless `--database` matches the database it would connect
+to) or by hand:
 ```bash
 docker compose -f docker-compose.example.yml exec -T db \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   < api/migrations/0NN_description.sql
 ```
+
+**First start of the migration runner on an existing instance** (a database
+whose migrations were applied by hand, without a `schema_migrations` table).
+The runner cannot know which files were really applied by hand, so it
+**re-runs every file once**, then records them. Every migration is written
+to be idempotent on a populated database (tested), and this also applies the
+files you may have missed (e.g. `071`, `075`). A file that fails because of
+manual drift in your database (a constraint or index added by hand, duplicate
+data) stops the start. Rehearse first:
+
+```bash
+DC="docker compose -f docker-compose.example.yml"   # adapt to your compose file
+set -a; . ./.env; set +a     # POSTGRES_USER / POSTGRES_DB in this shell
+
+# 1. Back up the production database.
+$DC exec -T db pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > opale-before-runner.dump
+
+# 2. Pre-flight on production: both must be as shown.
+$DC exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
+  "SELECT current_schema(), to_regclass('schema_migrations') IS NULL"
+#    → public|t   (no schema_migrations table left over from another tool)
+
+# 3. Rehearsal: restore the dump into a scratch database and run ONLY the
+#    runner on it, with the new image (build it first). The API itself is not
+#    started, so nothing is sent (mail, Graph) from the copy.
+$DC build api
+$DC exec -T db createdb -U "$POSTGRES_USER" opale_rehearsal
+$DC exec -T db pg_restore --exit-on-error -U "$POSTGRES_USER" -d opale_rehearsal < opale-before-runner.dump
+#    DATABASE_URL / PGURL (maintenance scripts) take priority over POSTGRES_* :
+#    they are emptied here, otherwise the "rehearsal" would migrate PRODUCTION.
+#    The script also refuses to run unless --database is the database it
+#    would actually connect to.
+$DC run --rm --no-deps -e DATABASE_URL= -e PGURL= -e POSTGRES_DB=opale_rehearsal \
+  api node scripts/run-migrations.js --database opale_rehearsal
+#    → FIRST check the printed line "Cible : db:5432/opale_rehearsal …"; then
+#      exit 0 and "N migration(s) appliquée(s)" (N = number of files in
+#      api/migrations). Anything else: read the error (file, line, SQLSTATE)
+#      and fix the drift before deploying.
+
+# 4. Compare the seeded tables between production (before) and the rehearsal
+#    (after). Seed migrations use INSERT … ON CONFLICT DO NOTHING: a row you
+#    deleted by hand, or that came with a migration you never applied, is
+#    (re-)created.
+q() { $DC exec -T db psql -U "$POSTGRES_USER" -d "$1" -AtF '|' -c "$2"; }
+for sql in "SELECT key, value FROM settings WHERE key NOT LIKE 'mail.%cursor%' ORDER BY key" \
+           "SELECT action_type, estimated_minutes FROM automation_costs ORDER BY action_type" \
+           "SELECT builtin_key, name FROM scripts WHERE is_builtin ORDER BY builtin_key"; do
+  diff <(q "$POSTGRES_DB" "$sql") <(q opale_rehearsal "$sql")
+done
+$DC exec -T db dropdb -U "$POSTGRES_USER" opale_rehearsal
+```
+
+What to look for in step 4: lines only on the rehearsal side (`>`) are rows
+the first boot will add. Most are harmless defaults, and the `mail.*` switches
+all default to `false`. Two settings default to **`true`**:
+`tickets.assistant.enabled` (AI suggestions on tickets, Ollama at
+`http://ollama:11434`) and `ask.enabled` (Ask Opale, which answers 503 until
+`OPALE_ASK_API_KEY` is set). If they show up and you don't want them, set
+them to `false` right after the deploy:
+`UPDATE settings SET value = 'false' WHERE key IN ('tickets.assistant.enabled', 'ask.enabled');`.
+Re-created `automation_costs` rows count again in the Rapports KPI;
+re-created built-in scripts reappear in the script library.
+
+Then deploy and start the new API as usual. A warning
+`base existante sans historique` is logged, followed by one
+`migration appliquée` line per file; it takes a few seconds and the API only
+starts listening afterwards. Close any open `psql` session first: a table lock
+held for more than 60 s makes the start fail (it is retried by Docker).
+Check: `SELECT count(*), max(filename) FROM schema_migrations;` → the number
+of files in `api/migrations/` (64 in this release) and the last one
+(`075_strip_onboarding_temp_passwords.sql` here), and `GET /api/health` → 200.
+
+**If the API crash-loops on a migration** (log
+`Migration NNN_….sql en échec …`): set `DB_AUTO_MIGRATE=false` in `.env` and
+`$DC up -d api` to restore service immediately (the checkin keeps working
+even if `071` is missing), then fix the cause, apply with
+`$DC exec -e DATABASE_URL= -e PGURL= api sh -c 'node scripts/run-migrations.js --database "$POSTGRES_DB"'`
+(check the printed target), and remove the setting.
+Restore the dump only if the data itself is damaged.
+
+To keep applying migrations by hand, set `DB_AUTO_MIGRATE=false` before
+deploying (and use `scripts/run-migrations.js --database <db>` as above, or `psql`).
+
+**After the upgrade** (same release, not migrations):
+- Agent scripts stuck in `running` for more than 1 hour (and SSH executions
+  for more than 6 hours) are marked `error` with a timeout message at the
+  first start, then every 15 minutes.
+- Routine agent checkins no longer write an `agent_checkin` audit row (only
+  enrolment, rename, serial mismatch, agent version change and rejected
+  Netbird IP do). The old routine rows stay until the 365-day purge; to drop
+  them at once (smaller table, faster Audit view):
+  `DELETE FROM audit_logs WHERE action = 'agent_checkin' AND NOT (details ? 'events');`
+- Retention: the daily purge now keeps `bandwidth_stats`, `ping_stats` and
+  `system_perf_stats` 7 days (bandwidth/ping were 30 days; the checkin already
+  trimmed active devices to 7 days, and the UI never shows more).
+- A checkin whose inventory contains a value PostgreSQL rejects now fails as
+  a whole, `last_seen` included, so the device can look offline. NUL bytes
+  are stripped at the API boundary; any other case shows up as a 500 on
+  `POST /api/agent/checkin` in the API log.
 
 **One-off data migration scripts** (`api/scripts/`)
 
@@ -439,6 +566,7 @@ signature, and self-replaces atomically with rollback on failure.
 | Agent installs but no checkin | Server URL unreachable from the endpoint (firewall? mesh VPN missing?) — check `C:\ProgramData\<DataDir>\agent.log` |
 | Agent rolls back after each update | Signature verification failure — the agent expects the binary served by `/api/agent/binary` to be signed by the ed25519 key embedded at build time |
 | Push notifications don't trigger | `VAPID_EMAIL` missing or invalid — must be `mailto:…` or a bare email |
+| API exits at startup with `Migration NNN_….sql en échec` | That migration failed and was rolled back (file, line and PostgreSQL error in the log). Fix the cause (or the file), then restart: already-applied files are not re-run. A `lock_timeout` error means another session held a table lock for 60 s — close it and restart |
 
 For anything else, open an issue with the logs (`docker compose logs api`,
 agent log, browser console) — see [SECURITY.md](SECURITY.md) first if it

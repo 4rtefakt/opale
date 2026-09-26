@@ -162,31 +162,33 @@ L.1222-4 du Code du travail).
 ### 4.2 Durées de conservation
 
 Le RGPD exige que les données ne soient conservées que le temps
-nécessaire à la finalité (art. 5.1.e). Aucune table d'Opale n'a
-aujourd'hui de purge automatique livrée. Vous devez en mettre une en
-place.
+nécessaire à la finalité (art. 5.1.e). L'API purge automatiquement les
+tables ci-dessous marquées « auto » (purge quotidienne,
+`api/plugins/cleanup.js`, et nettoyage à chaque checkin pour les séries
+temporelles du poste). Les durées sont définies en un seul endroit :
+`api/lib/retention.js` — à ajuster là si votre DPO en décide autrement.
+Pour les autres tables, une purge reste à mettre en place.
 
-**Durées recommandées (à valider par votre DPO) :**
+**Durées (à valider par votre DPO) :**
 
-| Table | Durée recommandée | Justification |
+| Table | Durée | Justification |
 |---|---|---|
-| `bandwidth_stats` | 30 jours | Données opérationnelles, pas d'historique long nécessaire |
-| `ping_stats` | 30 jours | Idem |
-| `system_perf_stats` | 7 jours | Déjà purgé automatiquement par l'agent (cf. agent-go) |
-| `remote_sessions` | 6 mois | Recommandation CNIL pour logs de sécurité (couvre SSH + console-via-agent) |
-| `remote_session_logs` | 30 jours | Contenu très sensible (mots de passe affichés, données users) — rétention courte par défaut, voir §4.7 |
-| `audit_logs` | 12 mois | Délibération CNIL n°2017-012 (logs cybersécurité) |
-| `script_executions` | 3 mois | Output peut contenir des données sensibles |
+| `bandwidth_stats` | 7 jours (auto) | Données opérationnelles ; l'UI n'affiche pas plus de 7 jours |
+| `ping_stats` | 7 jours (auto) | Idem |
+| `system_perf_stats` | 7 jours (auto) | Idem |
+| `remote_sessions` | 6 mois (auto) | Recommandation CNIL pour logs de sécurité (couvre SSH + console-via-agent) |
+| `remote_session_logs` | 30 jours (auto) | Contenu très sensible (mots de passe affichés, données users) — rétention courte par défaut, voir §4.7 |
+| `audit_logs` | 12 mois (auto) | Délibération CNIL n°2017-012 (logs cybersécurité) |
+| `script_executions` | 3 mois (auto) | Output peut contenir des données sensibles |
 | `users_cache` | Purge si compte SSO désactivé + 30 jours | Droit à l'effacement |
 | `onboardings` | 2 ans après date de fin | Données RH |
 
-**Comment implémenter :** un job `pg_cron` ou un cron système qui exécute
-des `DELETE` paramétrés. Exemple :
+**Tables sans purge automatique :** un job `pg_cron` ou un cron système qui
+exécute des `DELETE` paramétrés. Exemple (même forme que la purge livrée) :
 
 ```sql
-DELETE FROM bandwidth_stats WHERE created_at < now() - interval '30 days';
-DELETE FROM ping_stats      WHERE created_at < now() - interval '30 days';
-DELETE FROM remote_sessions WHERE started_at < now() - interval '6 months';
+-- ex. onboardings terminés depuis plus de 2 ans
+DELETE FROM onboardings WHERE end_date < now() - interval '2 years';
 -- etc.
 ```
 
@@ -298,8 +300,8 @@ une row JSONB contenant les frames timestampées dans les deux directions
   conditions (typiquement post-incident uniquement, journalisé dans
   `audit_logs`).
 - Si la rétention 30 jours ne convient pas (réglementaire sectoriel
-  imposant plus long, ou DPO préférant moins), ajuster `RULES` dans
-  `api/plugins/cleanup.js`.
+  imposant plus long, ou DPO préférant moins), ajuster `RETENTION_RULES`
+  dans `api/lib/retention.js`.
 
 ---
 

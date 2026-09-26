@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { getAppToken, invalidateUserFilterCache } from '../lib/graph.js'
+import { graphFetch } from '../lib/graph-fetch.js'
 import { logAudit } from '../lib/audit.js'
 
 // ─── Helpers ───
@@ -15,7 +16,7 @@ async function graphGetAll(path) {
   let url = `https://graph.microsoft.com/v1.0${path}`
   const items = []
   while (url) {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    const res = await graphFetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Graph ${path}: ${res.status}`)
     const data = await res.json()
     items.push(...(data.value || []))

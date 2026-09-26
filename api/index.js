@@ -11,8 +11,10 @@ import dbPlugin           from './plugins/db.js'
 import authPlugin         from './plugins/auth.js'
 import cleanupPlugin      from './plugins/cleanup.js'
 import errorHandlerPlugin from './plugins/error-handler.js'
+import healthPlugin       from './plugins/health.js'
 
-import { loadModules, startModuleWorkers } from './lib/module-loader.js'
+import { loadModules, startModuleWorkers, stopWorkersBeforeClose } from './lib/module-loader.js'
+import { installShutdownHandlers } from './lib/shutdown.js'
 import { parseTrustProxy, rateLimitOptions } from './lib/rate-limit.js'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -73,9 +75,14 @@ await fastify.register(authPlugin)
 await fastify.register(cleanupPlugin)
 await fastify.register(errorHandlerPlugin)
 await fastify.register(sensible)   // expose fastify.httpErrors.X()
+await fastify.register(healthPlugin)   // GET /api/health (sans auth, cf. plugins/health.js)
 
 // Chargement des modules activés (cf. modules.config.js).
 const modules = await loadModules(fastify)
+
+// À la fermeture, les workers s'arrêtent (tick en cours terminé) dès le début
+// de fastify.close(), donc avant le pool Postgres (cf. module-loader).
+stopWorkersBeforeClose(fastify, modules)
 
 fastify.setNotFoundHandler((req, reply) => {
   if (!req.url.startsWith('/api')) {
@@ -90,3 +97,6 @@ await fastify.listen({ port, host: '0.0.0.0' })
 
 // Workers / timers des modules — démarrés après listen().
 startModuleWorkers(modules, fastify)
+
+// SIGTERM / SIGINT → arrêt propre (cf. lib/shutdown.js).
+installShutdownHandlers(fastify)

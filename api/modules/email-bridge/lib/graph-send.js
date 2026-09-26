@@ -19,6 +19,7 @@
 // de signature ajoutée.
 
 import { getAppToken } from '../../core/lib/graph.js'
+import { graphFetch } from '../../core/lib/graph-fetch.js'
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0'
 
@@ -47,9 +48,11 @@ function textToHtml(text) {
 //
 // `headers` = { inReplyTo, references } — strings prêtes pour les headers
 // RFC, peuvent être null.
+// `stopSignal` (optionnel) : arrêt de l'API, interrompt l'attente d'une
+// reprise après 429 (cf. graphFetch, erreur GRAPH_RETRY_ABORTED).
 export async function sendMail({
   sender, to, subject, bodyText,
-  fetchImpl = fetch,
+  fetchImpl = fetch, stopSignal,
 } = {}) {
   if (!sender) throw new Error('sendMail: sender manquant')
   if (!to)     throw new Error('sendMail: to manquant')
@@ -63,7 +66,7 @@ export async function sendMail({
   }
 
   const token = await getAppToken()
-  const res = await fetchImpl(`${GRAPH_BASE}/users/${encodeMailbox(sender)}/sendMail`, {
+  const res = await graphFetch(`${GRAPH_BASE}/users/${encodeMailbox(sender)}/sendMail`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -72,7 +75,7 @@ export async function sendMail({
     // saveToSentItems=true : la boîte expéditrice voit le mail dans ses
     // "Éléments envoyés". Important côté maintainer pour audit/recouvrement.
     body: JSON.stringify({ message, saveToSentItems: true }),
-  })
+  }, { fetchImpl, stopSignal })
 
   if (!res.ok) {
     const body = await res.text().catch(() => '')
@@ -103,7 +106,7 @@ export async function sendMail({
 // "RE: …" tout seul. Le PATCH remplace le corps du draft par notre texte
 // (on n'inclut pas la citation de l'original — réponse de support concise).
 export async function sendReply({
-  mailbox, graphMessageId, bodyText, fetchImpl = fetch, getToken = getAppToken,
+  mailbox, graphMessageId, bodyText, fetchImpl = fetch, getToken = getAppToken, stopSignal,
 } = {}) {
   if (!mailbox)        throw new Error('sendReply: mailbox manquant')
   if (!graphMessageId) throw new Error('sendReply: graphMessageId manquant')
@@ -123,9 +126,10 @@ export async function sendReply({
 
   // 1. Brouillon de réponse threadé. Graph pré-remplit son body avec la
   // citation du fil ("De: … Envoyé: … <message d'origine>") — on la garde.
-  const createRes = await fetchImpl(
+  const createRes = await graphFetch(
     `${base}/messages/${encodeURIComponent(graphMessageId)}/createReply`,
-    { method: 'POST', headers: authJson, body: '{}' }
+    { method: 'POST', headers: authJson, body: '{}' },
+    { fetchImpl, stopSignal }
   )
   if (!createRes.ok) return fail(createRes, 'createReply')
   const draft = await createRes.json()
@@ -138,19 +142,21 @@ export async function sendReply({
   // notre texte.
   const quoted = draft.body?.content || ''
   const content = quoted ? `${textToHtml(bodyText)}<br>${quoted}` : textToHtml(bodyText)
-  const patchRes = await fetchImpl(
+  const patchRes = await graphFetch(
     `${base}/messages/${encodeURIComponent(draft.id)}`,
     {
       method: 'PATCH', headers: authJson,
       body: JSON.stringify({ body: { contentType: 'HTML', content } }),
-    }
+    },
+    { fetchImpl, stopSignal }
   )
   if (!patchRes.ok) return fail(patchRes, 'patch')
 
   // 3. Envoi du brouillon.
-  const sendRes = await fetchImpl(
+  const sendRes = await graphFetch(
     `${base}/messages/${encodeURIComponent(draft.id)}/send`,
-    { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+    { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+    { fetchImpl, stopSignal }
   )
   if (!sendRes.ok) return fail(sendRes, 'send')
 

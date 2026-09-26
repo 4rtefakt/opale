@@ -58,8 +58,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       # 001 est appliqué automatiquement par l'image Postgres au premier
-      # démarrage. Les migrations 002+ sont appliquées manuellement,
-      # cf. INSTALL.md §5.
+      # démarrage. Toutes les migrations (001 compris, idempotent) sont
+      # ensuite appliquées par l'API à son démarrage, cf. INSTALL.md §5.
       - ./api/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]

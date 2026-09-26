@@ -15,9 +15,12 @@
 
 import { listSentMessagesSince } from './graph-mail.js'
 import { processSentOne } from './process-sent-mail.js'
+import { nonOverlapping } from '../../../lib/non-overlapping.js'
 
 const DEFAULT_INTERVAL_MS = 30_000
 let _timer = null
+let _kickoff = null
+let _run = null
 
 async function getSetting(db, key) {
   const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [key])
@@ -127,16 +130,19 @@ export async function pollSentOnce(db, log, injection = {}) {
 export function startMailSentPollWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
   if (_timer) return  // idempotent
 
-  const run = () =>
-    pollSentOnce(db, log).catch(err =>
-      log?.warn({ err: err.message }, 'sent-worker: tick a planté')
-    )
+  // Un seul tick à la fois (cf. poll-worker).
+  _run = nonOverlapping(() => pollSentOnce(db, log), {
+    onError: err => log?.warn({ err: err.message }, 'sent-worker: tick a planté'),
+  })
 
-  setTimeout(run, 7_000)  // léger décalage vs le worker inbound (5s)
-  _timer = setInterval(run, intervalMs)
+  _kickoff = setTimeout(_run, 7_000)  // léger décalage vs le worker inbound (5s)
+  _timer = setInterval(_run, intervalMs)
   log?.info({ intervalMs }, 'sent-worker: démarré')
 }
 
-export function stopMailSentPollWorker() {
+// Arrête le worker et attend la fin du tick en cours.
+export async function stopMailSentPollWorker() {
   if (_timer) { clearInterval(_timer); _timer = null }
+  if (_kickoff) { clearTimeout(_kickoff); _kickoff = null }
+  if (_run) { const run = _run; _run = null; await run.idle() }
 }

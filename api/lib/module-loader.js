@@ -2,7 +2,8 @@
 //
 // Charge les modules activés depuis modules.config.js, valide leur graphe de
 // dépendances, puis appelle leur `register(fastify)` dans l'ordre topologique.
-// Les workers (timers, queues) sont démarrés après listen() via startWorkers().
+// Les workers (timers, queues) sont démarrés après listen() via startWorkers()
+// et arrêtés à la fermeture via stopWorkers() (cf. stopModuleWorkers).
 
 import { modulesConfig as defaultConfig } from '../modules.config.js'
 
@@ -57,6 +58,30 @@ export function startModuleWorkers(modules, fastify) {
       m.startWorkers(fastify)
     }
   }
+}
+
+// Arrête les workers de tous les modules. Chaque stopWorkers() attend la fin
+// du tick en cours ; l'échec d'un module n'empêche pas l'arrêt des autres.
+export async function stopModuleWorkers(modules, fastify) {
+  await Promise.all(Object.values(modules)
+    .filter(m => typeof m.stopWorkers === 'function')
+    .map(async (m) => {
+      try {
+        await m.stopWorkers(fastify)
+      } catch (err) {
+        fastify.log.warn({ err: err.message, module: m.name }, '[modules] stopWorkers a échoué')
+      }
+    }))
+}
+
+// Arrêt des workers dès le début de fastify.close() (hook preClose), avant
+// l'attente de la fin des connexions HTTP et avant les hooks onClose (dont
+// la fermeture du pool Postgres) : un onClose ne s'exécute qu'une fois
+// server.close() terminé, ce qu'une connexion keep-alive peut retarder au-delà
+// de la sortie forcée de l'arrêt — les workers n'étaient alors jamais arrêtés
+// (ni les réclamations de mails relâchées).
+export function stopWorkersBeforeClose(fastify, modules) {
+  fastify.addHook('preClose', () => stopModuleWorkers(modules, fastify))
 }
 
 export function enabledModuleNames(config = defaultConfig) {

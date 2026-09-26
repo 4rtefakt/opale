@@ -1,8 +1,10 @@
 import { getGroupDeviceHostnames } from '../../core/lib/graph.js'
+import { nonOverlapping } from '../../../lib/non-overlapping.js'
 
 // Interval de sync par défaut : 60 minutes
 const DEFAULT_INTERVAL_MS = 60 * 60 * 1000
 let _timer = null
+let _run = null
 
 // Résout les hostnames d'un groupe Entra en device_ids managés.
 // Matching primaire par hostname (UNIQUE dans devices), avec blocklist
@@ -76,13 +78,19 @@ export async function syncGroupMemberships(db, log) {
 export function startGroupSyncWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
   if (_timer) return  // idempotent
 
-  const run = () => syncGroupMemberships(db, log).catch(err => log?.warn({ err: err.message }, 'group-sync: erreur worker'))
+  // Un seul tick à la fois : une sync lente (nombreux groupes Graph) n'est
+  // pas relancée en parallèle par le tick suivant.
+  _run = nonOverlapping(() => syncGroupMemberships(db, log), {
+    onError: err => log?.warn({ err: err.message }, 'group-sync: erreur worker'),
+  })
 
-  run()  // premier run immédiat
-  _timer = setInterval(run, intervalMs)
+  _run()  // premier run immédiat
+  _timer = setInterval(_run, intervalMs)
   log?.info({ intervalMs }, 'group-sync: worker démarré')
 }
 
-export function stopGroupSyncWorker() {
+// Arrête le worker et attend la fin de la sync en cours.
+export async function stopGroupSyncWorker() {
   if (_timer) { clearInterval(_timer); _timer = null }
+  if (_run) { const run = _run; _run = null; await run.idle() }
 }

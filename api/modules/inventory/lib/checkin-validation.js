@@ -56,3 +56,28 @@ export function truncateMiddle(text, maxBytes) {
   const tail = buf.subarray(buf.length - tailBytes).toString('utf8').replace(/^\uFFFD+/, '')
   return head + marker + tail
 }
+
+// Clés écartées après nettoyage : le parseur JSON de Fastify refuse déjà
+// __proto__ / constructor.prototype littéraux, mais pas leurs variantes
+// masquées par un NUL (« __pro\u0000to__ ») qui, une fois nettoyées,
+// remplaceraient le prototype de l'objet construit.
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+// Retire les octets NUL (U+0000) de toutes les chaînes d'une valeur JSON
+// (valeurs et clés d'objets, récursivement). Postgres les refuse dans TEXT
+// et JSONB : une seule chaîne corrompue côté agent faisait échouer tout le
+// checkin, inventaire (transactionnel) et last_seen compris.
+export function stripNul(value) {
+  if (typeof value === 'string') return value.includes('\u0000') ? value.replaceAll('\u0000', '') : value
+  if (Array.isArray(value)) return value.map(stripNul)
+  if (value && typeof value === 'object') {
+    const out = {}
+    for (const [k, v] of Object.entries(value)) {
+      const key = stripNul(k)
+      if (FORBIDDEN_KEYS.has(key)) continue
+      out[key] = stripNul(v)
+    }
+    return out
+  }
+  return value
+}

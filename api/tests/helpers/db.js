@@ -1,10 +1,11 @@
 // Helpers DB pour les tests d'intégration API.
 //
 // Stratégie : un PG réel (16 en prod, 16 en CI via `services:`). Chaque suite
-// qui en a besoin acquiert son propre schéma Postgres random (`t_<6hex>`) avec
-// toutes les migrations 0*.sql rejouées dedans, puis le drop en cleanup.
-// L'isolation par schéma plutôt que par database évite le coût de
-// CREATE/DROP DATABASE (qui exige une connexion détachée).
+// qui en a besoin acquiert son propre schéma Postgres random (`t_<6hex>`) dans
+// lequel les migrations sont appliquées par le runner de démarrage de l'API
+// (lib/migrations.js) — les suites exercent donc le même chemin que la prod —
+// puis le drop en cleanup. L'isolation par schéma plutôt que par database
+// évite le coût de CREATE/DROP DATABASE (qui exige une connexion détachée).
 //
 // Le pool retourné par acquireSchema() est configuré avec
 // `options: '-c search_path=<schema>'` côté libpq — toutes les requêtes
@@ -16,13 +17,9 @@
 // PG local n'est pas démarré, on garde les suites pures qui tournent).
 
 import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations')
+import { runMigrations } from '../../lib/migrations.js'
 
 let sharedPool = null
 
@@ -44,28 +41,24 @@ function getSharedPool() {
   return sharedPool
 }
 
-// Acquiert un schéma random + applique toutes les migrations 0*.sql.
-// Retourne { schema, db, release } — db est un pg.Pool dont les requêtes
-// s'exécutent dans le schéma sans préfixe. release() drop le schéma.
-export async function acquireSchema() {
+// Acquiert un schéma random et y applique toutes les migrations (runner).
+// Retourne { schema, db, connection, release } — db est un pg.Pool dont les
+// requêtes s'exécutent dans le schéma sans préfixe ; connection est la
+// config pg correspondante (pour ouvrir d'autres connexions sur ce schéma).
+// release() drop le schéma. `{ migrate: false }` : schéma vide.
+export async function acquireSchema({ migrate = true } = {}) {
   const shared = getSharedPool()
   const schema = `t_${crypto.randomBytes(6).toString('hex')}`
   await shared.query(`CREATE SCHEMA "${schema}"`)
 
-  const db = new pg.Pool({
+  const connection = {
     connectionString: process.env.PG_TEST_URL,
-    max: 4,
     options: `-c search_path="${schema}"`,
-  })
+  }
+  const db = new pg.Pool({ ...connection, max: 4 })
 
   try {
-    const files = (await fs.readdir(MIGRATIONS_DIR))
-      .filter(f => /^\d+_.*\.sql$/.test(f))
-      .sort()
-    for (const f of files) {
-      const sql = await fs.readFile(path.join(MIGRATIONS_DIR, f), 'utf8')
-      await db.query(sql)
-    }
+    if (migrate) await runMigrations(connection)
   } catch (err) {
     await db.end().catch(() => {})
     await shared.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => {})
@@ -75,6 +68,7 @@ export async function acquireSchema() {
   return {
     schema,
     db,
+    connection,
     release: async () => {
       await db.end().catch(() => {})
       await shared.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => {})
