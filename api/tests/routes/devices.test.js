@@ -321,3 +321,21 @@ test('DELETE /:id — admin happy path : supprime + audit_logs device_deleted', 
   assert.ok(audits.length >= 1)
   assert.equal(audits[0].by_user, user.displayName)
 })
+
+// ip_netbird est remonté par l'agent : pas de SSH vers un nom d'hôte.
+test('POST /force-checkin — ip_netbird qui n\'est pas une IP → poste ignoré, aucune connexion SSH', { skip: SKIP }, async (t) => {
+  const saved = process.env.SSH_PRIVATE_KEY_B64
+  process.env.SSH_PRIVATE_KEY_B64 = Buffer.from('clé factice : aucune connexion attendue').toString('base64')
+  t.after(() => { if (saved === undefined) delete process.env.SSH_PRIVATE_KEY_B64; else process.env.SSH_PRIVATE_KEY_B64 = saved })
+  const { token } = await adminAuth('oid-dev-force-bad-ip')
+  const id = await insertDevice({ hostname: 'PC-FORCE-BADIP' })
+  await db.query(`UPDATE devices SET ip_netbird = 'localhost' WHERE id = $1`, [id])
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/devices/force-checkin',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { ids: [id] },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: 0, skipped: 1, errors: [] })
+})

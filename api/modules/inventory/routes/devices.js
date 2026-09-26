@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { syncIntuneDevice } from '../../core/lib/graph.js'
 import { fetchBandwidth }   from '../../monitoring/lib/bandwidth.js'
 import { logAudit } from '../../core/lib/audit.js'
@@ -312,7 +313,9 @@ export default async function devicesRoute(fastify) {
     const restarted = []  // { hostname, service } — alimente audit_logs.target
 
     await Promise.all(rows.map(d => new Promise(resolve => {
-      if (!d.ip_netbird) { skipped++; return resolve() }
+      // ip_netbird remonté par l'agent : SSH seulement vers une IP littérale,
+      // jamais vers un nom d'hôte (redirection de la clé d'administration).
+      if (!d.ip_netbird || !isIP(d.ip_netbird)) { skipped++; return resolve() }
 
       const conn = new Client()
       let done = false
