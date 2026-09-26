@@ -21,24 +21,27 @@
 // append à la même proposition via source_payload, ou créer une nouvelle).
 
 import { extractMatchingHints } from './header-parser.js'
+import { messageIdLookupKeys } from './message-id.js'
 
 // Helper : depuis une liste de Message-IDs, retourne le premier qui a un
 // ticket_id non-NULL dans email_thread_mapping.
 async function findTicketByMessageIds(db, messageIds) {
   if (!messageIds.length) return null
+  // Forme brute ET forme stockée de chaque id (un id très long est stocké
+  // condensé, cf. message-id.js).
   const { rows } = await db.query(
     `SELECT internet_message_id, ticket_id, proposal_id
      FROM email_thread_mapping
      WHERE internet_message_id = ANY($1)
        AND (ticket_id IS NOT NULL OR proposal_id IS NOT NULL)`,
-    [messageIds]
+    [messageIds.flatMap(messageIdLookupKeys)]
   )
   if (!rows.length) return null
 
   // Préserver l'ordre des messageIds (In-Reply-To en premier = plus pertinent).
   const byId = new Map(rows.map(r => [r.internet_message_id, r]))
   for (const id of messageIds) {
-    const r = byId.get(id)
+    const r = messageIdLookupKeys(id).map(k => byId.get(k)).find(Boolean)
     if (r) return { ticket_id: r.ticket_id, proposal_id: r.proposal_id, via: 'message-id' }
   }
   return null

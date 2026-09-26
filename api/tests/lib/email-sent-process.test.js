@@ -13,6 +13,7 @@
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { processSentOne } from '../../modules/email-bridge/lib/process-sent-mail.js'
@@ -240,5 +241,23 @@ test('processSentOne : mail sans internetMessageId → skipped_error',
     })
     assert.equal(out.action, 'skipped_error')
     assert.match(out.error, /internetMessageId/)
+  }
+)
+
+test('processSentOne : internetMessageId de 4 Ko (trop long pour l\'index) → ajouté (forme condensée), pas de doublon',
+  { skip: SKIP }, async () => {
+    const parentMsgId = `<parent-${Math.random().toString(36).slice(2)}@x>`
+    const ticketId = await seedTicketWithThread(parentMsgId)
+    const msg = fakeSentMessage({
+      internetMessageId: `<${crypto.randomBytes(3000).toString('base64')}@tdv>`,
+      internetMessageHeaders: [{ name: 'In-Reply-To', value: parentMsgId }],
+    })
+    const run = () => processSentOne(db, null, {
+      graphMessage: msg, mailbox: 'agent@tourduvalat.org', getMessageFn: stubGetMessage('Réponse longue id.'),
+    })
+    assert.equal((await run()).action, 'message_appended')
+    assert.equal((await run()).action, 'already_ingested')
+    const { rows } = await db.query(`SELECT count(*)::int AS n FROM ticket_messages WHERE ticket_id = $1`, [ticketId])
+    assert.equal(rows[0].n, 1)
   }
 )

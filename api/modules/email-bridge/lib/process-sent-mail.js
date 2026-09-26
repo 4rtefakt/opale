@@ -30,6 +30,7 @@ import { matchThread } from './match-thread.js'
 import { getMessage }  from './graph-mail.js'
 import { extractMailBodyText, htmlToText } from './body-text.js'
 import { stripNul } from './sanitize.js'
+import { storedMessageId, messageIdLookupKeys } from './message-id.js'
 
 function indexHeaders(graphMessage) {
   const idx = {}
@@ -90,8 +91,8 @@ export async function processSentOne(db, log, { graphMessage: rawMessage, mailbo
   // internet_message_id garantit qu'on n'append jamais deux fois la réponse.
   {
     const { rows } = await db.query(
-      `SELECT id FROM email_thread_mapping WHERE internet_message_id = $1`,
-      [internetMessageId]
+      `SELECT id FROM email_thread_mapping WHERE internet_message_id = ANY($1)`,
+      [messageIdLookupKeys(internetMessageId)]   // forme brute et stockée (cf. message-id.js)
     )
     if (rows.length) return { action: 'already_ingested' }
   }
@@ -161,7 +162,7 @@ export async function processSentOne(db, log, { graphMessage: rawMessage, mailbo
       ON CONFLICT (internet_message_id) DO NOTHING
       RETURNING id
     `, [
-      internetMessageId,
+      storedMessageId(internetMessageId),
       graphMessage.conversationId || null,
       graphMessage.id || null,
       mailbox,

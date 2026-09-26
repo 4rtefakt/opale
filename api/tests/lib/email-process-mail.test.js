@@ -13,6 +13,7 @@
 
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { processOne } from '../../modules/email-bridge/lib/process-mail.js'
@@ -330,5 +331,58 @@ test('processOne : mail sans internetMessageId → skipped_error',
     })
     assert.equal(out.action, 'skipped_error')
     assert.match(out.error, /internetMessageId/)
+  }
+)
+
+// ── internetMessageId très long (index UNIQUE btree ≈ 2,7 Ko par entrée) ──
+
+// Aucun appel réseau : le corps complet d'un mail threadé (getMessage)
+// retombe sur bodyPreview.
+async function withoutNetwork(fn) {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('réseau coupé (test)') }
+  try { return await fn() } finally { globalThis.fetch = original }
+}
+
+test('processOne : internetMessageId de 4 Ko → ingéré (forme condensée), dédoublonné, réponse rattachée',
+  { skip: SKIP }, async () => {
+    // Un expéditeur peut forger un Message-ID trop long pour l'index : sans
+    // condensation, l'INSERT échoue à chaque tentative (mail « poison »).
+    const longId = `<${crypto.randomBytes(3000).toString('base64')}@externe.example>`
+    const msg = fakeGraphMessage({ internetMessageId: longId })
+    const first = await processOne(db, null, { graphMessage: msg, mailbox: 'helpdesk@test', classifierFn: stubClassifier('new_ticket') })
+    assert.equal(first.action, 'pending_review')
+    const again = await processOne(db, null, { graphMessage: msg, mailbox: 'helpdesk@test', classifierFn: stubClassifier('new_ticket') })
+    assert.equal(again.action, 'already_ingested')
+
+    const { rows } = await db.query(
+      `SELECT length(internet_message_id) AS len, raw->>'internetMessageId' AS raw_id FROM email_thread_mapping WHERE raw->>'id' = $1`, [msg.id])
+    assert.ok(rows[0].len < 200, 'forme stockée courte')
+    assert.equal(rows[0].raw_id, longId, 'identifiant complet conservé dans raw')
+
+    const { rows: t } = await db.query(`INSERT INTO tickets (title) VALUES ('Long id') RETURNING id`)
+    await db.query(`UPDATE email_thread_mapping SET ticket_id = $1 WHERE raw->>'id' = $2`, [t[0].id, msg.id])
+    const reply = fakeGraphMessage({ internetMessageHeaders: [{ name: 'In-Reply-To', value: longId }] })
+    const out = await withoutNetwork(() => processOne(db, null, { graphMessage: reply, mailbox: 'helpdesk@test' }))
+    assert.equal(out.action, 'message_appended')
+    assert.equal(out.ticket_id, t[0].id)
+  }
+)
+
+test('processOne : ligne existante avec un long id brut (stocké avant condensation) → dédoublonnée et rattachable',
+  { skip: SKIP }, async () => {
+    const legacyId = `<${'a'.repeat(1500)}@legacy.example>`
+    const { rows: t } = await db.query(`INSERT INTO tickets (title) VALUES ('Legacy') RETURNING id`)
+    await db.query(`
+      INSERT INTO email_thread_mapping (internet_message_id, mailbox, direction, received_at, ticket_id)
+      VALUES ($1, 'helpdesk@test', 'inbound', now(), $2)
+    `, [legacyId, t[0].id])
+
+    const same = await processOne(db, null, { graphMessage: fakeGraphMessage({ internetMessageId: legacyId }), mailbox: 'helpdesk@test' })
+    assert.equal(same.action, 'already_ingested')
+    const reply = fakeGraphMessage({ internetMessageHeaders: [{ name: 'References', value: legacyId }] })
+    const out = await withoutNetwork(() => processOne(db, null, { graphMessage: reply, mailbox: 'helpdesk@test' }))
+    assert.equal(out.action, 'message_appended')
+    assert.equal(out.ticket_id, t[0].id)
   }
 )

@@ -23,6 +23,7 @@ import { classifyWithOllama } from './classify.js'
 import { getMessage }    from './graph-mail.js'
 import { extractMailBodyText, htmlToText } from './body-text.js'
 import { stripNul }      from './sanitize.js'
+import { storedMessageId, messageIdLookupKeys } from './message-id.js'
 
 // Microsoft Graph dit que `bodyPreview` est plain text, mais en pratique
 // quelques mails Outlook (forwards inline, contenus mixtes) ont du HTML
@@ -161,8 +162,8 @@ export async function processOne(db, log, { graphMessage: rawMessage, mailbox, c
   // sur internet_message_id (ON CONFLICT DO NOTHING dans l'INSERT mapping).
   {
     const { rows } = await db.query(
-      `SELECT id FROM email_thread_mapping WHERE internet_message_id = $1`,
-      [internetMessageId]
+      `SELECT id FROM email_thread_mapping WHERE internet_message_id = ANY($1)`,
+      [messageIdLookupKeys(internetMessageId)]   // forme brute et stockée (cf. message-id.js)
     )
     if (rows.length) return { action: 'already_ingested' }
   }
@@ -235,7 +236,7 @@ export async function processOne(db, log, { graphMessage: rawMessage, mailbox, c
       ON CONFLICT (internet_message_id) DO NOTHING
       RETURNING id
     `, [
-      internetMessageId,
+      storedMessageId(internetMessageId),
       graphMessage.conversationId || null,
       graphMessage.id || null,
       mailbox,
