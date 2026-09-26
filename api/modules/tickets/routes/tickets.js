@@ -176,6 +176,10 @@ export default async function ticketsRoute(fastify) {
 
     // ACL : un non-admin ne voit que ses propres tickets (requester ou assignee).
     const isAdmin = await fastify.isAdmin(req)
+    // Types de messages ignorés pour un non-admin (recherche ?q= et
+    // awaiting_reply) : notes internes et suggestions IA ne doivent rien
+    // révéler, ni leur contenu ni leur existence.
+    const hiddenTypes = isAdmin ? ['system'] : ['system', ...INTERNAL_MESSAGE_TYPES]
     if (!isAdmin) {
       const { entraId } = fastify.getUserIdentity(req)
       conds.push(`(t.user_id = $${i} OR t.assigned_to_entra_id = $${i})`)
@@ -200,7 +204,6 @@ export default async function ticketsRoute(fastify) {
       // même paramètre $i pour rester un seul slot ; $i+1 = types de
       // messages exclus (un non-admin ne cherche pas dans les notes
       // internes / suggestions IA : sinon oracle sur leur contenu).
-      const hiddenTypes = isAdmin ? ['system'] : ['system', ...INTERNAL_MESSAGE_TYPES]
       conds.push(`(
         t.title ILIKE $${i} OR t.description ILIKE $${i}
         OR EXISTS (
@@ -252,10 +255,12 @@ export default async function ticketsRoute(fastify) {
 
     const where = conds.length ? 'WHERE ' + conds.join(' AND ') : ''
     const { displayName: meName } = fastify.getUserIdentity(req)
-    params.push(meName, limit, offset)
+    params.push(meName, hiddenTypes, limit, offset)
     const meIdx = i
 
-    // awaiting_reply : ticket open/in_progress dont le dernier message non-system n'est pas de moi
+    // awaiting_reply : ticket open/in_progress dont le dernier message visible
+    // (hors system ; hors notes internes / suggestions IA pour un non-admin)
+    // n'est pas de moi
     const { rows } = await fastify.db.query(`
       SELECT t.*, d.hostname, d.assigned_user_id AS assigned_user,
              u.display_name AS requester_name, u.email AS requester_email,
@@ -270,7 +275,7 @@ export default async function ticketsRoute(fastify) {
       LEFT JOIN users_cache u ON u.entra_id = t.user_id
       LEFT JOIN LATERAL (
         SELECT author FROM ticket_messages
-        WHERE ticket_id = t.id AND type <> 'system'
+        WHERE ticket_id = t.id AND type <> ALL($${meIdx + 1}::text[])
         ORDER BY created_at DESC LIMIT 1
       ) lm ON true
       ${where}
@@ -296,7 +301,7 @@ export default async function ticketsRoute(fastify) {
           ELSE 5
         END,
         t.updated_at DESC NULLS LAST, t.created_at DESC
-      LIMIT $${i + 1} OFFSET $${i + 2}
+      LIMIT $${i + 2} OFFSET $${i + 3}
     `, params)
 
     const tagMap = await loadTagsFor(fastify.db, rows.map(r => r.id))
@@ -412,13 +417,15 @@ export default async function ticketsRoute(fastify) {
       FROM tickets t
       LEFT JOIN devices d     ON d.id = t.device_id
       LEFT JOIN users_cache u ON u.entra_id = t.user_id
+      -- Non-admin : notes internes / suggestions IA ignorées (cf. GET /).
       LEFT JOIN LATERAL (
         SELECT author FROM ticket_messages
-        WHERE ticket_id = t.id AND type <> 'system'
+        WHERE ticket_id = t.id AND type <> ALL($3::text[])
         ORDER BY created_at DESC LIMIT 1
       ) lm ON true
       WHERE t.id = $1
-    `, [req.params.id, meName])
+    `, [req.params.id, meName,
+        acl.isAdmin ? ['system'] : ['system', ...INTERNAL_MESSAGE_TYPES]])
 
     if (!tRows.length) return reply.code(404).send({ error: 'Ticket introuvable' })
 

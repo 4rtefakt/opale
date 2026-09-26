@@ -1355,3 +1355,42 @@ test('PATCH /:id — status / priority hors liste → 400 ; merged réservé aux
   }
   assert.equal((await patch(me.token, { priority: 'high' })).statusCode, 200)
 })
+
+// ─── awaiting_reply : les messages internes ne fuient pas au requester ─────
+// Le flag se base sur l'auteur du dernier message : si une note interne ou
+// une suggestion IA comptait, le requester verrait le flag basculer à chaque
+// activité interne de l'équipe IT.
+
+test('awaiting_reply — requester non-admin : notes internes / suggestions IA ignorées (GET / et GET /:id)', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-await-admin', 'Await Admin')
+  const me    = await userAuth('oid-tk-await-me', 'Await Requester')
+  const id = (await createTicketAs(admin.token, { title: 'Await', user_id: me.user.entraId })).json().id
+  // Dernier message visible = celui du requester, puis activité interne.
+  await db.query(`
+    INSERT INTO ticket_messages (ticket_id, type, author, content, created_at) VALUES
+      ($1, 'comment',       'Await Requester', 'Ça ne marche toujours pas', now() - interval '3 minutes'),
+      ($1, 'internal_note', 'Autre Tech',      'On regarde',                now() - interval '2 minutes'),
+      ($1, 'ai_suggestion', 'Assistant IA',    'Brouillon',                 now() - interval '1 minute')
+  `, [id])
+
+  const get = async (token, url) => fastify.inject({ method: 'GET', url, headers: { authorization: `Bearer ${token}` } })
+
+  const det = await get(me.token, `/api/tickets/${id}`)
+  assert.equal(det.statusCode, 200)
+  assert.equal(det.json().awaiting_reply, false, 'détail : le dernier message visible est le sien')
+  const list = await get(me.token, '/api/tickets/')
+  assert.equal(list.statusCode, 200)
+  assert.equal(list.json().find(t => t.id === id).awaiting_reply, false, 'liste : idem')
+
+  // L'admin, lui, voit l'activité interne (dernier message d'un autre).
+  assert.equal((await get(admin.token, `/api/tickets/${id}`)).json().awaiting_reply, true)
+  assert.equal((await get(admin.token, '/api/tickets/?limit=200')).json().find(t => t.id === id).awaiting_reply, true)
+
+  // Une vraie réponse visible bascule bien le flag côté requester.
+  await db.query(
+    `INSERT INTO ticket_messages (ticket_id, type, author, content) VALUES ($1, 'comment', 'Autre Tech', 'Pouvez-vous redémarrer ?')`,
+    [id]
+  )
+  assert.equal((await get(me.token, `/api/tickets/${id}`)).json().awaiting_reply, true)
+  assert.equal((await get(me.token, '/api/tickets/')).json().find(t => t.id === id).awaiting_reply, true)
+})
