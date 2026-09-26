@@ -368,6 +368,7 @@ git pull
 docker compose -f docker-compose.example.yml build api
 docker compose -f docker-compose.example.yml up -d api
 ```
+Before any update (source build or GHCR image), check [docs/UPGRADING.md](docs/UPGRADING.md) for one-time manual steps (e.g. non-root image / Node 22: key and volume permissions).
 
 **Health check** — `GET /api/health` (no authentication) answers
 `200 {"status":"ok"}` when the API and PostgreSQL respond, `503

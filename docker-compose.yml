@@ -3,10 +3,23 @@ services:
     build: { context: ., dockerfile: api/Dockerfile }
     restart: unless-stopped
     env_file: .env
+    # Publié sur toutes les interfaces (inchangé). Derrière un reverse proxy
+    # sur le même hôte (Caddy), binder en "127.0.0.1:3010:3010" : sinon l'API
+    # (HTTP en clair) reste joignable en direct depuis le réseau. Obligatoire
+    # si TRUST_PROXY est activé : l'API fait alors confiance aux en-têtes
+    # X-Forwarded-*, qu'un client en accès direct pourrait falsifier.
     ports: ["3010:3010"]
     depends_on:
       db:
         condition: service_healthy
+    # L'image tourne en utilisateur non-root `node` (uid/gid 1000) : tout ce
+    # qui est monté ci-dessous doit lui être lisible. openssl crée les clés
+    # privées en 600 → une fois sur l'hôte :
+    #   sudo chgrp 1000 agent-go/keys/signing.key agent-go/keys/laps.key
+    #   sudo chmod 640  agent-go/keys/signing.key agent-go/keys/laps.key
+    # (sans ça : plus de signature des binaires → plus d'auto-update agent
+    # ni d'enrôlement, et lecture LAPS en erreur). Procédure complète de
+    # mise à jour : docs/UPGRADING.md.
     volumes:
       - ./front:/app/front:ro
       # Agent Go : binaire et clé privée de signature montés à part pour
@@ -14,6 +27,12 @@ services:
       - ./agent-go/dist:/app/agent-go/dist:ro
       - ./agent-go/keys/signing.key:/app/agent-go/keys/signing.key:ro
       - ./agent-go/keys/laps.key:/app/agent-go/keys/laps.key:ro
+      # Pièces jointes des tickets : seul chemin écrit par l'API. Un volume
+      # NEUF hérite du propriétaire `node` de l'image. Un volume créé AVANT
+      # le passage en USER node appartient à root → chown une seule fois,
+      # après le premier `up` avec la nouvelle image :
+      #   docker compose exec -u root api chown -R node:node /app/data/ticket-attachments
+      - attachments_data:/app/data/ticket-attachments
 
   db:
     image: postgres:16-alpine
@@ -36,7 +55,10 @@ services:
   # tient en RAM CPU (~3 GB). Volume persistant pour ne pas re-pull à chaque
   # déploiement. Pas de port exposé : seule l'API y accède via DNS interne.
   ollama:
-    image: ollama/ollama:latest
+    # Version épinglée (pas :latest) : une mise à jour d'Ollama est un
+    # changement explicite, relu et testé. Pour monter de version, changer
+    # le tag ici ET dans ollama-init (même image), puis `docker compose pull`.
+    image: ollama/ollama:0.34.4
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
@@ -46,7 +68,7 @@ services:
   #   1. OLLAMA_PULL_MODEL=<nouveau> docker compose run --rm ollama-init
   #   2. UPDATE settings SET value='<nouveau>' WHERE key='mail.classifier.model';
   ollama-init:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.34.4
     depends_on:
       ollama:
         condition: service_started
@@ -65,3 +87,4 @@ services:
 volumes:
   pgdata:
   ollama_models:
+  attachments_data:

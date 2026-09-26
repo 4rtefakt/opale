@@ -20,8 +20,15 @@ services:
     container_name: opale-api
     restart: unless-stopped
     env_file: .env
+    # Publié sur la boucle locale uniquement : l'API parle HTTP en clair et
+    # doit rester derrière le reverse proxy qui termine le TLS (Caddy/nginx
+    # sur l'hôte → localhost:3010, ou service proxy de cette compose → api:3010
+    # via le réseau Docker, sans passer par ce port). Si le proxy est sur une
+    # AUTRE machine, remplacer par "3010:3010" et n'autoriser que ce proxy
+    # (attention : les ports publiés par Docker contournent ufw ; filtrer
+    # dans la chaîne iptables DOCKER-USER).
     ports:
-      - "3010:3010"   # binder en 127.0.0.1:3010 si reverse proxy local
+      - "127.0.0.1:3010:3010"
     depends_on:
       db:
         condition: service_healthy
@@ -42,10 +49,26 @@ services:
       #     openssl pkey -in agent-go/keys/signing.key -pubout > agent-go/keys/signing.pub
       #     openssl genrsa -out agent-go/keys/laps.key 4096
       #     openssl rsa -in agent-go/keys/laps.key -pubout > agent-go/keys/laps.pub
+      #   L'API tourne en utilisateur non-root `node` (uid/gid 1000) et
+      #   openssl crée les clés privées en 600 : rendez-les lisibles par ce
+      #   groupe (sinon : pas de signature des binaires → pas d'auto-update,
+      #   et lecture LAPS en erreur) :
+      #     sudo chgrp 1000 agent-go/keys/signing.key agent-go/keys/laps.key
+      #     sudo chmod 640  agent-go/keys/signing.key agent-go/keys/laps.key
       #   Puis (re)compilez l'agent : node agent-go/build.js --token … --url …
       - ./agent-go/dist:/app/agent-go/dist:ro
       - ./agent-go/keys/signing.key:/app/agent-go/keys/signing.key:ro
       - ./agent-go/keys/laps.key:/app/agent-go/keys/laps.key:ro
+
+      # ─ Pièces jointes des tickets (seul chemin ÉCRIT par l'API) ────────
+      # Volume nommé : survit aux rebuilds. Un volume NEUF hérite du
+      # propriétaire `node` du dossier dans l'image. Un volume créé AVANT
+      # le passage de l'image en USER node appartient à root → chown une
+      # seule fois, après le premier `up` avec la nouvelle image :
+      #   docker compose -f docker-compose.example.yml exec -u root api \
+      #     chown -R node:node /app/data/ticket-attachments
+      # Procédure complète de mise à jour : docs/UPGRADING.md.
+      - attachments_data:/app/data/ticket-attachments
 
   db:
     image: postgres:16-alpine
@@ -88,7 +111,9 @@ services:
   #   UPDATE settings SET value='true'                WHERE key='mail.classifier.enabled';
   #
   # ollama:
-  #   image: ollama/ollama:latest
+  #   # Version épinglée (pas :latest) : monter de version explicitement,
+  #   # ici et dans ollama-init.
+  #   image: ollama/ollama:0.34.4
   #   container_name: opale-ollama
   #   restart: unless-stopped
   #   profiles: ["email-bridge"]
@@ -101,7 +126,7 @@ services:
   #   # One-shot : pull du modèle au premier démarrage. Exit après pull,
   #   # ne redémarre pas. Re-runner manuellement pour changer de modèle :
   #   #   docker compose run --rm ollama-init
-  #   image: ollama/ollama:latest
+  #   image: ollama/ollama:0.34.4
   #   profiles: ["email-bridge"]
   #   depends_on:
   #     ollama:
@@ -157,6 +182,7 @@ services:
 
 volumes:
   pgdata:
+  attachments_data:
   # ollama_models:    # décommenter si le profile email-bridge est utilisé
   # caddy_data:
   # caddy_config:

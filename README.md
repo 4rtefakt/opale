@@ -126,7 +126,7 @@ mature; until then, pin to a commit if you deploy it.
 
 | Component | Technology |
 |---|---|
-| Backend | Node.js 20 · Fastify 4 · ESM |
+| Backend | Node.js 22 · Fastify 5 · ESM |
 | Database | PostgreSQL 16 (raw SQL, no ORM) |
 | Frontend | Vanilla JS SPA — **no build step** |
 | Authentication | MSAL.js + Microsoft Entra ID (JWT verified server-side via JWKS) |
@@ -151,7 +151,7 @@ mature; until then, pin to a commit if you deploy it.
                                         │
    ┌─────────────────┐    HTTPS         ▼
    │  Windows agent  │──checkin─►┌─────────────────────────────┐
-   │  (Go Service)   │           │  API · Fastify (Node 20)    │
+   │  (Go Service)   │           │  API · Fastify (Node 22)    │
    │  every 15 min   │◄─binary  ─│  + PostgreSQL 16            │
    └─────────────────┘  /update  │  + WebSocket SSH proxy      │
                                  └──────────┬──────────────────┘

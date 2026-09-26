@@ -108,6 +108,25 @@ Generate the key pair once with `npx web-push generate-vapid-keys`.
 | `ONBOARDING_BASE_GROUP_IDS` | no | — | Comma-separated Entra group object IDs added to every onboarded user |
 | `ONBOARDING_LICENSE_GROUP_ID` | no | — | Group whose membership grants a Microsoft 365 license |
 
+### 1.8 Advanced (optional overrides, legacy agents, maintenance scripts)
+
+None of these are needed with the standard Docker layout; they are listed
+(commented out) at the end of `.env.example`.
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `ATTACHMENTS_DIR` | no | `/app/data/ticket-attachments` | Ticket attachment storage. Must be a writable volume for uid 1000 (`node`, the image's runtime user) |
+| `AGENT_GO_DIR` | no | auto (`/app/agent-go` in Docker) | Directory holding `dist/` (agent binaries) and `keys/` |
+| `AGENT_GO_VERSION_FILE` | no | `$AGENT_GO_DIR/dist/agent-version.txt` | Version sidecar of the served agent binaries |
+| `AGENT_SIGNING_KEY` | no | `$AGENT_GO_DIR/keys/signing.key` | **Path** to the ed25519 private key signing agent binaries (not the key itself). Must be readable by uid/gid 1000 |
+| `LAPS_PRIVATE_KEY` | no | `$AGENT_GO_DIR/keys/laps.key` | **Path** to the RSA private key decrypting LAPS passwords. Must be readable by uid/gid 1000 |
+| `WINGET_SOURCE_URL` | no | `https://cdn.winget.microsoft.com/cache/source2.msix` | Source MSIX of the winget catalog index |
+| `OPALE_ASK_API_KEY` | for Ask Opale | — | Secret API key of the LLM provider; provider/URL/model are runtime settings (`ask.*`) |
+| `OPALE_ASK_PROVIDER`, `OPALE_ASK_MODEL`, `OPALE_ASK_URL`, `OPALE_ASK_DELAY_MS` | no | `mistral`, —, —, `14000` | Offline eval harness only (`node modules/ask/eval/run.js`), not read by the API |
+| `OPALE_LEGACY_AGENT_UA_PATTERN` | no | — | Regex OR-ed with the Opale agent User-Agent so legacy agents of a migrated instance are offered auto-updates |
+| `OPALE_LEGACY_AGENT_SERVICE_NAMES` | no | — | Comma-separated extra Windows service names (`[A-Za-z0-9_-]` only) tried by "restart agent" over SSH |
+| `DATABASE_URL`, `PGURL` | no | — | Postgres connection string for the maintenance scripts in `api/scripts/` (takes precedence over `POSTGRES_*`, `DATABASE_URL` first). Not read by the API |
+
 ---
 
 ## 2. Runtime settings

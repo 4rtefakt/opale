@@ -5,7 +5,7 @@
 
 version: 2
 updates:
-  # ── API Fastify (Node 20) ──────────────────────────────────────────────
+  # ── API Fastify (Node 22) ──────────────────────────────────────────────
   - package-ecosystem: npm
     directory: /api
     schedule:

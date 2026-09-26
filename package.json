@@ -1,5 +1,8 @@
 {
   "name": "opale",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "check:locales": "node --no-warnings scripts/check-locales-parity.mjs"
   },

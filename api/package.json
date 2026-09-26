@@ -2,6 +2,9 @@
   "name": "opale-api",
   "type": "module",
   "version": "1.0.0",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
