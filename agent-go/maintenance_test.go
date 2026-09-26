@@ -104,6 +104,37 @@ func TestMaintenanceWindow_BadInputFailOpen(t *testing.T) {
 	}
 }
 
+// Mêmes verdicts que isMaintenanceWindowActive (api/modules/inventory/
+// routes/agent.js) sur les entrées où les deux divergeaient : fuseau
+// invalide (fail-open côté serveur, UTC côté agent) et heures hors du
+// format strict H:MM / HH:MM (refusées par la regex du serveur → fail-open,
+// acceptées par strconv.Atoi côté agent).
+func TestMaintenanceWindow_SameVerdictAsServer(t *testing.T) {
+	noon := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC) // hors 02:00-04:00
+	cases := []struct {
+		name string
+		w    MaintenanceWindow
+		want bool
+	}{
+		{"fuseau invalide → fail-open", MaintenanceWindow{Start: "02:00", End: "04:00", TZ: "Pas/UnFuseau"}, true},
+		{"minutes sur 1 chiffre", MaintenanceWindow{Start: "2:5", End: "04:00"}, true},
+		{"signe +", MaintenanceWindow{Start: "+2:00", End: "04:00"}, true},
+		{"signe -", MaintenanceWindow{Start: "-0:30", End: "04:00"}, true},
+		{"heure sur 3 chiffres", MaintenanceWindow{Start: "002:00", End: "04:00"}, true},
+		{"espace", MaintenanceWindow{Start: "02:00", End: "04:00 "}, true},
+		{"secondes", MaintenanceWindow{Start: "02:00:00", End: "04:00"}, true},
+		// Formats acceptés des deux côtés : fenêtre réellement évaluée.
+		{"H:MM valide", MaintenanceWindow{Start: "2:00", End: "4:00"}, false},
+		{"HH:MM valide", MaintenanceWindow{Start: "02:00", End: "04:00", TZ: "UTC"}, false},
+		{"HH:MM valide, dans la fenêtre", MaintenanceWindow{Start: "11:00", End: "13:00"}, true},
+	}
+	for _, c := range cases {
+		if got := c.w.IsActive(noon); got != c.want {
+			t.Errorf("%s : IsActive = %v, attendu %v (verdict du serveur)", c.name, got, c.want)
+		}
+	}
+}
+
 // Sous Windows, time.LoadLocation n'a pas de base IANA système : sans
 // time/tzdata embarqué, "Europe/Paris" échoue et la fenêtre était évaluée
 // en UTC (décalage d'1 à 2 h). Le binaire Windows doit embarquer tzdata.

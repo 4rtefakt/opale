@@ -1,8 +1,8 @@
 package main
 
 import (
+	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	// Base IANA embarquée (~450 Kio) : Windows n'en fournit pas à Go, et
@@ -22,8 +22,8 @@ import (
 // Sémantique :
 //   - weekdays : sous-ensemble de [0..6] (0=dim, 1=lun, ..., 6=sam, comme time.Weekday)
 //                vide = tous les jours
-//   - start/end : "HH:MM" ; si end < start, la fenêtre traverse minuit
-//   - tz : IANA, défaut UTC
+//   - start/end : "H:MM" ou "HH:MM" ; si end < start, la fenêtre traverse minuit
+//   - tz : IANA, défaut UTC ; fuseau inconnu = toujours actif (fail-open)
 //   - tout champ absent ou MaintenanceWindow nil = toujours actif
 type MaintenanceWindow struct {
 	Weekdays []int  `json:"weekdays,omitempty"`
@@ -45,9 +45,11 @@ func (w *MaintenanceWindow) IsActive(now time.Time) bool {
 
 	loc := time.UTC
 	if w.TZ != "" {
-		if l, err := time.LoadLocation(w.TZ); err == nil {
-			loc = l
+		l, err := time.LoadLocation(w.TZ)
+		if err != nil {
+			return true // fuseau invalide → fail-open, comme le serveur
 		}
+		loc = l
 	}
 	n := now.In(loc)
 
@@ -82,18 +84,19 @@ func (w *MaintenanceWindow) IsActive(now time.Time) bool {
 	return cur >= start || cur < end
 }
 
+// hhmmRe — format strict du serveur (/^(\d{1,2}):(\d{2})$/) : « 2:5 »,
+// « +2:00 » ou « 002:00 » sont refusés des deux côtés (→ fail-open).
+var hhmmRe = regexp.MustCompile(`^(\d{1,2}):(\d{2})$`)
+
 func parseHHMM(s string) (int, bool) {
-	parts := strings.SplitN(s, ":", 2)
-	if len(parts) != 2 {
+	m := hhmmRe.FindStringSubmatch(s)
+	if m == nil {
 		return 0, false
 	}
-	h, err := strconv.Atoi(parts[0])
-	if err != nil || h < 0 || h > 23 {
+	h, _ := strconv.Atoi(m[1])
+	mn, _ := strconv.Atoi(m[2])
+	if h > 23 || mn > 59 {
 		return 0, false
 	}
-	m, err := strconv.Atoi(parts[1])
-	if err != nil || m < 0 || m > 59 {
-		return 0, false
-	}
-	return h*60 + m, true
+	return h*60 + mn, true
 }
