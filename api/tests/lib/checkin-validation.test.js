@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle } from '../../modules/inventory/lib/checkin-validation.js'
+import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle, stripNul } from '../../modules/inventory/lib/checkin-validation.js'
 
 test('isNetbirdIp — accepte uniquement 100.64.0.0/10', () => {
   for (const ip of ['100.64.0.0', '100.64.0.1', '100.100.100.100', '100.127.255.255']) {
@@ -58,4 +58,19 @@ test('truncateMiddle — ≤ maxBytes, début + fin conservés, jamais de caract
     assert.ok(!out.includes('�'))
     assert.match(out, new RegExp(`log tronqué : ${Buffer.byteLength(text, 'utf8')} octets`))
   }
+})
+
+test('stripNul — retire les octets NUL de toutes les chaînes (valeurs et clés), structure intacte', () => {
+  const input = {
+    hostname: 'PC\u0000-1', n: 3, ok: true, none: null,
+    network: [{ mac: 'AA\u0000BB', ip: '10.0.0.1' }, null, 'x\u0000'],
+    system_info: { 'k\u0000ey': { deep: ['\u0000v'] } },
+  }
+  assert.deepEqual(stripNul(input), {
+    hostname: 'PC-1', n: 3, ok: true, none: null,
+    network: [{ mac: 'AABB', ip: '10.0.0.1' }, null, 'x'],
+    system_info: { key: { deep: ['v'] } },
+  })
+  assert.equal(stripNul('a\u0000b'), 'ab')
+  assert.equal(stripNul(42), 42)
 })

@@ -56,3 +56,18 @@ export function truncateMiddle(text, maxBytes) {
   const tail = buf.subarray(buf.length - tailBytes).toString('utf8').replace(/^\uFFFD+/, '')
   return head + marker + tail
 }
+
+// Retire les octets NUL (U+0000) de toutes les chaînes d'une valeur JSON
+// (valeurs et clés d'objets, récursivement). Postgres les refuse dans TEXT
+// et JSONB : une seule chaîne corrompue côté agent faisait échouer tout le
+// checkin, inventaire (transactionnel) et last_seen compris.
+export function stripNul(value) {
+  if (typeof value === 'string') return value.includes('\u0000') ? value.replaceAll('\u0000', '') : value
+  if (Array.isArray(value)) return value.map(stripNul)
+  if (value && typeof value === 'object') {
+    const out = {}
+    for (const [k, v] of Object.entries(value)) out[stripNul(k)] = stripNul(v)
+    return out
+  }
+  return value
+}

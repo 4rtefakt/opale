@@ -8,7 +8,7 @@ import { evaluateAndPersist as evaluateCompliance } from '../../monitoring/lib/c
 import { logAudit } from '../../core/lib/audit.js'
 import { SNAPSHOT_COLUMNS, snapshotSelect } from '../lib/deployment-snapshots.js'
 import { checkDeviceClaim, CLAIM_REFUSAL_MESSAGES } from '../lib/device-claim.js'
-import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle } from '../lib/checkin-validation.js'
+import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle, stripNul } from '../lib/checkin-validation.js'
 import { ipOnlyKey } from '../../../lib/rate-limit.js'
 import { retentionDays } from '../../../lib/retention.js'
 import { SCRIPT_OUTPUT_MAX } from '../lib/script-output.js'
@@ -622,7 +622,7 @@ export default async function agentRoute(fastify) {
       tamper,
       system_info,
       system_perf,
-    } = req.body || {}
+    } = stripNul(req.body || {})   // octets NUL refusés par Postgres (TEXT / JSONB)
 
     // PowerShell 5 serialise les tableaux vides en null — normaliser ici
     const disks              = Array.isArray(_disks)      ? _disks      : []

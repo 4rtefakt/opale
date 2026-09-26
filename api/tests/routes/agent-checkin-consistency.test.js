@@ -108,13 +108,14 @@ test('échec en plein inventaire : poste, disques et interfaces précédents int
   })
   assert.equal(first.statusCode, 200, first.body)
 
-  // 2e interface invalide pour Postgres (octet NUL) : l'insertion échoue
-  // APRÈS la mise à jour du poste, des disques et la suppression des
-  // anciennes interfaces.
+  // Valeur refusée par Postgres (compteur non numérique pour un BIGINT) :
+  // l'insertion échoue APRÈS la mise à jour du poste, des disques, la
+  // suppression des anciennes interfaces et l'insertion des nouvelles.
   const bad = await checkin(fastify, secret, {
     hostname: device.hostname, os: 'Windows 11',
     disks: [{ letter: 'C:', size_gb: 256, used_pct: 95 }],
-    network: [{ mac: 'CC-CC', ip: '10.0.0.3', type: 'eth' }, { mac: 'DD-\u0000', ip: '10.0.0.4', type: 'eth' }],
+    network: [{ mac: 'CC-CC', ip: '10.0.0.3', type: 'eth' }, { mac: 'DD-DD', ip: '10.0.0.4', type: 'eth' }],
+    bandwidth: [{ adapter: 'eth0', bytes_sent: 'pas-un-nombre', bytes_recv: 1 }],
   })
   assert.equal(bad.statusCode, 500)
 
@@ -129,11 +130,34 @@ test('échec en plein inventaire : poste, disques et interfaces précédents int
   assert.equal(Number(dev.disk_used_pct), 40)
 })
 
+test('octets NUL dans les chaînes remontées : retirés à l’entrée, checkin accepté (poste vu en ligne)', { skip: SKIP }, async () => {
+  // Postgres refuse \u0000 dans TEXT et JSONB : sans nettoyage, une chaîne
+  // corrompue côté agent faisait échouer tout le checkin (inventaire annulé,
+  // last_seen compris → poste vu hors ligne).
+  const device = await seedDevice(db, { hostname: 'PC-NUL' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  await db.query(`UPDATE devices SET last_seen = now() - interval '3 days' WHERE id = $1`, [device.id])
+  const res = await checkin(fastify, secret, {
+    hostname: 'PC-NUL', os: 'Windows\u0000 11',
+    network: [{ mac: 'AA\u0000-BB', adapter: 'Ethernet\u0000', type: 'eth' }],
+    system_info: { current_user: 'jdoe\u0000' },
+    health: { defender: { engine: 'x\u0000' } },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  const { rows: [dev] } = await db.query(
+    `SELECT os, system_info->>'current_user' AS usr, last_seen > now() - interval '1 minute' AS fresh FROM devices WHERE id = $1`,
+    [device.id])
+  assert.deepEqual(dev, { os: 'Windows 11', usr: 'jdoe', fresh: true })
+  const { rows: ifaces } = await db.query(`SELECT mac, adapter FROM network_interfaces WHERE device_id = $1`, [device.id])
+  assert.deepEqual(ifaces, [{ mac: 'AA-BB', adapter: 'Ethernet' }])
+})
+
 test('nouveau poste : échec en plein inventaire → aucun poste à moitié créé', { skip: SKIP }, async () => {
   const { secret } = await seedAgentToken(db, { deviceId: null, label: 'install-ps1' })
   const bad = await checkin(fastify, secret, {
     hostname: 'PC-INV-NEW', serial: 'SN-INV-NEW',
-    network: [{ mac: 'EE-\u0000', type: 'eth' }],
+    network: [{ mac: 'EE-EE', type: 'eth' }],
+    bandwidth: [{ adapter: 'eth0', bytes_sent: 'pas-un-nombre' }],
   })
   assert.equal(bad.statusCode, 500)
   const { rows } = await db.query(`SELECT 1 FROM devices WHERE hostname = 'PC-INV-NEW'`)
