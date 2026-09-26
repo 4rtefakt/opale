@@ -25,7 +25,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { installFakeGraph, graphTime, fakeMail } from '../helpers/fake-graph-mail.js'
 import { pollOnce } from '../../modules/email-bridge/lib/poll-worker.js'
 import { _resetSystemFolderCache } from '../../modules/email-bridge/lib/graph-mail.js'
-import { MAX_INGEST_ATTEMPTS } from '../../modules/email-bridge/lib/poll-cursor.js'
+import { MAX_INGEST_ATTEMPTS, MAX_SKIP_PAGES } from '../../modules/email-bridge/lib/poll-cursor.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip poll-worker suite'
 
@@ -223,21 +223,52 @@ test('pollOnce : mail visible plus tard au même horodatage que le curseur → i
   }
 )
 
-test('pollOnce : rafale de plus de 250 mails dans la même seconde → la boîte n\'est jamais bloquée (warn)',
+test('pollOnce : rafale de plus de 250 mails dans la même seconde → tous ingérés, boîte jamais bloquée',
   { skip: SKIP }, async () => {
-    // Cas dégénéré : le listing inclusif renverrait toujours les mêmes 5
-    // pages (déjà traitées). Garde-fou : on passe la seconde, en le signalant.
+    // Le listing inclusif relit à chaque tick les ex aequo déjà traités :
+    // ces pages ne coûtent rien et ne comptent pas dans MAX_PAGES, sinon la
+    // fenêtre du tick en serait remplie (et le garde-fou perdrait la fin).
     const burst = Array.from({ length: 260 }, () => fakeMail({ receivedDateTime: at(1) }))
     const later = fakeMail({ receivedDateTime: at(2) })
     useGraph({ inbox: [...burst, later] })
-    const warns = []
-    const log = { info() {}, error() {}, warn: (_obj, msg) => warns.push(msg) }
+    const alerts = []
+    const log = { info() {}, warn: (_o, msg) => alerts.push(msg), error: (_o, msg) => alerts.push(msg) }
     try {
-      for (let tick = 0; tick < 10 && !(await ingestedIds()).includes(later.internetMessageId); tick++) {
-        await pollOnce(db, log)
-      }
-      assert.ok((await ingestedIds()).includes(later.internetMessageId), 'le mail suivant finit par être ingéré')
-      assert.ok(warns.some(m => /même horodatage/.test(m)), 'saut de seconde signalé')
+      for (let tick = 0; tick < 8; tick++) await pollOnce(db, log)
+      assert.deepEqual((await ingestedIds()).sort(), ids([...burst, later]).sort(), 'chaque mail de la rafale est ingéré')
+      assert.deepEqual(alerts, [], 'aucun saut de seconde')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollOnce : garde-fou (> MAX_SKIP_PAGES pages d\'ex aequo déjà traités) → erreur chiffrée, seconde suivante exacte',
+  { skip: SKIP }, async () => {
+    // Dernier recours, plus de 2000 mails dans la même seconde : état
+    // pré-rempli comme après 40 ticks. Curseur à la milliseconde (cas d'un
+    // curseur initialisé par now()) : la seconde suivante doit être 02.000,
+    // pas 02.200 — sinon le mail de 09:00:02 serait sauté.
+    const second = '2026-05-10T09:00:01.200Z'
+    const ties = Array.from({ length: MAX_SKIP_PAGES * 50 + 10 }, () => fakeMail({ receivedDateTime: second }))
+    const later = fakeMail({ receivedDateTime: at(2) })
+    const handled = ties.slice(0, MAX_SKIP_PAGES * 50)
+    await db.query(`UPDATE settings SET value = $1 WHERE key = $2`, [second, `mail.cursor.${MAILBOX}`])
+    await db.query(`INSERT INTO settings (key, value) VALUES ($1, $2)`, [
+      `mail.cursor_state.${MAILBOX}`, JSON.stringify({ at: second, done: handled.map(m => m.id), retry: null }),
+    ])
+    useGraph({ inbox: [...ties, later] })
+    const errors = []
+    const log = { info() {}, warn() {}, error: (obj, msg) => errors.push({ obj, msg }) }
+    try {
+      await pollOnce(db, log)
+      assert.equal(errors.length, 1, 'saut de seconde signalé en erreur')
+      assert.equal(errors[0].obj.already_handled, handled.length)
+      assert.match(errors[0].msg, /PAS ingérés/)
+      assert.equal(await cursorMs(), Date.parse(at(2)), 'seconde suivante exacte (millisecondes du curseur ignorées)')
+
+      await pollOnce(db, log)
+      assert.ok((await ingestedIds()).includes(later.internetMessageId))
     } finally {
       graph.restore()
     }

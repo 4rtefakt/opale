@@ -41,7 +41,8 @@
 import { logAudit } from '../../core/lib/audit.js'
 
 export const PAGE_SIZE = 50
-export const MAX_PAGES = 5
+export const MAX_PAGES = 5          // pages Graph avec du travail, par tick
+export const MAX_SKIP_PAGES = 40    // pages d'ids `done` seulement (ex aequo), par tick
 export const MAX_INGEST_ATTEMPTS = 5
 
 // Clé d'un mail dans `done` : l'id Graph (unique dans la boîte ; deux copies
@@ -108,6 +109,7 @@ export async function pollMailboxCursor(db, log, {
   let errors = 0
   let abandoned = 0
   let pages = 0
+  let skipPages = 0
   let processed = 0
   let progressed = false
   let blocked = false
@@ -124,8 +126,8 @@ export async function pollMailboxCursor(db, log, {
       log?.warn({ err: err.message, mailbox }, `${tag}: listing Graph a échoué`)
       break
     }
-    pages++
     const atBefore = at
+    let skipOnly = true
 
     const toProcess = new Set(page?.value || [])
     for (const m of page?.scanned || page?.value || []) {
@@ -133,6 +135,7 @@ export async function pollMailboxCursor(db, log, {
       const ts = Date.parse(m?.[dateField])
       // Déjà traité à l'horodatage du curseur (listing inclusif) → rien à faire.
       if (!(ts > at) && key && done.has(key)) continue
+      skipOnly = false
 
       if (toProcess.has(m)) {
         processed++
@@ -159,6 +162,13 @@ export async function pollMailboxCursor(db, log, {
       progressed = true
     }
 
+    // Une page d'ids déjà traités (ex aequo relus par le listing inclusif)
+    // ne coûte ni DB ni traitement : décomptée à part (MAX_SKIP_PAGES), pour
+    // qu'une rafale de plus de MAX_PAGES × PAGE_SIZE mails dans la même
+    // seconde n'occupe pas toute la fenêtre du tick.
+    if (skipOnly) skipPages++
+    else pages++
+
     if (blocked) break
     // Page suivante. Le nextLink Graph est un décalage (`$skip`), pas un
     // instantané : si un mail de cette page quitte la plage entre-temps
@@ -174,15 +184,19 @@ export async function pollMailboxCursor(db, log, {
     } else {
       nextLink = graphNext
     }
-  } while (graphNext && pages < MAX_PAGES && processed < PAGE_SIZE)
+  } while (graphNext && pages < MAX_PAGES && skipPages < MAX_SKIP_PAGES && processed < PAGE_SIZE)
 
-  // Plus de MAX_PAGES × PAGE_SIZE mails au même horodatage, tous déjà
-  // traités : le listing inclusif ne passerait jamais ce paquet. Cas
-  // dégénéré (rafale dans la même seconde) : on passe la seconde, en le
-  // signalant, plutôt que de bloquer la boîte.
-  if (!progressed && !blocked && graphNext && pages >= MAX_PAGES) {
-    log?.warn({ mailbox, cursor }, `${tag}: plus de ${MAX_PAGES * PAGE_SIZE} mails au même horodatage, curseur avancé d'une seconde`)
-    at += 1000
+  // Dernier recours : MAX_SKIP_PAGES pages d'ex aequo déjà traités sans rien
+  // de nouveau (plus de MAX_SKIP_PAGES × PAGE_SIZE mails dans la même
+  // seconde) — le listing inclusif ne dépasserait jamais ce paquet et la
+  // boîte serait bloquée. On passe à la seconde suivante (secondes pleines :
+  // les millisecondes d'un curseur initialisé par now() feraient sauter les
+  // mails de la seconde suivante) ; les mails de cette seconde pas encore
+  // lus ne seront PAS ingérés — signalé en erreur, avec le décompte.
+  if (!progressed && !blocked && graphNext && skipPages >= MAX_SKIP_PAGES) {
+    log?.error({ mailbox, cursor, already_handled: done.size },
+      `${tag}: plus de ${done.size} mails dans la même seconde, curseur passé à la seconde suivante — les mails restants de cette seconde ne sont PAS ingérés`)
+    at = Math.floor(at / 1000) * 1000 + 1000
     done.clear()
   }
 
