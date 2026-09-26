@@ -204,16 +204,30 @@ requires setting that account's description to the branding value first.
 }
 ```
 
+Keys are exact and case-sensitive: only `weekdays`, `start`, `end`, `tz`.
 `weekdays`: 0=Sunday … 6=Saturday; empty/absent = every day. `start` /
-`end`: `H:MM` or `HH:MM` (00:00–23:59); `end < start` crosses midnight.
-`tz`: IANA name, default UTC. No setting (or `null` / `{}`) = always open.
+`end`: both or neither, `H:MM` or `HH:MM` (00:00–23:59); `end < start`
+crosses midnight; `start == end` = open all day. `tz`: IANA name, default
+UTC. No setting (or `null` / `{}`) = always open.
 
-A window that is set but **invalid** (unreadable JSON, wrong JSON types,
-unknown time zone, malformed time, weekday outside 0–6) blocks
-deployments: none are sent, they stay *pending* until the setting is
-fixed, and the API logs a warning once per distinct value. Scripts and
-agent updates still treat it as open. The window is only sent to agents
-when its JSON types are ones they can decode (otherwise `null`).
+A window that is set but **invalid** blocks deployments: none are sent,
+they stay *pending* until the setting is fixed, and the API logs a
+warning (at most once an hour per distinct value). Invalid means:
+unreadable JSON, any other key (`Start`, `days`, `from`/`to`…), wrong
+JSON types, a time zone the API does not know, a malformed time or
+`start` without `end`, a weekday outside 0–6. Scripts are unaffected.
+Agent updates are still offered according to the window as the API
+evaluates it: an unknown time zone or a malformed time counts as open
+there, but a weekday outside 0–6 is not fail-open — it simply matches no
+day.
+
+Agents receive a copy limited to the four keys (`null` if a type is
+wrong, which would otherwise make the agent reject the whole checkin
+response). Time zones: the API accepts whatever ICU accepts (e.g.
+lower-case `europe/paris`, but not `Local`); the agent uses the Go time
+zone database, where names are case-sensitive, `Local` is the endpoint's
+own zone and an unknown name counts as always open. That difference only
+affects when the agent applies an update.
 **No UI editor today** — set via SQL.
 
 ---
