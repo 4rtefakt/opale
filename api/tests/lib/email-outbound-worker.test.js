@@ -276,3 +276,60 @@ test('flushOutbox : multi-inbound → reply cible le dernier mail Graph du fil',
   assert.equal(s.replied.length, 1)
   assert.equal(s.replied[0].graphMessageId, 'graph-m2', 'cible le dernier mail inbound')
 })
+
+// ── Concurrence : deux ticks (ou deux instances) sur le même message ────────
+
+// Pool qui, juste avant la marque d'envoi du tick A, exécute un tick B
+// complet : reproduit l'entrelacement où B a lu le message (pickPending)
+// avant que A ne le marque — cas des ticks qui se chevauchent quand Graph
+// est lent (intervalle 10 s).
+function interleavingDb(beforeMark) {
+  let fired = false
+  return {
+    query: async (text, params) => {
+      if (!fired && /UPDATE ticket_messages\s+SET email_sent_at/.test(text)) {
+        fired = true
+        await beforeMark()
+      }
+      return db.query(text, params)
+    },
+  }
+}
+
+test('flushOutbox : deux ticks concurrents sur le même message → un seul envoi', { skip: SKIP }, async () => {
+  const tid = await seedTicket()
+  await seedInboundMapping(tid)
+  const msgId = await seedMessage(tid, { content: 'Une seule fois' })
+
+  const s = stubs()
+  let statsB
+  const dbA = interleavingDb(async () => { statsB = await flushOutbox(db, null, s.opts) })
+  const statsA = await flushOutbox(dbA, null, s.opts)
+
+  assert.equal(s.replied.length + s.sent.length, 1, 'le mail ne doit partir qu’une fois')
+  assert.equal(statsB.sent, 1)
+  assert.equal(statsA.sent, 0)
+  assert.equal(statsA.errors, 0, 'message déjà pris : ni erreur ni tentative comptée')
+  const { rows } = await db.query(`SELECT email_sent_at, outbound_attempts FROM ticket_messages WHERE id = $1`, [msgId])
+  assert.ok(rows[0].email_sent_at)
+  assert.equal(rows[0].outbound_attempts, 0)
+})
+
+test('flushOutbox : échec puis tick suivant → message repris et envoyé (retry inchangé)', { skip: SKIP }, async () => {
+  const tid = await seedTicket()
+  await seedInboundMapping(tid)
+  const msgId = await seedMessage(tid, { content: 'Deuxième essai' })
+
+  const reply503 = async () => { throw new Error('Graph sendReply/createReply: 503 — throttled') }
+  const first = await flushOutbox(db, null, { sendReplyImpl: reply503, sendImpl: reply503 })
+  assert.equal(first.errors, 1)
+
+  const s = stubs()
+  const second = await flushOutbox(db, null, s.opts)
+  assert.equal(second.sent, 1)
+  assert.equal(s.replied.length, 1)
+  const { rows } = await db.query(`SELECT email_sent_at, outbound_attempts, outbound_failed_at FROM ticket_messages WHERE id = $1`, [msgId])
+  assert.ok(rows[0].email_sent_at)
+  assert.equal(rows[0].outbound_attempts, 1)
+  assert.equal(rows[0].outbound_failed_at, null)
+})

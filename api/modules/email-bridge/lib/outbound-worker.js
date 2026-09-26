@@ -18,8 +18,11 @@
 // Erreurs : si Graph échoue, on laisse email_sent_at NULL → retry au tick
 // suivant. Idempotent côté Microsoft (sendMail crée un nouveau mail à chaque
 // call, donc en cas de retry, on enverra plusieurs fois). Pour limiter :
-// on UPDATE email_sent_at PRÉ-envoi avec un timestamp, on tente l'envoi,
-// si échec on annule le UPDATE. Trade-off : le retry est volontaire.
+// on RÉCLAME le message PRÉ-envoi (UPDATE email_sent_at … WHERE
+// email_sent_at IS NULL, atomique : un seul tick / une seule instance
+// l'obtient), on tente l'envoi, si échec on annule la marque. Trade-off :
+// le retry est volontaire ; un crash entre la réclamation et l'envoi laisse
+// le message marqué (au plus une fois plutôt qu'en double).
 
 import { sendMail, sendReply } from './graph-send.js'
 import { buildSubject } from './thread-headers.js'
@@ -121,12 +124,19 @@ function pickSubject(mappings, ticketTitle) {
   return ticketTitle || '(sans sujet)'
 }
 
-// Marque un message comme envoyé (ou réinitialise en cas d'échec).
-async function markSent(db, messageId, sentAt) {
-  await db.query(
-    `UPDATE ticket_messages SET email_sent_at = $1 WHERE id = $2`,
+// Réclame un message avant envoi : pose email_sent_at SEULEMENT s'il est
+// encore en attente. Atomique côté Postgres — deux ticks qui se chevauchent
+// (ou deux instances) ont pu lire le même message dans pickPending, un seul
+// obtient la ligne. Retourne le compteur de tentatives courant, ou null si
+// un autre tick l'a déjà pris (ou s'il est passé en dead-letter entre-temps).
+async function claimForSend(db, messageId, sentAt) {
+  const { rows } = await db.query(
+    `UPDATE ticket_messages SET email_sent_at = $1
+     WHERE id = $2 AND email_sent_at IS NULL AND outbound_failed_at IS NULL
+     RETURNING outbound_attempts`,
     [sentAt, messageId]
   )
+  return rows.length ? rows[0].outbound_attempts : null
 }
 
 // Gère un échec d'envoi : incrémente le compteur, annule la marque d'envoi,
@@ -148,7 +158,8 @@ async function markFailure(db, messageId, attemptsBefore, errMsg) {
 
 // Process un message : envoie via Graph (réponse threadée si possible,
 // sinon mail simple), marque la row. Retourne 'sent' |
-// 'skipped_no_recipient' | 'error'.
+// 'skipped_no_recipient' | 'skipped_claimed' (pris par un autre tick) |
+// 'dead_letter' | 'error'.
 //
 // sendReplyImpl / sendImpl injectables pour les tests.
 export async function sendOne(db, log, {
@@ -170,10 +181,10 @@ export async function sendOne(db, log, {
 
   const replyTarget = pickReplyTarget(mappings)
 
-  // Marquer PRÉ-envoi : évite un double-send si le worker tick deux fois
+  // Réclamer PRÉ-envoi : évite un double-send si le worker tick deux fois
   // pendant que Graph est lent. Si l'envoi échoue, on réinitialise.
-  const now = new Date()
-  await markSent(db, message.message_id, now)
+  const attemptsBefore = await claimForSend(db, message.message_id, new Date())
+  if (attemptsBefore === null) return 'skipped_claimed'
 
   // Envoi en mail neuf (fallback) : pas de threading, pas de headers
   // In-Reply-To/References (rejetés par Graph). Réutilisé par le chemin
@@ -222,10 +233,10 @@ export async function sendOne(db, log, {
     // d'envoi (retry possible) tant qu'on n'a pas atteint MAX_ATTEMPTS ;
     // au-delà, le message est mis de côté (outbound_failed_at) et n'est plus
     // repris automatiquement — l'admin le relance manuellement depuis l'UI.
-    const deadLetter = await markFailure(db, message.message_id, message.outbound_attempts, err.message)
+    const deadLetter = await markFailure(db, message.message_id, attemptsBefore, err.message)
     log?.warn({
       err: err.message, messageId: message.message_id,
-      attempts: (message.outbound_attempts || 0) + 1, deadLetter,
+      attempts: (attemptsBefore || 0) + 1, deadLetter,
     }, deadLetter
       ? 'outbound: abandon après MAX_ATTEMPTS, message en échec (dead-letter)'
       : 'outbound: send a échoué, retry au prochain tick')
@@ -240,14 +251,15 @@ export async function flushOutbox(db, log, { sendImpl, sendReplyImpl } = {}) {
   if (!cfg.sender)  return { skipped: 'no-sender-configured' }
 
   const pending = await pickPending(db, MAX_BATCH)
-  if (!pending.length) return { sent: 0, skipped_no_recipient: 0, errors: 0, dead_letter: 0 }
+  if (!pending.length) return { sent: 0, skipped_no_recipient: 0, skipped_claimed: 0, errors: 0, dead_letter: 0 }
 
-  const stats = { sent: 0, skipped_no_recipient: 0, errors: 0, dead_letter: 0 }
+  const stats = { sent: 0, skipped_no_recipient: 0, skipped_claimed: 0, errors: 0, dead_letter: 0 }
   for (const message of pending) {
     try {
       const r = await sendOne(db, log, { message, sender: cfg.sender, sendImpl, sendReplyImpl })
       if      (r === 'sent')                  stats.sent++
       else if (r === 'skipped_no_recipient')  stats.skipped_no_recipient++
+      else if (r === 'skipped_claimed')       stats.skipped_claimed++
       else if (r === 'dead_letter')           stats.dead_letter++
       else                                    stats.errors++
     } catch (err) {
