@@ -146,6 +146,20 @@ L'ordre alphabétique du nom de fichier détermine l'ordre d'exécution.
   s'intercalent avant `075` : non enregistrés, ils seront joués au démarrage
   suivant — ils doivent donc respecter les règles d'écriture ci-dessus (et
   les doublons de numéro être renommés, cf. notes 018 / 048).
+- `076_devices_ssh_host_key.sql` : empreinte de clé d'hôte SSH apprise par
+  poste (TOFU). Reprend le contenu de `074_devices_ssh_host_key` de la
+  branche `claude/tool-security-architecture-review-…` (mêmes colonnes,
+  `ADD COLUMN IF NOT EXISTS`) : si cette branche est fusionnée, supprimer
+  son `074` plutôt que de le renuméroter. Le `073_ssh_host_key` de
+  `security-fixes` / `fix/agent-freeze-hardening` réutilise la même colonne
+  `ssh_host_key_fp` (SHA-256 base64, mais AVEC padding « = » ; ce code écrit
+  sans padding et normalise à la comparaison, préfixe `SHA256:` compris,
+  donc les deux formats restent compatibles) avec `ssh_host_key_seen` au
+  lieu de `ssh_host_key_learned_at` : à réconcilier avec ce code plutôt que
+  de fusionner tel quel.
+- `077_clear_stale_ip_netbird.sql` : met à NULL les `devices.ip_netbird`
+  hors de 100.64.0.0/10 écrites avant le contrôle du check-in (une entrée
+  `ip_netbird_cleared` par poste dans `audit_logs`).
 
 ## Note sur les retouches de 010, 043, 046 et 060
 

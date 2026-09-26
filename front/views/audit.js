@@ -24,7 +24,9 @@ const _CATEGORIES = {
   security: {
     label: 'Tokens & sécurité',
     in: ['token_created', 'token_revoked', 'agent_bootstrap_exchange', 'admin_granted', 'admin_revoked',
-         'agent_bootstrap_exchange_refused', 'agent_token_bind_refused', 'agent_token_bound'],
+         'agent_bootstrap_exchange_refused', 'agent_token_bind_refused', 'agent_token_bound',
+         'ssh_host_key_learned', 'ssh_host_key_mismatch', 'ssh_host_key_reset',
+         'ip_netbird_cleared'],
   },
   agent_conn: {
     label: 'Connexion agent (bruyant)',
@@ -134,6 +136,10 @@ const _BADGE = {
   agent_bootstrap_exchange_refused: ['b-prog', 'ti-shield-x'],
   agent_token_bind_refused:  ['b-prog',   'ti-lock-x'],
   agent_token_bound:         ['b-done',   'ti-link'],
+  ssh_host_key_learned:      ['b-done',   'ti-key'],
+  ssh_host_key_mismatch:     ['b-closed', 'ti-alert-octagon'],
+  ssh_host_key_reset:        ['b-prog',   'ti-key-off'],
+  ip_netbird_cleared:        ['b-prog',   'ti-network-off'],
   agent_ws_connect:          ['b-done',   'ti-broadcast'],
   agent_ws_disconnect:       ['b-closed', 'ti-broadcast-off'],
   agent_console_open:        ['b-prog',   'ti-terminal-2'],
@@ -160,6 +166,10 @@ const _ACTION_LABEL = {
   agent_bootstrap_exchange_refused: 'échange bootstrap refusé',
   agent_token_bind_refused:         'liaison token refusée',
   agent_token_bound:                'token lié au poste',
+  ssh_host_key_learned:             'clé d\'hôte SSH apprise',
+  ssh_host_key_mismatch:            'clé d\'hôte SSH inattendue',
+  ssh_host_key_reset:               'clé d\'hôte SSH réinitialisée',
+  ip_netbird_cleared:               'IP Netbird invalide purgée',
 }
 
 function _formatDuration(s) {
@@ -199,6 +209,10 @@ function _summary(action, details) {
   if (action === 'agent_bootstrap_exchange_refused') return [details.reason, details.bootstrap_label, details.serial].filter(Boolean).join(' · ')
   if (action === 'agent_token_bind_refused')         return [details.reason, details.token_label, details.serial].filter(Boolean).join(' · ')
   if (action === 'agent_token_bound')                return [details.token_label, details.serial].filter(Boolean).join(' · ')
+  if (action === 'ssh_host_key_learned')             return [details.hostname, details.fingerprint].filter(Boolean).join(' · ')
+  if (action === 'ssh_host_key_mismatch')            return [details.hostname, `attendue ${details.expected_fingerprint || '?'}`, `présentée ${details.presented_fingerprint || '?'}`].join(' · ')
+  if (action === 'ssh_host_key_reset')               return details.hostname || ''
+  if (action === 'ip_netbird_cleared')               return [details.hostname, details.ip_netbird].filter(Boolean).join(' · ')
   return ''
 }
 

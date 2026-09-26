@@ -2,6 +2,7 @@ import { isIP } from 'node:net'
 import { Client } from 'ssh2'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
 import { scriptOutputForDb } from '../lib/script-output.js'
+import { hostKeyGuard } from '../../remote/lib/ssh-host-key.js'
 
 function sshKey() {
   const b64 = process.env.SSH_PRIVATE_KEY_B64
@@ -20,8 +21,24 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
     const conn = new Client()
     const output = []
     const t0 = Date.now()
+    let hostKeyRejection = null
+    let sshFailed = false
+    // Clé d'hôte vérifiée avant authentification, mémorisée sur 'ready' au
+    // premier contact (cf. remote/lib/ssh-host-key.js).
+    const guard = hostKeyGuard(
+      { db: fastify.db, log: fastify.log }, device,
+      { onReject: (msg) => { hostKeyRejection = msg } }
+    )
 
-    conn.on('ready', () => {
+    // Pas de gestionnaire async sur 'ready' : si l'hôte raccroche pendant
+    // confirm(), conn.exec() lève « Not connected », et l'exception
+    // deviendrait un rejet non géré qui arrête l'API.
+    conn.on('ready', () => guard.confirm().then((confirmed) => {
+      if (!confirmed) {
+        conn.end()
+        send('error', `Connexion SSH échouée : ${hostKeyRejection}`)
+        return resolve({ status: 'error', output: hostKeyRejection, duration: Date.now() - t0 })
+      }
       send('connected', `Connecté à ${device.hostname} (${device.ip_netbird})`)
       conn.exec(scriptCode, { pty: false }, (err, stream) => {
         if (err) {
@@ -47,11 +64,20 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
           resolve({ status, output: output.join(''), duration })
         })
       })
-    })
-
-    conn.on('error', (err) => {
+    }).catch((err) => {
+      conn.end()
+      if (sshFailed) return
       send('error', `Connexion SSH échouée : ${err.message}`)
       resolve({ status: 'error', output: err.message, duration: Date.now() - t0 })
+    }))
+
+    conn.on('error', (err) => {
+      sshFailed = true
+      // Clé d'hôte refusée : ssh2 lève une erreur générique, on garde le
+      // message explicite de la vérification.
+      const message = hostKeyRejection || err.message
+      send('error', `Connexion SSH échouée : ${message}`)
+      resolve({ status: 'error', output: message, duration: Date.now() - t0 })
     })
 
     conn.connect({
@@ -59,6 +85,7 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
       port:       parseInt(process.env.SSH_PORT || '22', 10),
       username:   process.env.SSH_USER || 'opale',
       privateKey: sshKey(),
+      ...guard.sshOptions,
       readyTimeout: 10_000
     })
   })

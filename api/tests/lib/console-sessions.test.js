@@ -212,3 +212,24 @@ test('agentWs disconnect — ferme toutes les sessions du device', async () => {
   // Le registry doit aussi avoir oublié le sessionId individuel.
   assert.equal(registry.get(sess.id), null)
 })
+
+test('agentWs disconnect avec une raison (évincement) — raison reportée sur la session', async () => {
+  const { registry, agentWs, queries, makeAgentConn, makeBrowserSocket } = setup()
+  const agentConn = makeAgentConn()
+  await registry.create({
+    deviceId: 'device-2',
+    agentConn,
+    browserSocket: makeBrowserSocket(),
+    identity,
+  })
+
+  // Forme émise par AgentWSRegistry.evict (token révoqué).
+  agentWs.emit('disconnect', 'device-2', agentConn, { reason: 'token-revoked', code: 4401 })
+  await new Promise(r => setImmediate(r))
+  await new Promise(r => setImmediate(r))
+
+  assert.equal(registry.count(), 0)
+  const update = queries.find(q => /UPDATE remote_sessions/.test(q.sql))
+  assert.equal(update.params[0], 'token-revoked')
+  assert.equal(agentConn.sent.find(f => f.type === 'console.close')?.data.reason, 'token-revoked')
+})
