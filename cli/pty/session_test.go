@@ -2,8 +2,15 @@ package pty
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestToWS(t *testing.T) {
@@ -171,5 +178,78 @@ func TestHandleFrame_MalformedFramesSurfaceAnError(t *testing.T) {
 	r = feed(`{"type":"futur","data":{"x":1}}`)
 	if r.err != nil || r.end || r.stdout != "" || r.stderr != "" {
 		t.Errorf("type inconnu : %+v, want ignoré", r)
+	}
+}
+
+// dialTestWS ouvre une connexion cliente vers un serveur httptest+gorilla
+// dont le côté serveur est piloté par serve (pas de TTY nécessaire).
+func dialTestWS(t *testing.T, serve func(c *websocket.Conn)) *websocket.Conn {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		c, err := (&websocket.Upgrader{}).Upgrade(rw, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		serve(c)
+	}))
+	t.Cleanup(srv.Close)
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+// Resize (SIGWINCH) et frappe écrivent en même temps sur la connexion : sans
+// sérialisation, gorilla panique (« concurrent write to websocket
+// connection ») et `go test -race` signale une DATA RACE.
+func TestWSWriter_ConcurrentResizeAndInput(t *testing.T) {
+	const n = 300
+	got := make(chan map[string]int, 1)
+	conn := dialTestWS(t, func(c *websocket.Conn) {
+		counts := map[string]int{}
+		for {
+			_, raw, err := c.ReadMessage()
+			if err != nil {
+				break
+			}
+			var m wsMsg
+			if json.Unmarshal(raw, &m) != nil {
+				counts["invalide"]++
+				continue
+			}
+			counts[m.Type]++
+		}
+		got <- counts
+	})
+	w := &wsWriter{conn: conn}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		pumpInput(strings.NewReader(strings.Repeat("x", 4096*n)), w)
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			if err := writeResize(w, 80+i%10, 24); err != nil {
+				t.Errorf("resize %d : %v", i, err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	conn.Close()
+
+	select {
+	case counts := <-got:
+		if counts["input"] != n || counts["resize"] != n || counts["invalide"] != 0 {
+			t.Errorf("frames reçues = %v, want %d input + %d resize intactes", counts, n, n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveur de test : pas de fin de lecture")
 	}
 }

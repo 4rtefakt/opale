@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
@@ -41,8 +42,10 @@ func Connect(serverURL, wsPath string) error {
 	}
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
+	w := &wsWriter{conn: conn}
+
 	// Initial size
-	sendResize(conn)
+	sendResize(w)
 
 	// Resize notifications (SIGWINCH on Unix; no-op on Windows — see session_*.go)
 	resizeCh := newResizeChan()
@@ -67,30 +70,51 @@ func Connect(serverURL, wsPath string) error {
 
 	// stdin → server
 	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
-				done <- nil
-				return
-			}
-			b64 := base64.StdEncoding.EncodeToString(buf[:n])
-			msg, _ := json.Marshal(wsMsg{Type: "input", Data: b64})
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				done <- nil
-				return
-			}
-		}
+		pumpInput(os.Stdin, w)
+		done <- nil
 	}()
 
 	// resize
 	go func() {
 		for range resizeCh {
-			sendResize(conn)
+			sendResize(w)
 		}
 	}()
 
 	return <-done
+}
+
+// wsWriter sérialise les écritures : gorilla/websocket n'admet qu'un seul
+// écrivain à la fois, or stdin et resize écrivent depuis deux goroutines
+// (sinon panic « concurrent write », qui saute term.Restore et laisse le
+// terminal en raw).
+type wsWriter struct {
+	mu   sync.Mutex
+	conn *websocket.Conn
+}
+
+func (w *wsWriter) send(typ string, data any) error {
+	msg, err := json.Marshal(wsMsg{Type: typ, Data: data})
+	if err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.conn.WriteMessage(websocket.TextMessage, msg)
+}
+
+// pumpInput relaie r vers le serveur jusqu'à une erreur de lecture ou d'écriture.
+func pumpInput(r io.Reader, w *wsWriter) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		if err != nil {
+			return
+		}
+		if err := w.send("input", base64.StdEncoding.EncodeToString(buf[:n])); err != nil {
+			return
+		}
+	}
 }
 
 // handleFrame traite une frame serveur → client. Les deux transports n'ont
@@ -197,16 +221,16 @@ func exitReason(data json.RawMessage) string {
 	return "code ?"
 }
 
-func sendResize(conn *websocket.Conn) {
+func sendResize(w *wsWriter) {
 	cols, rows, err := term.GetSize(int(os.Stdin.Fd()))
 	if err != nil {
 		return
 	}
-	msg, _ := json.Marshal(wsMsg{
-		Type: "resize",
-		Data: map[string]int{"cols": cols, "rows": rows},
-	})
-	conn.WriteMessage(websocket.TextMessage, msg)
+	writeResize(w, cols, rows)
+}
+
+func writeResize(w *wsWriter, cols, rows int) error {
+	return w.send("resize", map[string]int{"cols": cols, "rows": rows})
 }
 
 func toWS(s string) string {
