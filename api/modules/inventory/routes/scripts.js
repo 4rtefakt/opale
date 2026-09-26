@@ -1,5 +1,6 @@
 import { Client } from 'ssh2'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
+import { SCRIPT_OUTPUT_MAX } from '../lib/script-output.js'
 
 function sshKey() {
   const b64 = process.env.SSH_PRIVATE_KEY_B64
@@ -181,15 +182,28 @@ export default async function scriptsRoute(fastify) {
       execIds[d.id] = rows[0].id
     }
 
-    // Exécution en parallèle sur tous les postes
+    // Exécution en parallèle sur tous les postes. Chaque poste est finalisé
+    // indépendamment : un échec (clé SSH absente, erreur d'enregistrement…)
+    // ne laisse ni ce poste ni les autres en 'running', et la réponse SSE se
+    // termine toujours. Sortie tronquée à la taille de la colonne (sinon
+    // 22001 et ligne bloquée en 'running').
     await Promise.all(devices.map(async (device) => {
       const execId = execIds[device.id]
-      const result = await execOnDevice(fastify, device, script.code, execId, reply)
-      await fastify.db.query(`
-        UPDATE script_executions
-        SET status=$1, output=$2, duration_ms=$3
-        WHERE id=$4
-      `, [result.status, result.output.slice(0, 100000), result.duration, execId])
+      let result
+      try {
+        result = await execOnDevice(fastify, device, script.code, execId, reply)
+      } catch (err) {
+        result = { status: 'error', output: err.message, duration: 0 }
+      }
+      try {
+        await fastify.db.query(`
+          UPDATE script_executions
+          SET status=$1, output=$2, duration_ms=$3
+          WHERE id=$4
+        `, [result.status, String(result.output ?? '').slice(0, SCRIPT_OUTPUT_MAX), result.duration, execId])
+      } catch (err) {
+        fastify.log.warn({ err: err.message, execId }, 'script SSH : enregistrement du résultat échoué')
+      }
     }))
 
     if (!reply.raw.writableEnded) {

@@ -11,6 +11,7 @@ import { checkDeviceClaim, CLAIM_REFUSAL_MESSAGES } from '../lib/device-claim.js
 import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle } from '../lib/checkin-validation.js'
 import { ipOnlyKey } from '../../../lib/rate-limit.js'
 import { retentionDays } from '../../../lib/retention.js'
+import { SCRIPT_OUTPUT_MAX } from '../lib/script-output.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -174,9 +175,6 @@ function semverGt(a, b) {
 function hashToken(t) {
   return crypto.createHash('sha256').update(t).digest('hex')
 }
-
-// Taille de script_executions.output (VARCHAR(10000), migration 029).
-const SCRIPT_OUTPUT_MAX = 10000
 
 // Taille max d'un POST /setup-log (route sans auth) : large pour un log
 // d'installation, borné pour ne pas remplir audit_logs (défaut Fastify : 1 Mio).
