@@ -80,16 +80,23 @@ export function renderSSH(el, id) {
 }
 
 async function connectSSH(id) {
+  // L'utilisateur est-il toujours sur l'écran SSH de CE poste ? Vérifié après
+  // chaque attente : s'il est parti entre-temps, on n'affiche pas le motif sur
+  // un autre écran, on ne demande pas de grant et on n'ouvre pas de socket.
+  const onThisScreen = () => _deviceId === id && window.location.hash.startsWith('#/ssh/')
+
   // Motif obligatoire (RGPD / traçabilité) : POST /api/ssh/grant répond 400
   // sans { category, note }. Annulation → retour à la fiche poste.
   let host = ''
   try { host = (await window.api.getDevice(id))?.hostname || '' } catch {}
+  if (!onThisScreen()) return
   const reason = await mPromptRemoteReason(host)
   if (!reason) {
     // Pas de redirection si l'utilisateur a déjà quitté cet écran SSH.
-    if (_deviceId === id && window.location.hash.startsWith('#/ssh/')) window.mSSHDisconnect()
+    if (onThisScreen()) window.mSSHDisconnect()
     return
   }
+  if (!onThisScreen()) return
 
   let nonce
   try {
@@ -99,6 +106,7 @@ async function connectSSH(id) {
     appendOutput('\n⚠ ' + (err.message || 'Refus autorisation SSH') + '\n')
     return
   }
+  if (!onThisScreen()) return
   const wsProto = location.protocol === 'https:' ? 'wss' : 'ws'
   const wsUrl   = `${wsProto}://${location.host}/api/ssh/${encodeURIComponent(id)}?nonce=${encodeURIComponent(nonce)}`
 
