@@ -22,6 +22,7 @@ import { matchThread }   from './match-thread.js'
 import { classifyWithOllama } from './classify.js'
 import { getMessage }    from './graph-mail.js'
 import { extractMailBodyText, htmlToText } from './body-text.js'
+import { stripNul }      from './sanitize.js'
 
 // Microsoft Graph dit que `bodyPreview` est plain text, mais en pratique
 // quelques mails Outlook (forwards inline, contenus mixtes) ont du HTML
@@ -145,7 +146,10 @@ async function appendReplyToProposal(client, { proposalId, graphMessage, sender,
 //            absent pour un 'skipped_error' définitif (mail sans
 //            internetMessageId, proposal disparue — mapping déjà écrit).
 //            Accompagné de `classifier` (réutilisable via `classifierResult`).
-export async function processOne(db, log, { graphMessage, mailbox, classifierFn, classifierResult }) {
+export async function processOne(db, log, { graphMessage: rawMessage, mailbox, classifierFn, classifierResult }) {
+  // Caractères NUL retirés d'entrée (sujet, expéditeur, raw…) : sinon rejet
+  // Postgres systématique, mail « poison » fabricable de l'extérieur.
+  const graphMessage = stripNul(rawMessage)
   const internetMessageId = graphMessage.internetMessageId
   if (!internetMessageId) {
     log?.warn({ mailbox, graphId: graphMessage.id }, 'process: mail sans internetMessageId, skip')
@@ -206,7 +210,7 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn,
   if (threadMatch?.ticket_id || threadMatch?.proposal_id) {
     try {
       const full = await getMessage(mailbox, graphMessage.id)
-      bodyText = extractMailBodyText(graphMessage, full)
+      bodyText = stripNul(extractMailBodyText(graphMessage, full))
     } catch (err) {
       log?.warn({ err: err.message, internetMessageId },
         'process: full body fetch failed, fallback sur bodyPreview')
@@ -239,7 +243,7 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn,
       graphMessage.subject || null,
       graphMessage.receivedDateTime || null,
       JSON.stringify(graphMessage),
-      JSON.stringify(classifier),
+      JSON.stringify(stripNul(classifier)),
     ])
     if (insertMapping.rowCount === 0) {
       await client.query('ROLLBACK')

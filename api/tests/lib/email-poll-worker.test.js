@@ -504,6 +504,29 @@ test('pollOnce : boîte bloquée par deux mails poison consécutifs → le SQL d
   }
 )
 
+test('pollOnce : caractère NUL dans sujet / expéditeur / aperçu (mail externe) → ingéré, NUL retiré',
+  { skip: SKIP }, async () => {
+    // Postgres refuse 0x00 dans un TEXT et \u0000 dans un JSONB : sans
+    // nettoyage, n'importe quel expéditeur fabrique un mail « poison ».
+    const m = fakeMail({
+      receivedDateTime: at(1), subject: 'Impri\u0000mante',
+      from: { emailAddress: { address: 'ma\u0000rie@example.com', name: 'Ma\u0000rie' } },
+      bodyPreview: 'Elle\u0000 bloque',
+    })
+    useGraph({ inbox: [m] })
+    try {
+      await pollOnce(db, null)
+      const { rows } = await db.query(
+        `SELECT subject, from_address, raw->>'bodyPreview' AS preview FROM email_thread_mapping WHERE internet_message_id = $1`,
+        [m.internetMessageId])
+      assert.equal(rows.length, 1, 'mail ingéré')
+      assert.deepEqual(rows[0], { subject: 'Imprimante', from_address: 'marie@example.com', preview: 'Elle bloque' })
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
 test('pollOnce : curseur modifié par l\'admin pendant un tick (SQL de reprise) → le tick ne l\'écrase pas',
   { skip: SKIP }, async () => {
     // Pendant un blocage, chaque tick réécrit curseur + état : l'UPDATE de

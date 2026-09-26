@@ -29,6 +29,7 @@ import { matchSender } from './match-sender.js'
 import { matchThread } from './match-thread.js'
 import { getMessage }  from './graph-mail.js'
 import { extractMailBodyText, htmlToText } from './body-text.js'
+import { stripNul } from './sanitize.js'
 
 function indexHeaders(graphMessage) {
   const idx = {}
@@ -75,7 +76,9 @@ async function appendSentMessageToTicket(client, { ticketId, authorName, content
 //            | 'already_ingested' | 'skipped_error'
 //   retryable : true si la transaction a échoué (rien d'écrit, à retenter) ;
 //            absent pour le 'skipped_error' définitif (sans internetMessageId).
-export async function processSentOne(db, log, { graphMessage, mailbox, getMessageFn = getMessage, dryRun = false }) {
+export async function processSentOne(db, log, { graphMessage: rawMessage, mailbox, getMessageFn = getMessage, dryRun = false }) {
+  // Caractères NUL retirés d'entrée (cf. sanitize.js).
+  const graphMessage = stripNul(rawMessage)
   const internetMessageId = graphMessage?.internetMessageId
   if (!internetMessageId) {
     log?.warn({ mailbox, graphId: graphMessage?.id }, 'sent: mail sans internetMessageId, skip')
@@ -115,7 +118,7 @@ export async function processSentOne(db, log, { graphMessage, mailbox, getMessag
   let bodyText = null
   try {
     const full = await getMessageFn(mailbox, graphMessage.id)
-    bodyText = extractMailBodyText(graphMessage, full)
+    bodyText = stripNul(extractMailBodyText(graphMessage, full))
   } catch (err) {
     log?.warn({ err: err.message, internetMessageId },
       'sent: full body fetch failed, fallback bodyPreview')

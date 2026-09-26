@@ -141,6 +141,22 @@ test('pollSentOnce : réponse visible plus tard au même sentDateTime que le cur
   }
 )
 
+test('pollSentOnce : caractère NUL dans le sujet et le corps d\'une réponse → ajoutée au ticket, NUL retiré',
+  { skip: SKIP }, async () => {
+    const reply = sentReply(1, 'Voici\u0000 la marche à suivre.')
+    reply.subject = 'RE: Impri\u0000mante'
+    graph = installFakeGraph({ sent: [reply] })
+    try {
+      await pollSentOnce(db, null)
+      assert.deepEqual(await ticketContents(), ['Voici la marche à suivre.'])
+      const { rows } = await db.query(`SELECT subject FROM email_thread_mapping WHERE internet_message_id = $1`, [reply.internetMessageId])
+      assert.equal(rows[0]?.subject, 'RE: Imprimante')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
 test('pollSentOnce : réponse poison suivie de 60 mails non rattachés puis d\'une réponse → verdict atteint, poison abandonnée',
   { skip: SKIP }, async () => {
     // Pendant qu'un suspect attend son verdict, les mails qui n'écrivent

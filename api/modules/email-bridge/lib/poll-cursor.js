@@ -63,6 +63,7 @@
 // manuelle en SQL), puis en log error à chaque tick.
 
 import { logAudit } from '../../core/lib/audit.js'
+import { stripNul } from './sanitize.js'
 
 export const PAGE_SIZE = 50
 export const MAX_PAGES = 5          // pages Graph avec du travail, par tick
@@ -183,7 +184,7 @@ async function alertBlocked(db, log, { mailbox, cursorKey, message, dateField, r
       ] : []),
     ].join('\n'),
   }
-  await logAudit(db, log, { action: 'mail_ingest_blocked', byUser: 'system', target: mailbox, details })
+  await logAudit(db, log, { action: 'mail_ingest_blocked', byUser: 'system', target: mailbox, details: stripNul(details) })
 }
 
 async function abandon(db, log, { mailbox, message, key, dateField, attempts, error, tag }) {
@@ -198,7 +199,7 @@ async function abandon(db, log, { mailbox, message, key, dateField, attempts, er
   }
   log?.error({ mailbox, ...details },
     `${tag}: mail abandonné après ${attempts} échecs (ré-ingérable en reculant le curseur)`)
-  await logAudit(db, log, { action: 'mail_ingest_abandoned', byUser: 'system', target: mailbox, details })
+  await logAudit(db, log, { action: 'mail_ingest_abandoned', byUser: 'system', target: mailbox, details: stripNul(details) })
 }
 
 // Parcourt la boîte depuis `cursor` (ISO normalisé) et sauvegarde la
