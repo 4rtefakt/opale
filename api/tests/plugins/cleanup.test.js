@@ -90,7 +90,7 @@ test('scripts agent réservés sans résultat depuis plus d’1 h : passés en e
   const stale   = await ins('agent', 'running', 120)
   const recent  = await ins('agent', 'running', 10)
   const waiting = await ins('agent', 'pending', 180)   // poste éteint : attente légitime
-  const ssh     = await ins('ssh',   'running', 120)   // hors périmètre (exécuté par l'API)
+  const ssh     = await ins('ssh',   'running', 120)   // SSH : seuil propre (6 h), cf. test suivant
   const { rows: [pkg] } = await db.query(`INSERT INTO packages (name, status) VALUES ('Stuck pkg', 'approved') RETURNING id`)
   const { rows: [dep] } = await db.query(`
     INSERT INTO deployments (package_id, device_id, status, started_at)
@@ -141,4 +141,26 @@ test('timeout des scripts : une sortie déjà pleine (10 000 caractères) ne blo
     assert.ok(r.has_msg, 'message de timeout présent')
     assert.ok(r.len <= 10000)
   }
+})
+
+test('exécutions SSH orphelines (API redémarrée pendant l’exécution) : passées en erreur après 6 h', { skip: SKIP }, async (t) => {
+  const ins = async (hoursAgo) => (await db.query(`
+    INSERT INTO script_executions (device_id, mode, status, script_name, started_at)
+    VALUES ($1, 'ssh', 'running', 'ssh-stuck', now() - make_interval(hours => $2)) RETURNING id`,
+    [deviceId, hoursAgo])).rows[0].id
+  const orphan = await ins(7)
+  const recent = await ins(3)
+
+  const app = Fastify({ logger: false })
+  app.decorate('db', db)
+  await app.register(cleanupPlugin)
+  await app.ready()
+  t.after(() => app.close())
+
+  const row = async (id) => (await db.query(
+    `SELECT status, output FROM script_executions WHERE id = $1`, [id])).rows[0]
+  const o = await row(orphan)
+  assert.equal(o.status, 'error')
+  assert.match(o.output, /exécution SSH sans résultat après 6 h/)
+  assert.equal((await row(recent)).status, 'running')
 })

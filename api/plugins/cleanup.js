@@ -38,9 +38,15 @@ async function timeoutStuckDeployments(fastify) {
 // à vie. L'agent coupe chaque script à 5 min et en reçoit au plus 5 par
 // checkin : 60 min laissent une large marge. Statut 'error' (celui d'un
 // échec renvoyé par l'agent) avec un message explicite ; un résultat qui
-// arriverait plus tard écrase toujours la ligne. Les exécutions SSH
-// (mode 'ssh', pilotées par l'API elle-même) ne sont pas concernées.
+// arriverait plus tard écrase toujours la ligne.
+//
+// Exécutions SSH (mode 'ssh') : pilotées par l'API elle-même (requête SSE
+// de l'admin), finalisées quand la commande distante se termine. Si l'API
+// redémarre pendant l'exécution, ou si la commande ne rend jamais la main,
+// la ligne restait aussi 'running' à vie. Seuil large (6 h) : une
+// exécution SSH légitime dure au plus quelques minutes.
 const SCRIPT_RUNNING_TIMEOUT_MIN = 60
+const SSH_SCRIPT_RUNNING_TIMEOUT_HOURS = 6
 
 async function timeoutStuckScripts(fastify) {
   try {
@@ -50,13 +56,16 @@ async function timeoutStuckScripts(fastify) {
           completed_at = now(),
           -- output est VARCHAR(10000) : on garde la place du message (sinon
           -- 22001 sur une ligne ferait échouer tout l'UPDATE, à chaque passage).
-          output       = left(COALESCE(output, ''), 9800) || E'\n[serveur] Timeout : aucun résultat reçu de l''agent après ${SCRIPT_RUNNING_TIMEOUT_MIN} min. Relancer le script si besoin.'
-      WHERE mode = 'agent'
-        AND status = 'running'
-        AND started_at < now() - INTERVAL '${SCRIPT_RUNNING_TIMEOUT_MIN} minutes'
+          output       = left(COALESCE(output, ''), 9800) || CASE WHEN mode = 'agent'
+            THEN E'\n[serveur] Timeout : aucun résultat reçu de l''agent après ${SCRIPT_RUNNING_TIMEOUT_MIN} min. Relancer le script si besoin.'
+            ELSE E'\n[serveur] Timeout : exécution SSH sans résultat après ${SSH_SCRIPT_RUNNING_TIMEOUT_HOURS} h (API redémarrée ou commande bloquée). Relancer le script si besoin.'
+          END
+      WHERE status = 'running'
+        AND (   (mode = 'agent' AND started_at < now() - INTERVAL '${SCRIPT_RUNNING_TIMEOUT_MIN} minutes')
+             OR (mode = 'ssh'   AND started_at < now() - INTERVAL '${SSH_SCRIPT_RUNNING_TIMEOUT_HOURS} hours'))
     `)
     if (res.rowCount > 0) {
-      fastify.log.info({ count: res.rowCount }, 'cleanup: scripts agent stuck running → error')
+      fastify.log.info({ count: res.rowCount }, 'cleanup: scripts (agent / SSH) stuck running → error')
     }
   } catch (err) {
     fastify.log.warn({ err: err.message }, 'cleanup: timeout scripts échoué (non-bloquant)')
