@@ -13,11 +13,10 @@ func processCommands(ctx context.Context, cfg *Config, cmds []Command) {
 	}
 }
 
-func processDeployments(ctx context.Context, deps []Deployment) ([]DeploymentResult, []DetectionResult) {
+func processDeployments(ctx context.Context, deps []Deployment, sink resultSink) {
 	if len(deps) > 0 {
 		logf("processDeployments : no-op (build non-Windows), %d déploiements ignorés", len(deps))
 	}
-	return nil, nil
 }
 
 func processDetect(ctx context.Context, dets []Detect) []DetectionResult {

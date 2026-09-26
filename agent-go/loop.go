@@ -8,6 +8,21 @@ import (
 // CheckinInterval — fréquence du checkin. 15 min comme inventory.ps1.
 const CheckinInterval = 15 * time.Minute
 
+// maxFollowUpCheckins — re-checkins post-déploiement enchaînés au plus dans
+// un cycle (le serveur distribue les déploiements par lots de 10). Au-delà,
+// plus de re-checkin, donc plus de réservation : les derniers résultats et
+// les déploiements encore en attente partent au cycle suivant.
+const maxFollowUpCheckins = 10
+
+// Indirections pour les tests (exécution réelle : PowerShell / winget sous
+// Windows ; mise à jour : téléchargement et permutation du binaire).
+var (
+	processCommandsFn    = processCommands
+	processDeploymentsFn = processDeployments
+	processDetectFn      = processDetect
+	handleAgentUpdateFn  = HandleAgentUpdate
+)
+
 // runCheckin — un cycle de checkin complet avec gestion d'erreur, rollback,
 // update et exécution des commandes/déploiements/détections demandés par le
 // serveur. Portable, partagé entre le service Windows et le mode --debug.
@@ -25,8 +40,8 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 		"device_id": resp.DeviceID,
 		"is_new":    resp.New,
 	})
-	// DoCheckin draine PendingDeployments/Detections en mémoire — on
-	// persiste ici pour que le state.json reflète ce qui a été remonté.
+	// DoCheckin a retiré de PendingDeployments/Detections les résultats
+	// acceptés par le serveur — on persiste pour que le state.json le reflète.
 	st.Save()
 	// Rafraîchissement du cache runtime-config si TTL expiré (no-op
 	// sinon). Garantit que les changements UI Paramètres sont vus au
@@ -37,82 +52,126 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 	// Rotation mdp admin local (LAPS-like, opt-in via cfg.LAPSEnabled).
 	MaybeRotateAdminPassword(ctx, cfg, st)
 
-	// Fenêtre de maintenance : si déclarée et qu'on est en dehors, on
-	// défère les actions perturbantes (auto-update + deployments).
-	// Les commandes admin et la détection passent toujours.
-	inWindow := resp.MaintenanceWindow.IsActive(time.Now())
+	// Toute réponse est traitée en entier, celles des re-checkins comprises :
+	// le serveur y a déjà passé en 'running' les scripts et déploiements
+	// qu'elle porte. Ignorés, ils restaient 'running' jusqu'au timeout sans
+	// avoir tourné.
+	for followUps := 0; ; followUps++ {
+		deployed := processCheckinJobs(ctx, cfg, st, resp)
+		// Arrêt de l'agent (Stop) : pas de re-checkin, donc rien de plus
+		// réservé ; les résultats en file partiront au prochain démarrage.
+		if deployed == 0 || followUps >= maxFollowUpCheckins || ctx.Err() != nil {
+			break
+		}
+		// Re-checkin immédiat pour remonter les résultats sans attendre
+		// 15 min ; sa réponse peut porter de nouveaux travaux (lot suivant).
+		logInfo("recheckin-post-deploy", "", LogFields{"results": deployed})
+		next, err := recheckin(ctx, cfg, st)
+		if err != nil {
+			logError("recheckin-fail", err, LogFields{"deferred_results": len(st.PendingDeployments)})
+			break
+		}
+		if ctx.Err() != nil {
+			// Arrêt pendant le re-checkin : ses travaux ne sont pas lancés
+			// (contexte annulé, ils seraient remontés en échec sans avoir
+			// tourné) ; réservés côté serveur, ils relèvent du timeout.
+			logWarn("recheckin-jobs-skipped", "arrêt de l'agent", LogFields{
+				"commands": len(next.Commands), "deployments": len(next.Deployments),
+			})
+			return
+		}
+		resp = next
+	}
+	if ctx.Err() != nil {
+		return
+	}
 
-	// L'auto-update est traité avant les commandes : si on est sur le
-	// point de redémarrer pour passer à une nouvelle version, on évite
-	// d'exécuter des scripts qui pourraient être interrompus à mi-course.
+	// L'auto-update passe après les travaux (déjà réservés côté serveur) :
+	// un binaire permuté redémarre le service, ce qui interromprait un
+	// script en cours ou abandonnerait les travaux restants. Dernière
+	// réponse reçue = dernier état du serveur. Fenêtre revérifiée ici (les
+	// travaux ont pu durer au-delà) : sans perte, la mise à jour est
+	// reproposée au checkin suivant.
 	if resp.AgentUpdate != nil {
-		if !inWindow {
+		if !resp.MaintenanceWindow.IsActive(time.Now()) {
 			logInfo("update-deferred", "hors fenêtre de maintenance", LogFields{
 				"target_version": resp.AgentUpdate.LatestVersion,
 			})
 		} else {
-			if err := HandleAgentUpdate(c, cfg, st, resp.AgentUpdate); err != nil {
+			cu, cancelU := context.WithTimeout(ctx, 60*time.Second)
+			defer cancelU()
+			if err := handleAgentUpdateFn(cu, cfg, st, resp.AgentUpdate); err != nil {
 				logError("update-fail", err, LogFields{"target_version": resp.AgentUpdate.LatestVersion})
-			}
-			// Binaire permuté : le service va redémarrer, on évite de
-			// déclencher des déploiements potentiellement longs. Update
-			// ignorée (version déjà annulée par rollback) ou en échec : les
-			// commandes et déploiements suivent normalement.
-			if swappedVersion != "" {
-				return
 			}
 		}
 	}
+}
 
+// recheckin — checkin de remontée des résultats, avec son propre délai.
+// DoCheckin ne retire les résultats de l'état qu'une fois acceptés.
+func recheckin(ctx context.Context, cfg *Config, st *State) (*CheckinResponse, error) {
+	c, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	resp, err := DoCheckin(c, cfg, st)
+	if err == nil {
+		st.Save() // résultats acquittés retirés par DoCheckin
+	}
+	return resp, err
+}
+
+// processCheckinJobs exécute les commandes, déploiements et détections
+// d'une réponse de checkin et met leurs résultats en file (state persisté).
+// Retourne le nombre de résultats de déploiement produits.
+func processCheckinJobs(ctx context.Context, cfg *Config, st *State, resp *CheckinResponse) int {
 	// Commandes — chaque résultat est POST individuellement. Pas filtrées
 	// par la maintenance window : ce sont des actions admin-initiated qui
 	// nécessitent souvent une réponse rapide (debug, fix).
 	if len(resp.Commands) > 0 {
-		processCommands(ctx, cfg, resp.Commands)
+		processCommandsFn(ctx, cfg, resp.Commands)
 	}
 
-	// Déploiements + détections post-install — résultats stash en state.
-	var depResults []DeploymentResult
-	var detResults []DetectionResult
+	// Déploiements + détections post-install — résultats mis en file et
+	// persistés un par un, dès qu'ils sont connus (cf. resultSink) : un
+	// reboot, une coupure ou un installeur qui tue l'agent en cours de lot
+	// ne perd pas ceux déjà obtenus.
+	// Fenêtre de maintenance appliquée par le serveur, qui ne réserve les
+	// déploiements qu'en fenêtre : l'agent exécute ce qu'il a reçu. Les
+	// déférer ici (avis divergent : fuseau, format, horloge) les laissait
+	// 'running' sans exécution jusqu'au timeout (1 h), puis en échec.
+	// Arrêt de l'agent (ctx annulé) : plus de déploiement lancé (cf.
+	// eachDeployment) et toute détection produite après est écartée — un
+	// script de détection interrompu dirait « absent » et le serveur
+	// l'inscrirait à l'inventaire pour 24 h.
+	deployed := 0
 	if len(resp.Deployments) > 0 {
-		if !inWindow {
-			logInfo("deployments-deferred", "hors fenêtre de maintenance", LogFields{
-				"deferred": len(resp.Deployments),
-			})
-			// On ne pull PAS les rows de la table deployments (elles restent
-			// 'running' côté DB sans timeout). À améliorer : remettre à 'pending'.
-			// Pour le moment l'API les passe à 'running' à chaque checkin ; donc
-			// on défère côté agent uniquement (pas d'effet de bord côté DB).
-		} else {
-			depResults, detResults = processDeployments(ctx, resp.Deployments)
+		processDeploymentsFn(ctx, resp.Deployments, resultSink{
+			deployment: func(r DeploymentResult) {
+				// Tronquée dès la mise en file : state.json est réécrit en
+				// entier à chaque Save (cf. aussi pendingDeploymentBatch pour
+				// un state.json d'avant 2.15.1).
+				r.Output = truncateMiddle(r.Output, maxResultOutputBytes)
+				st.PendingDeployments = append(st.PendingDeployments, r)
+				st.Save()
+				deployed++
+			},
+			detection: func(r DetectionResult) {
+				if ctx.Err() != nil {
+					return
+				}
+				st.PendingDetections = append(st.PendingDetections, r)
+				st.Save()
+			},
+		})
+	}
+	if len(resp.Detect) > 0 && ctx.Err() == nil {
+		// Écartées en bloc si l'arrêt survient pendant la série (on ne sait
+		// pas lesquelles ont tourné en entier) : reproposées au checkin suivant.
+		if dets := processDetectFn(ctx, resp.Detect); len(dets) > 0 && ctx.Err() == nil {
+			st.PendingDetections = append(st.PendingDetections, dets...)
+			st.Save()
 		}
 	}
-	if len(resp.Detect) > 0 {
-		detResults = append(detResults, processDetect(ctx, resp.Detect)...)
-	}
-
-	if len(depResults) == 0 && len(detResults) == 0 {
-		return
-	}
-
-	// Persister avant le re-checkin : si la machine reboot ou perd réseau,
-	// les résultats ne sont pas perdus.
-	st.PendingDeployments = append(st.PendingDeployments, depResults...)
-	st.PendingDetections  = append(st.PendingDetections, detResults...)
-	st.Save()
-
-	// Re-checkin immédiat pour remonter les résultats sans attendre 15min.
-	// DoCheckin draine PendingDeployments/Detections de l'état.
-	if len(depResults) > 0 {
-		logInfo("recheckin-post-deploy", "", LogFields{"results": len(depResults)})
-		c2, cancel2 := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel2()
-		if _, err := DoCheckin(c2, cfg, st); err != nil {
-			logError("recheckin-fail", err, LogFields{"deferred_results": len(depResults)})
-		} else {
-			st.Save() // état nettoyé par DoCheckin → drainXxx
-		}
-	}
+	return deployed
 }
 
 // runDebugLoop — mode interactif (non-service). Utilisé via --debug.

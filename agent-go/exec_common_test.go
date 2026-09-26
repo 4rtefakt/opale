@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -96,5 +97,76 @@ func TestClassifyExecResult_WaitDelayWins(t *testing.T) {
 	code, note := classifyExecResult(exec.ErrWaitDelay, cmd.ProcessState, context.DeadlineExceeded, context.Canceled, time.Minute)
 	if code != 0 || !strings.Contains(note, "sortie tronquée") {
 		t.Fatalf("code=%d note=%q", code, note)
+	}
+}
+
+// Détection post-install : le résultat porte l'id du PACKAGE reçu dans la
+// réponse du checkin (UUID distinct de celui du déploiement), jamais celui
+// du déploiement (refusé par la clé étrangère device_software → packages).
+func TestPostInstallDetection_ReportsPackageID(t *testing.T) {
+	const depID = "11111111-1111-4111-8111-111111111111"
+	const pkgID = "22222222-2222-4222-8222-222222222222"
+	raw := `{"ok":true,"deployments":[{"deployment_id":"` + depID + `","package_id":"` + pkgID +
+		`","name":"Pkg","type":"script","install_script":"x","detection_script":"exit 0"}]}`
+	var resp CheckinResponse
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatal(err)
+	}
+	d := resp.Deployments[0]
+	var ran []string
+	exitCode := 0
+	run := func(_ context.Context, script string) (int, string) {
+		ran = append(ran, script)
+		return exitCode, ""
+	}
+
+	got, ok := postInstallDetection(context.Background(), d, run)
+	if !ok || got.PackageID != pkgID || !got.Detected {
+		t.Fatalf("attendu {%s, détecté}, reçu %+v (ok=%v)", pkgID, got, ok)
+	}
+	exitCode = 1
+	if got, _ := postInstallDetection(context.Background(), d, run); got.PackageID != pkgID || got.Detected {
+		t.Fatalf("exit 1 : attendu {%s, non détecté}, reçu %+v", pkgID, got)
+	}
+
+	// Serveur sans package_id : aucun résultat (l'id du déploiement n'est
+	// pas un id de package), script non exécuté.
+	d.PackageID = ""
+	if got, ok := postInstallDetection(context.Background(), d, run); ok {
+		t.Fatalf("sans package_id : aucun résultat attendu, reçu %+v", got)
+	}
+	// Pas de detection_script : rien.
+	if _, ok := postInstallDetection(context.Background(), Deployment{DeploymentID: depID, PackageID: pkgID}, run); ok {
+		t.Fatal("sans detection_script : aucun résultat attendu")
+	}
+	if len(ran) != 2 {
+		t.Fatalf("detection_script exécuté %d fois, attendu 2", len(ran))
+	}
+}
+
+// Le jeton de réservation reçu avec un déploiement repart tel quel avec son
+// résultat (le serveur n'applique ainsi un résultat qu'à la tentative qui
+// l'a produit) ; sans jeton (serveur plus ancien), le champ est omis et un
+// state.json d'avant 2.15.1 se relit.
+func TestDeploymentResult_EchoesClaimToken(t *testing.T) {
+	var resp CheckinResponse
+	raw := `{"ok":true,"deployments":[{"deployment_id":"dep-1","claim_token":"1790000000123456","type":"script"}]}`
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := json.Marshal(deploymentResult(resp.Deployments[0], 0, "ok"))
+	if !strings.Contains(string(out), `"claim_token":"1790000000123456"`) {
+		t.Fatalf("jeton non renvoyé : %s", out)
+	}
+
+	out, _ = json.Marshal(deploymentResult(Deployment{DeploymentID: "dep-2"}, 1, "ko"))
+	if strings.Contains(string(out), "claim_token") {
+		t.Fatalf("jeton vide envoyé : %s", out)
+	}
+
+	var st State
+	if err := json.Unmarshal([]byte(`{"pending_deployments":[{"deployment_id":"dep-3","exit_code":0,"output":"ok"}]}`), &st); err != nil ||
+		len(st.PendingDeployments) != 1 || st.PendingDeployments[0].ClaimToken != "" {
+		t.Fatalf("state.json 2.14 illisible : %+v (%v)", st, err)
 	}
 }

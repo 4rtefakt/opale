@@ -6,6 +6,60 @@ pas ici : `git pull` puis rebuild suffit (cf. INSTALL.md §9).
 
 ---
 
+## Fenêtre de maintenance invalide : déploiements bloqués (agent 2.15.1)
+
+### Ce qui change
+
+Le réglage `maintenance_window_default` (JSON, sans éditeur dans
+l'interface) était évalué « fail-open » : une fenêtre invalide valait
+« toujours ouverte », donc des installations à toute heure. Une fenêtre
+**configurée mais invalide** bloque désormais les déploiements : aucun
+n'est distribué, ils restent *en attente*, et l'API journalise
+`fenêtre de maintenance invalide…` (au plus une fois par heure). Les
+scripts ne changent pas. Réglage absent, `null` ou `{}` : toujours ouverte,
+comme avant. Détail : CONFIGURATION.md §2.5.
+
+Des valeurs qui distribuaient des déploiements n'en distribuent plus :
+jours au format ISO `[1..7]` (7), `start` sans `end`, `"tz": "Local"`…
+
+### Avant le déploiement : vérifier le réglage
+
+```bash
+DC="docker compose -f docker-compose.example.yml"   # adapter à votre compose
+set -a; . ./.env; set +a     # POSTGRES_USER / POSTGRES_DB dans ce shell
+$DC exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
+  "SELECT value FROM settings WHERE key = 'maintenance_window_default'"
+```
+
+Aucune ligne : rien à faire. Sinon, la valeur doit respecter :
+
+- un objet JSON avec uniquement les clés `weekdays`, `start`, `end`, `tz`
+  (minuscules exactes : pas `Start`, `days`, `from` / `to`…) ;
+- `weekdays` : entiers de 0 (dimanche) à 6 (samedi) — en numérotation ISO,
+  remplacer 7 par 0 ;
+- `start` et `end` : les deux ou aucun, au format `H:MM` ou `HH:MM`, de
+  `00:00` à `23:59` ;
+- `tz` : nom de fuseau IANA (`Europe/Paris`, `UTC`) — pas `Local`.
+
+Corriger avant le redémarrage si besoin, par exemple :
+
+```bash
+$DC exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "UPDATE settings SET value = '{\"weekdays\":[1,2,3,4,5],\"start\":\"02:00\",\"end\":\"04:00\",\"tz\":\"Europe/Paris\"}' WHERE key = 'maintenance_window_default'"
+```
+
+### Après : vérification
+
+```bash
+$DC logs api | grep "fenêtre de maintenance invalide"
+```
+
+Attendu : aucune ligne après le premier checkin d'un agent. Sinon, le
+message indique la valeur et le problème (clé inconnue, format d'heure,
+fuseau…).
+
+---
+
 ## Image Docker non-root (`USER node`) et Node 22
 
 ### Ce qui change

@@ -68,3 +68,54 @@ func classifyExecResult(err error, ps *os.ProcessState, runCtxErr, parentErr err
 	}
 	return 1, "error : " + err.Error()
 }
+
+// resultSink — reçoit chaque résultat de déploiement (puis sa détection
+// post-install) dès qu'il est connu. L'appelant le met en file et le
+// persiste aussitôt : un crash, une coupure ou un installeur qui tue
+// l'agent en cours de lot ne perd pas les résultats déjà obtenus (sinon
+// timeout côté serveur et réinstallation au « Rejouer »).
+type resultSink struct {
+	deployment func(DeploymentResult)
+	detection  func(DetectionResult)
+}
+
+// eachDeployment appelle run pour chaque déploiement du lot, dans l'ordre,
+// et s'arrête à l'arrêt de l'agent (ctx annulé) : les suivants ne démarrent
+// pas — réservés côté serveur, ils relèvent du timeout — au lieu d'être
+// remontés en échec « interrompu » sans avoir tourné.
+func eachDeployment(ctx context.Context, deps []Deployment, run func(Deployment)) {
+	for i, d := range deps {
+		if ctx.Err() != nil {
+			logWarn("deployments-skipped", "arrêt de l'agent", LogFields{"skipped": len(deps) - i})
+			return
+		}
+		run(d)
+	}
+}
+
+// deploymentResult — résultat d'un déploiement, avec le jeton de
+// réservation reçu du serveur (renvoyé tel quel).
+func deploymentResult(d Deployment, exitCode int, output string) DeploymentResult {
+	return DeploymentResult{
+		DeploymentID: d.DeploymentID,
+		ClaimToken:   d.ClaimToken,
+		ExitCode:     exitCode,
+		Output:       output,
+	}
+}
+
+// postInstallDetection exécute via run le detection_script d'un déploiement
+// (exit 0 = installé) et rattache le résultat au package déployé. Sans
+// package_id (serveur antérieur à 2.15.1) : aucun résultat — l'id du
+// déploiement n'est pas un id de package ; la détection périodique prend
+// le relais.
+func postInstallDetection(ctx context.Context, d Deployment, run func(context.Context, string) (int, string)) (DetectionResult, bool) {
+	if d.DetectionScript == "" || d.PackageID == "" {
+		return DetectionResult{}, false
+	}
+	detExit, _ := run(ctx, d.DetectionScript)
+	return DetectionResult{
+		PackageID: d.PackageID,
+		Detected:  detExit == 0,
+	}, true
+}

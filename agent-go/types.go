@@ -64,6 +64,10 @@ type PingStats struct {
 
 type DeploymentResult struct {
 	DeploymentID string `json:"deployment_id"`
+	// ClaimToken — jeton de réservation reçu avec le déploiement, renvoyé
+	// tel quel : le serveur n'applique le résultat qu'à cette tentative.
+	// Vide (serveur plus ancien, state.json d'avant 2.15.1) : omis.
+	ClaimToken   string `json:"claim_token,omitempty"`
 	ExitCode     int    `json:"exit_code"`
 	Output       string `json:"output"`
 }
@@ -178,6 +182,12 @@ type Command struct {
 
 type Deployment struct {
 	DeploymentID      string `json:"deployment_id"`
+	// PackageID — package déployé (envoyé depuis 2.15.1 ; vide avec un
+	// serveur plus ancien). Sert à la détection post-install.
+	PackageID         string `json:"package_id"`
+	// ClaimToken — jeton de cette réservation (depuis 2.15.1), à renvoyer
+	// avec le résultat (cf. DeploymentResult.ClaimToken).
+	ClaimToken        string `json:"claim_token"`
 	Name              string `json:"name"`
 	Type              string `json:"type"`
 	WingetID          string `json:"winget_id"`

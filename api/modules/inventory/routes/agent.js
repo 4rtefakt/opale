@@ -114,6 +114,67 @@ function getAgentBinaryMeta(arch = 'amd64') {
   return binCache[arch]
 }
 
+// Fenêtre telle que l'agent Go peut la décoder (types.go / maintenance.go
+// MaintenanceWindow : weekdays []int, start/end/tz string), sinon null.
+// Un champ de mauvais type fait échouer TOUT le décodage de la réponse du
+// checkin chez l'agent (≤ 2.14 compris) : chaque checkin échoue et, après
+// une mise à jour, le rollback se déclenche. null = fenêtre absente pour
+// tous les agents. Entiers bornés à 32 bits (build 386).
+// Objet NEUF, limité aux clés exactes : encoding/json associe les clés
+// sans tenir compte de la casse (« Weekdays », « START » seraient lus).
+const WINDOW_KEYS = ['weekdays', 'start', 'end', 'tz']
+function windowForAgent(w) {
+  if (!w || typeof w !== 'object' || Array.isArray(w)) return null
+  const str = v => v === undefined || v === null || typeof v === 'string'
+  const days = w.weekdays === undefined || w.weekdays === null
+    || (Array.isArray(w.weekdays) && w.weekdays.every(d => Number.isInteger(d) && Math.abs(d) < 2 ** 31))
+  if (!(str(w.start) && str(w.end) && str(w.tz) && days)) return null
+  const out = {}
+  for (const k of WINDOW_KEYS) if (Object.hasOwn(w, k)) out[k] = w[k]
+  return out
+}
+
+// Problème d'une fenêtre configurée (JSON déjà parsé), ou null si elle est
+// valide. null / {} / champs vides = pas de fenêtre (toujours ouverte).
+const HHMM_RE = /^(\d{1,2}):(\d{2})$/
+function maintenanceWindowProblem(w) {
+  if (w === null) return null
+  if (!windowForAgent(w)) return 'types incompatibles (objet ; weekdays entiers ; start, end, tz chaînes)'
+  // Clé inconnue (casse, faute de frappe « days », « from »…) : l'agent la
+  // lirait peut-être (casse ignorée), le serveur non → avis divergents.
+  const unknown = Object.keys(w).find(k => !WINDOW_KEYS.includes(k))
+  if (unknown !== undefined) return `clé inconnue « ${clipStr(unknown, 40)} » (attendues : ${WINDOW_KEYS.join(', ')})`
+  if (Array.isArray(w.weekdays) && w.weekdays.some(d => d < 0 || d > 6)) return 'weekdays hors 0-6'
+  if (w.start || w.end) {
+    const ok = s => { const m = typeof s === 'string' && s.match(HHMM_RE); return !!m && +m[1] <= 23 && +m[2] <= 59 }
+    if (!ok(w.start) || !ok(w.end)) return 'start / end : H:MM ou HH:MM attendus (00:00 à 23:59)'
+  }
+  if (w.tz) {
+    try { new Intl.DateTimeFormat('en-US', { timeZone: w.tz }) } catch { return 'fuseau inconnu' }
+  }
+  return null
+}
+
+// Avertissement par valeur invalide distincte, répété au plus une fois par
+// heure : une configuration fautive persistante reste visible dans les
+// logs sans en inonder un par checkin. Mémo borné (plus ancienne entrée
+// évincée).
+const WINDOW_WARN_EVERY_MS = 60 * 60 * 1000
+const WINDOW_WARN_MEMO_MAX = 100
+const windowWarnedAt = new Map()
+function warnInvalidWindow(fastify, raw, problem) {
+  const now = Date.now()
+  const last = windowWarnedAt.get(raw)
+  if (last !== undefined && now - last < WINDOW_WARN_EVERY_MS) return
+  windowWarnedAt.delete(raw)
+  if (windowWarnedAt.size >= WINDOW_WARN_MEMO_MAX) windowWarnedAt.delete(windowWarnedAt.keys().next().value)
+  windowWarnedAt.set(raw, now)
+  fastify.log.warn(
+    { maintenance_window_default: clipStr(raw, 500), problem },
+    'fenêtre de maintenance invalide : aucun déploiement distribué tant qu\'elle n\'est pas corrigée'
+  )
+}
+
 // Maintenance window — sémantique strictement identique à
 // agent-go/maintenance.go (cf. tests Go MaintenanceWindow_*).
 // Fail-open : tout input invalide ou vide ⇒ toujours actif.
@@ -161,6 +222,29 @@ function isMaintenanceWindowActive(w, now) {
   const cur = local.hour * 60 + local.minute
   return start < end ? (cur >= start && cur < end) : (cur >= start || cur < end)
 }
+
+// Première version de l'agent Go qui traite toute réponse de checkin :
+// celle du re-checkin post-déploiement, et les travaux d'une réponse qui
+// propose une mise à jour (exécutés avant de l'appliquer). Cf. checkin.
+const AGENT_PROCESSES_EVERY_RESPONSE = '2.15.1'
+
+// true si l'agent traite toute réponse de checkin. Version stricte X.Y.Z
+// exigée : semverGt compte une partie non numérique pour 0 (« 2.16.0-rc1 »,
+// « 2.16 », « 2.16.x » passeraient) ; dans le doute, ancien agent.
+function processesEveryResponse(agentVersion) {
+  return typeof agentVersion === 'string'
+    && /^\d+\.\d+\.\d+$/.test(agentVersion)
+    && !semverGt(AGENT_PROCESSES_EVERY_RESPONSE, agentVersion)
+}
+
+// Jeton de réservation d'un déploiement : son started_at (posé à chaque
+// réservation, remis à NULL par « Rejouer », qui réutilise la ligne) en
+// microsecondes epoch. Livré avec le déploiement, renvoyé par l'agent
+// (≥ 2.15.1) avec le résultat : un résultat d'une tentative précédente ne
+// tranche pas la tentative en cours. Même expression à la réservation et à
+// la réception : égalité exacte.
+const claimTokenSql = col => `(extract(epoch FROM ${col}) * 1000000)::bigint::text`
+const CLAIM_TOKEN_RE = /^\d{1,20}$/
 
 function semverGt(a, b) {
   const pa = String(a).split('.').map(Number)
@@ -647,15 +731,26 @@ export default async function agentRoute(fastify) {
     const diskWarn = parseInt(settingMap.disk_warn_pct     ?? '80', 10)
     const diskCrit = parseInt(settingMap.disk_critical_pct ?? '90', 10)
 
+    // Fenêtre absente : toujours ouverte. Configurée mais invalide : aucun
+    // déploiement réservé (cf. deploymentsAllowed) ; scripts et mise à jour
+    // inchangés (fail-open).
     let maintenanceWindow = null
+    let windowProblem = null
     if (settingMap.maintenance_window_default) {
       try {
         maintenanceWindow = JSON.parse(settingMap.maintenance_window_default)
+        windowProblem = maintenanceWindowProblem(maintenanceWindow)
       } catch (err) {
-        fastify.log.warn({ err: err.message }, 'maintenance_window_default JSON invalide')
+        windowProblem = `JSON illisible (${err.message})`
       }
+      if (windowProblem) warnInvalidWindow(fastify, settingMap.maintenance_window_default, windowProblem)
     }
     const inMaintWindow = isMaintenanceWindowActive(maintenanceWindow, new Date())
+    // Déploiements (installations en SYSTEM, winget…) : seulement dans une
+    // fenêtre valide et ouverte. Une fenêtre invalide évaluée fail-open les
+    // laissait partir à toute heure, sans signal : ils restent 'pending'
+    // (visible dans l'UI) jusqu'à correction du réglage.
+    const deploymentsAllowed = inMaintWindow && !windowProblem
 
     // ── Upsert device ───────────────────────────────────────────────────────
     // compliance_state lu ici pour le passer à l'évaluateur de conformité plus
@@ -994,8 +1089,13 @@ export default async function agentRoute(fastify) {
     }
 
     // ── Résultats des déploiements exécutés par l'agent ────────────────────
+    // Jeton de réservation (agent ≥ 2.15.1) : le résultat ne s'applique qu'à
+    // la tentative qui l'a produit. Absent ou illisible (agent plus ancien) :
+    // comportement inchangé.
     for (const r of deployment_results) {
       if (!r.deployment_id) continue
+      const claimToken = typeof r.claim_token === 'string' && CLAIM_TOKEN_RE.test(r.claim_token)
+        ? r.claim_token : null
       try {
         const upd = await fastify.db.query(`
           UPDATE deployments SET
@@ -1004,8 +1104,9 @@ export default async function agentRoute(fastify) {
             output       = $2,
             completed_at = now()
           WHERE id = $3 AND device_id = $4 AND status = 'running'
+            AND ($5::text IS NULL OR ${claimTokenSql('started_at')} = $5::text)
           RETURNING package_id, status
-        `, [r.exit_code ?? -1, r.output || null, r.deployment_id, deviceId])
+        `, [r.exit_code ?? -1, r.output || null, r.deployment_id, deviceId, claimToken])
 
         // Audit log (uniquement les déploiements réussis, pour valoriser dans Rapports)
         if (upd.rows[0]?.status === 'success') {
@@ -1022,16 +1123,27 @@ export default async function agentRoute(fastify) {
     }
 
     // ── Résultats des scripts de détection ─────────────────────────────────
+    // package_id attendu. Pour la détection post-install, un agent ≤ 2.14
+    // remonte à sa place l'id du DÉPLOIEMENT (il ne recevait pas le
+    // package_id) : rattaché au package de ce déploiement s'il appartient à
+    // CE poste. Un id inconnu n'insère rien.
     for (const r of detection_results) {
       if (!r.package_id) continue
       try {
-        await fastify.db.query(`
+        const res = await fastify.db.query(`
           INSERT INTO device_software (device_id, package_id, detected, checked_at)
-          VALUES ($1, $2, $3, now())
+          SELECT $1, COALESCE(p.id, d.package_id), $3, now()
+          FROM (SELECT $2::uuid AS id) x
+          LEFT JOIN packages    p ON p.id = x.id
+          LEFT JOIN deployments d ON d.id = x.id AND d.device_id = $1
+          WHERE p.id IS NOT NULL OR d.id IS NOT NULL
           ON CONFLICT (device_id, package_id) DO UPDATE SET
             detected   = EXCLUDED.detected,
             checked_at = now()
         `, [deviceId, r.package_id, r.detected ?? false])
+        if (!res.rowCount) {
+          fastify.log.warn({ package_id: r.package_id }, 'detection result : package inconnu')
+        }
       } catch (err) {
         fastify.log.warn({ err: err.message, package_id: r.package_id }, 'detection result update failed')
       }
@@ -1126,9 +1238,9 @@ export default async function agentRoute(fastify) {
     `, [deviceId])
 
     // ── Déploiements de packages en attente ────────────────────────────────
-    // Gated par la fenêtre de maintenance : hors fenêtre, on n'envoie
-    // pas les deployments pour éviter de les passer en 'running' alors
-    // que l'agent n'aurait pas le droit de les exécuter.
+    // Gated par la fenêtre de maintenance : hors fenêtre (ou fenêtre
+    // configurée invalide), rien n'est réservé. Le serveur est seul juge :
+    // l'agent (≥ 2.15.1) exécute ce qu'il reçoit.
     // Seuls les packages approuvés sont distribués : un package modifié
     // (repassé en draft) ne part plus en SYSTEM tant qu'un admin ne l'a
     // pas ré-approuvé — ses déploiements restent 'pending' en attendant.
@@ -1139,7 +1251,7 @@ export default async function agentRoute(fastify) {
     // log + reste 'pending' (l'admin l'annule puis le rejoue, ce qui refait
     // un snapshot). Tri : les distribuables d'abord, pour qu'un lot de
     // lignes sans snapshot ne bloque jamais les autres.
-    pendingRows = inMaintWindow ? (await fastify.db.query(`
+    pendingRows = deploymentsAllowed ? (await fastify.db.query(`
       SELECT d.id AS deployment_id, (s.deployment_id IS NOT NULL) AS has_snapshot,
              s.type, s.winget_id, s.install_script, s.post_install_script, s.detection_script, s.name
       FROM deployments d
@@ -1271,9 +1383,21 @@ export default async function agentRoute(fastify) {
     // package toujours approuvé à cet instant), pas celui lu à la sélection :
     // une ré-approbation ou un retour en draft pendant le checkin est pris
     // en compte. Ordre d'envoi : celui de la sélection.
+    //
+    // Agent < 2.15.1 (ou sans version stricte) : il ignore la réponse (1) du
+    // re-checkin qui remonte ses résultats de déploiement, (2) de tout
+    // checkin qui lui propose une mise à jour (il retourne avant les travaux :
+    // ≤ 2.14 mise à jour réussie ou non, et faute de redémarrage effectif
+    // jusqu'au reboot du poste ; 2.15.0, build de main antérieur à ces
+    // correctifs, dès le binaire permuté). Ce qui y serait réservé ne
+    // tournerait jamais ('running' → timeout) : rien n'est réservé, les
+    // lignes restent 'pending' pour le checkin suivant, dont il traite la
+    // réponse.
+    const responseIgnored = !processesEveryResponse(agent_version)
+      && (agentUpdate !== null || deployment_results.length > 0)
     let scriptsToSend = []
     let deploymentsToSend = []
-    if (pendingScripts.rows.length || pendingDeployments.rows.length) {
+    if (!responseIgnored && (pendingScripts.rows.length || pendingDeployments.rows.length)) {
       const claim = await fastify.db.connect()
       try {
         await claim.query('BEGIN')
@@ -1293,7 +1417,8 @@ export default async function agentRoute(fastify) {
             WHERE d.id = ANY($1::uuid[]) AND d.status = 'pending'
               AND s.deployment_id = d.id
               AND p.id = d.package_id AND p.status = 'approved'
-            RETURNING d.id AS deployment_id, s.name, s.type, s.winget_id,
+            RETURNING d.id AS deployment_id, d.package_id, ${claimTokenSql('d.started_at')} AS claim_token,
+                      s.name, s.type, s.winget_id,
                       s.install_script, s.post_install_script, s.detection_script
           `, [pendingDeployments.rows.map(r => r.deployment_id)])
           const claimed = new Map(rows.map(r => [r.deployment_id, r]))
@@ -1315,6 +1440,11 @@ export default async function agentRoute(fastify) {
       commands:   scriptsToSend.map(r => ({ id: r.id, name: r.script_name, script: r.script_content })),
       deployments: deploymentsToSend.map(r => ({
         deployment_id:       r.deployment_id,
+        // Ajout 2.15.1 (détection post-install) ; ignoré par les agents
+        // plus anciens (champ JSON inconnu).
+        package_id:          r.package_id,
+        // Ajout 2.15.1 : renvoyé avec le résultat (cf. claimTokenSql).
+        claim_token:         r.claim_token,
         name:                r.name,
         type:                r.type,
         winget_id:           r.winget_id,
@@ -1327,7 +1457,7 @@ export default async function agentRoute(fastify) {
         detection_script: r.detection_script,
       })),
       agent_update:        agentUpdate,
-      maintenance_window:  maintenanceWindow,
+      maintenance_window:  windowForAgent(maintenanceWindow),
     })
   })
 
