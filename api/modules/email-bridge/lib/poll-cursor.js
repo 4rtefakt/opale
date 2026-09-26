@@ -20,11 +20,13 @@
 // visible un peu plus tard). Les mails de `done` sont écartés sans être
 // retraités — ni requête DB, ni appel Graph.
 //
-// Pagination : on suit `@odata.nextLink`, au plus MAX_PAGES pages par tick,
-// et on ne charge plus de page une fois PAGE_SIZE mails traités (la charge
-// d'un tick reste celle d'avant la pagination). Le curseur avance aussi sur
-// les mails exclus (dossiers système) : une page qui n'en contient que ne
-// bloque plus la boîte.
+// Pagination : au plus MAX_PAGES pages par tick, et plus de nouvelle page
+// une fois PAGE_SIZE mails traités (la charge d'un tick reste celle d'avant
+// la pagination). Après une page qui a fait avancer le curseur, la suivante
+// est relue depuis lui (reprise par clé) plutôt que via `@odata.nextLink`,
+// qui est un décalage `$skip` sensible aux mails retirés entre deux pages.
+// Le curseur avance aussi sur les mails exclus (dossiers système) : une
+// page qui n'en contient que ne bloque plus la boîte.
 //
 // Échecs : le curseur n'avance que sur le préfixe contigu de mails traités
 // (ou exclus). Au premier échec transitoire (transaction annulée, DB
@@ -87,7 +89,7 @@ async function abandon(db, log, { mailbox, message, key, dateField, attempts, er
 
 // Parcourt la boîte depuis `cursor` (ISO normalisé) et sauvegarde la
 // progression.
-//   list(mailbox, cursor, { top, inclusive, nextLink }) → page Graph
+//   list(mailbox, since, { top, inclusive, nextLink }) → page Graph
 //     (`value` = mails à traiter, `scanned` = tous les mails de la page) ;
 //   handle(message) → traite un mail de `value` ; { retry: true, error }
 //     si l'échec est transitoire (rien d'écrit, à retenter).
@@ -109,18 +111,21 @@ export async function pollMailboxCursor(db, log, {
   let processed = 0
   let progressed = false
   let blocked = false
+  let listFrom = cursor
   let nextLink = null
+  let graphNext = null
 
   do {
     let page
     try {
-      page = await list(mailbox, cursor, { top: PAGE_SIZE, inclusive: true, nextLink })
+      page = await list(mailbox, listFrom, { top: PAGE_SIZE, inclusive: true, nextLink })
     } catch (err) {
       errors++
       log?.warn({ err: err.message, mailbox }, `${tag}: listing Graph a échoué`)
       break
     }
     pages++
+    const atBefore = at
 
     const toProcess = new Set(page?.value || [])
     for (const m of page?.scanned || page?.value || []) {
@@ -155,14 +160,27 @@ export async function pollMailboxCursor(db, log, {
     }
 
     if (blocked) break
-    nextLink = page?.['@odata.nextLink'] || null
-  } while (nextLink && pages < MAX_PAGES && processed < PAGE_SIZE)
+    // Page suivante. Le nextLink Graph est un décalage (`$skip`), pas un
+    // instantané : si un mail de cette page quitte la plage entre-temps
+    // (suppression, brouillon envoyé, envoyé rangé ailleurs), la page
+    // suivante commence un mail trop loin, et ce mail, plus ancien que le
+    // curseur avancé, serait perdu. Si le curseur a avancé, on relit donc
+    // depuis lui (`ge at`, reprise par clé). Le nextLink ne sert que pour
+    // une page d'ex aequo qui n'a pas fait avancer le curseur.
+    graphNext = page?.['@odata.nextLink'] || null
+    if (at > atBefore) {
+      nextLink = null
+      listFrom = new Date(at).toISOString()
+    } else {
+      nextLink = graphNext
+    }
+  } while (graphNext && pages < MAX_PAGES && processed < PAGE_SIZE)
 
   // Plus de MAX_PAGES × PAGE_SIZE mails au même horodatage, tous déjà
   // traités : le listing inclusif ne passerait jamais ce paquet. Cas
   // dégénéré (rafale dans la même seconde) : on passe la seconde, en le
   // signalant, plutôt que de bloquer la boîte.
-  if (!progressed && !blocked && nextLink && pages >= MAX_PAGES) {
+  if (!progressed && !blocked && graphNext && pages >= MAX_PAGES) {
     log?.warn({ mailbox, cursor }, `${tag}: plus de ${MAX_PAGES * PAGE_SIZE} mails au même horodatage, curseur avancé d'une seconde`)
     at += 1000
     done.clear()

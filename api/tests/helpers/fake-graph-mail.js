@@ -11,7 +11,9 @@
 //
 // Le listing reproduit ce dont dépend le worker : `$filter` `<champ> ge|gt
 // <ISO>`, `$orderby <champ> asc` (tri stable : ex aequo dans l'ordre du
-// tableau), `$top`, et `@odata.nextLink` absolu paginé par `$skip`.
+// tableau), `$top`, et `@odata.nextLink` absolu paginé par `$skip` —
+// calculé sur l'état COURANT de la boîte, comme Graph : un mail retiré
+// entre deux pages décale la suivante (cf. fg.onList).
 
 function reply(body, status = 200) {
   return {
@@ -63,6 +65,9 @@ export function installFakeGraph({ inbox = [], sent = [], folders = {} } = {}) {
     if (url.hostname !== 'graph.microsoft.com') throw new Error(`fake-graph: hôte inattendu ${url.hostname}`)
 
     const path = decodeURIComponent(url.pathname)
+    // Hook de test : appelé avant chaque requête de listing (1re page ou
+    // nextLink), pour modifier la boîte entre deux pages d'un même tick.
+    if (/\/messages$/.test(path) && fg.onList) fg.onList(url)
     let m
     if (path.endsWith('/mailFolders/sentitems/messages')) return reply(listPage(url, fg.sent, 'sentDateTime'))
     if ((m = path.match(/\/mailFolders\/(\w+)$/))) {

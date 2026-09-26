@@ -153,6 +153,35 @@ test('pollOnce : pagination bornée par tick, le curseur avance sur les exclus e
   }
 )
 
+test('pollOnce : mail retiré de la plage entre deux pages d\'un tick → la page suivante n\'est pas décalée',
+  { skip: SKIP }, async () => {
+    // Page 1 : 45 exclus + 5 utiles (< 50 traités → le tick continue).
+    // Entre la page 1 et la suivante, un mail de la page 1 quitte la plage
+    // (suppression définitive, brouillon envoyé…). Un nextLink `$skip=50`
+    // démarrerait alors un mail trop loin : le 1er mail de la page 2,
+    // plus ancien que le nouveau curseur, serait perdu.
+    const excluded = Array.from({ length: 45 }, (_, i) => fakeMail({
+      receivedDateTime: at(i + 1), parentFolderId: 'sent-id',
+    }))
+    const useful = [
+      ...Array.from({ length: 5 }, (_, i) => fakeMail({ receivedDateTime: at(46 + i) })),
+      ...Array.from({ length: 10 }, (_, i) => fakeMail({ receivedDateTime: at(60 + i) })),
+    ]
+    useGraph({ inbox: [...excluded, ...useful] })
+    let lists = 0
+    graph.onList = () => {
+      if (++lists === 2) graph.inbox.splice(graph.inbox.indexOf(excluded[3]), 1)
+    }
+    try {
+      await pollOnce(db, null)
+      await pollOnce(db, null)
+      assert.deepEqual((await ingestedIds()).sort(), ids(useful).sort(), 'aucun mail sauté')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
 test('pollOnce : horodatages égaux de part et d\'autre d\'une coupure de page → aucun mail sauté',
   { skip: SKIP }, async () => {
     // 49 mails, puis deux mails à la MÊME seconde : le 50e ferme la page 1
