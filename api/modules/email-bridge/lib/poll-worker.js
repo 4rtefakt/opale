@@ -2,14 +2,14 @@
 //
 // Toutes les `intervalMs` (30 s par défaut) :
 //   1. Pour chaque mailbox configurée :
-//      a. lit les messages reçus depuis le curseur
+//      a. lit les messages reçus depuis le curseur (pages suivies, bornées)
 //      b. pour chaque message → processOne() : ingest + classify + action
-//      c. avance le curseur au max(receivedDateTime) de la page
+//      c. avance le curseur au receivedDateTime du dernier mail parcouru
 //
-// Curseur : par mailbox, setting `mail.cursor.<address>`. Bootstrap = now()
-// (pas de backfill historique). Avancement à max(receivedDateTime) de la
-// page traitée, pas à now() — évite de sauter un mail arrivé pendant qu'on
-// traitait la page.
+// Curseur : par mailbox, setting `mail.cursor.<address>` (+ état
+// `mail.cursor_state.<address>`, cf. poll-cursor.js). Bootstrap = now()
+// (pas de backfill historique). Avancement au dernier mail parcouru, pas à
+// now() — évite de sauter un mail arrivé pendant qu'on traitait la page.
 //
 // Idempotence : INSERT mapping avec ON CONFLICT DO NOTHING en début de tx
 // dans processOne. Une race entre deux ticks ne crée pas de doublon.
@@ -20,6 +20,7 @@
 
 import { listMessagesSince } from './graph-mail.js'
 import { processOne } from './process-mail.js'
+import { pollMailboxCursor } from './poll-cursor.js'
 import { nonOverlapping } from '../../../lib/non-overlapping.js'
 
 const DEFAULT_INTERVAL_MS = 30_000
@@ -41,6 +42,7 @@ async function setSetting(db, key, value) {
 }
 
 function cursorKey(mailbox) { return `mail.cursor.${mailbox.toLowerCase()}` }
+function cursorStateKey(mailbox) { return `mail.cursor_state.${mailbox.toLowerCase()}` }
 
 function parseMailboxes(csv) {
   if (!csv) return []
@@ -102,22 +104,7 @@ export async function pollOnce(db, log, injection = {}) {
       cursor = cursorIso
     }
 
-    let page
-    try {
-      page = await list(mailbox, cursor, { top: 50 })
-    } catch (err) {
-      stats.errors++
-      log?.warn({ err: err.message, mailbox }, 'email-bridge: listMessages a échoué')
-      continue
-    }
-
-    const messages = page.value || []
-    let lastReceivedAt = null
-
-    for (const m of messages) {
-      if (m.receivedDateTime && (!lastReceivedAt || m.receivedDateTime > lastReceivedAt)) {
-        lastReceivedAt = m.receivedDateTime
-      }
+    const handle = async (m) => {
       try {
         const out = await processOne(db, log, { graphMessage: m, mailbox, classifierFn })
         if (out?.action && stats.actions[out.action] !== undefined) stats.actions[out.action]++
@@ -136,7 +123,12 @@ export async function pollOnce(db, log, injection = {}) {
       }
     }
 
-    if (lastReceivedAt) await setSetting(db, key, lastReceivedAt)
+    const res = await pollMailboxCursor(db, log, {
+      mailbox, cursor, cursorKey: key, stateKey: cursorStateKey(mailbox),
+      dateField: 'receivedDateTime', list, handle,
+      updatedBy: 'email-bridge-worker', tag: 'email-bridge',
+    })
+    stats.errors += res.errors
   }
 
   return stats

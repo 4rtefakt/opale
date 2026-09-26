@@ -59,7 +59,12 @@ async function graphGet(path) {
 // `%253A` et Graph renvoie 400 "Invalid filter clause: Syntax error at
 // position 27". Bug observé en prod le 2026-05-16, fixé ici, testé en
 // regression dans email-graph-mail.test.js.
-export function buildListMessagesPath(mailbox, sinceIso, { top = 50 } = {}) {
+//
+// `inclusive` : `ge` au lieu de `gt`. Utilisé par le worker, qui écarte
+// lui-même les mails déjà traités au même horodatage que son curseur (cf.
+// poll-cursor.js) : un `gt` sautait ceux qui partagent cet horodatage
+// (coupure de page, mail visible un peu plus tard).
+export function buildListMessagesPath(mailbox, sinceIso, { top = 50, inclusive = false } = {}) {
   const select = [
     'id',
     'internetMessageId',
@@ -80,7 +85,7 @@ export function buildListMessagesPath(mailbox, sinceIso, { top = 50 } = {}) {
   params.set('$top', String(Math.min(Math.max(top, 1), 100)))
   params.set('$orderby', 'receivedDateTime asc')
   params.set('$select', select)
-  if (sinceIso) params.set('$filter', `receivedDateTime gt ${sinceIso}`)
+  if (sinceIso) params.set('$filter', `receivedDateTime ${inclusive ? 'ge' : 'gt'} ${sinceIso}`)
 
   return `/users/${encodeMailbox(mailbox)}/messages?${params.toString()}`
 }
@@ -114,20 +119,37 @@ export async function getSystemFolderIds(mailbox, { now = Date.now } = {}) {
 // Pour les tests : forcer le re-fetch du cache.
 export function _resetSystemFolderCache() { _systemFolderCache.clear() }
 
-// Liste les mails reçus depuis `sinceIso` (exclusif) dans la boîte cible.
+// Page suivante d'un listing : `@odata.nextLink` est une URL absolue. On
+// n'y envoie le jeton applicatif que si elle pointe bien sur Graph v1.0.
+function nextLinkPath(nextLink) {
+  const url = String(nextLink)
+  if (!url.startsWith(`${GRAPH_BASE}/`)) {
+    throw new Error(`Graph nextLink inattendu (hors ${GRAPH_BASE}) : ${url.slice(0, 100)}`)
+  }
+  return url.slice(GRAPH_BASE.length)
+}
+
+// Liste les mails reçus depuis `sinceIso` dans la boîte cible (exclusif,
+// ou inclusif avec `opts.inclusive`). `opts.nextLink` : page suivante d'un
+// listing précédent (`@odata.nextLink`), à la place de la première page.
 // Scanne TOUS les dossiers, mais filtre les mails issus des dossiers système
 // (Sent/Drafts/Deleted/Junk/Outbox) au niveau applicatif après fetch.
 //
-// Pagination : on retourne la page brute Graph (`@odata.nextLink` inclus),
-// avec `value` filtré. Si tous les mails de la page tombent dans des
-// dossiers système, le worker recevra une page vide et avancera le curseur
-// au prochain tick.
+// Pagination : on retourne la page Graph (`@odata.nextLink` inclus), avec
+// `value` filtré et `scanned` = tous les mails de la page, exclus compris,
+// dans l'ordre Graph. Le worker avance son curseur sur `scanned` : une page
+// entièrement composée de mails exclus (`value` vide) bloquait sinon le
+// curseur, et donc la boîte, indéfiniment.
 export async function listMessagesSince(mailbox, sinceIso, opts = {}) {
+  const path = opts.nextLink
+    ? nextLinkPath(opts.nextLink)
+    : buildListMessagesPath(mailbox, sinceIso, opts)
   const [page, excluded] = await Promise.all([
-    graphGet(buildListMessagesPath(mailbox, sinceIso, opts)),
+    graphGet(path),
     getSystemFolderIds(mailbox).catch(() => new Set()),  // tolérer un échec du listing dossiers
   ])
   if (page?.value) {
+    page.scanned = page.value
     page.value = page.value.filter(m =>
       !m.isDraft && !excluded.has(m.parentFolderId)
     )
