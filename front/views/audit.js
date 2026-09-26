@@ -28,7 +28,7 @@ const _CATEGORIES = {
   },
   mail: {
     label: 'Pont mail',
-    in: ['mail_ingest_abandoned', 'mail_ingest_blocked'],
+    in: ['mail_ingest_abandoned', 'mail_ingest_blocked', 'mail_ingest_second_skipped'],
   },
   agent_conn: {
     label: 'Connexion agent (bruyant)',
@@ -147,6 +147,7 @@ const _BADGE = {
   ssh_close:                 ['b-done',   'ti-terminal'],
   mail_ingest_abandoned:     ['b-prog',   'ti-mail-x'],
   mail_ingest_blocked:       ['b-prog',   'ti-mail-pause'],
+  mail_ingest_second_skipped: ['b-prog',  'ti-mail-exclamation'],
 }
 
 // Libellés FR pour les actions remontées dans les badges. Si absent,
@@ -168,6 +169,7 @@ const _ACTION_LABEL = {
   agent_token_bound:                'token lié au poste',
   mail_ingest_abandoned:            'mail abandonné (ingestion)',
   mail_ingest_blocked:              'boîte mail bloquée',
+  mail_ingest_second_skipped:       'mails sautés (même seconde)',
 }
 
 function _formatDuration(s) {
@@ -229,6 +231,10 @@ function _summary(action, details) {
     const since = details.since ? `bloquée depuis ${_utc(details.since)}` : ''
     const attempts = details.attempts ? `${details.attempts} tentatives` : ''
     return [since, attempts, details.internet_message_id, _truncate(details.error, 120)].filter(Boolean).join(' · ')
+  }
+  if (action === 'mail_ingest_second_skipped') {
+    const lost = `${details.not_ingested_exact ? '' : '≥ '}${details.not_ingested ?? '?'} mails non ingérés`
+    return [lost, details.cursor ? `seconde ${_utc(details.cursor)}` : ''].filter(Boolean).join(' · ')
   }
   return ''
 }

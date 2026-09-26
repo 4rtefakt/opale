@@ -67,6 +67,7 @@ import { logAudit } from '../../core/lib/audit.js'
 export const PAGE_SIZE = 50
 export const MAX_PAGES = 5          // pages Graph avec du travail, par tick
 export const MAX_SKIP_PAGES = 40    // pages d'ids `done` seulement (ex aequo), par tick
+const VALVE_COUNT_PAGES = 10        // lecture seule, pour chiffrer les pertes du garde-fou
 export const MAX_INGEST_ATTEMPTS = 5
 // 30 min : couvre les incidents passagers usuels (verrou long, failover ou
 // redémarrage Postgres, déploiement) ; en contrepartie un vrai mail poison
@@ -100,6 +101,30 @@ async function saveCursor(db, updatedBy, entries) {
     VALUES ${values.join(', ')}
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by
   `, [...entries.flat(), updatedBy])
+}
+
+// Garde-fou : compte les mails à traiter de la seconde abandonnée qui n'ont
+// pas été lus (hors `done`, hors exclus), en suivant le listing au plus
+// VALVE_COUNT_PAGES pages. `exact` = on a atteint la seconde suivante ou la
+// fin ; sinon `count` est un minimum.
+async function countRestOfSecond({ mailbox, list, listFrom, nextLink, dateField, done, nextSecond }) {
+  let count = 0
+  for (let link = nextLink, pages = 0; link && pages < VALVE_COUNT_PAGES; pages++) {
+    let page
+    try {
+      page = await list(mailbox, listFrom, { top: PAGE_SIZE, inclusive: true, nextLink: link })
+    } catch {
+      return { count, exact: false }
+    }
+    const toProcess = new Set(page?.value || [])
+    for (const m of page?.scanned || page?.value || []) {
+      if (Date.parse(m?.[dateField]) >= nextSecond) return { count, exact: true }
+      if (toProcess.has(m) && !done.has(messageKey(m))) count++
+    }
+    link = page?.['@odata.nextLink'] || null
+    if (!link) return { count, exact: true }
+  }
+  return { count, exact: false }
 }
 
 // Boîte bloquée par une panne probablement systémique : une ligne d'audit
@@ -313,11 +338,20 @@ export async function pollMailboxCursor(db, log, {
   // boîte serait bloquée. On passe à la seconde suivante (secondes pleines :
   // les millisecondes d'un curseur initialisé par now() feraient sauter les
   // mails de la seconde suivante) ; les mails de cette seconde pas encore
-  // lus ne seront PAS ingérés — signalé en erreur, avec le décompte.
+  // lus ne seront PAS ingérés — décomptés (au plus VALVE_COUNT_PAGES pages
+  // de plus, lecture seule) et signalés en log error + audit.
   if (!progressed && !blocked && graphNext && skipPages >= MAX_SKIP_PAGES) {
-    log?.error({ mailbox, cursor, already_handled: done.size },
-      `${tag}: plus de ${done.size} mails dans la même seconde, curseur passé à la seconde suivante — les mails restants de cette seconde ne sont PAS ingérés`)
-    at = Math.floor(at / 1000) * 1000 + 1000
+    const nextSecond = Math.floor(at / 1000) * 1000 + 1000
+    const lost = await countRestOfSecond({ mailbox, list, listFrom, nextLink: graphNext, dateField, done, nextSecond })
+    const details = {
+      level: 'error', worker: tag, cursor, next_cursor: new Date(nextSecond).toISOString(),
+      already_handled: done.size, not_ingested: lost.count, not_ingested_exact: lost.exact,
+    }
+    log?.error({ mailbox, ...details },
+      `${tag}: plus de ${done.size} mails dans la même seconde, curseur passé à la seconde suivante — ` +
+      `${lost.exact ? '' : 'au moins '}${lost.count} mails de cette seconde ne sont PAS ingérés`)
+    await logAudit(db, log, { action: 'mail_ingest_second_skipped', byUser: 'system', target: mailbox, details })
+    at = nextSecond
     done.clear()
   }
 

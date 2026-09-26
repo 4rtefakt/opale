@@ -109,6 +109,23 @@ test('audit : mail_ingest_blocked → libellé, résumé échappé, reprise SQL 
   assert.match(html, /<pre>[^<]*UPDATE settings SET value = &#39;2026-05-10T09:00:02\.000Z&#39;/, 'SQL de reprise dans le panneau, échappé')
 })
 
+test('audit : mail_ingest_second_skipped → libellé et résumé chiffré', async () => {
+  const row = {
+    action: 'mail_ingest_second_skipped', by_user: 'system', target: 'helpdesk@example.com',
+    created_at: '2026-05-10T10:31:00Z',
+    details: { level: 'error', cursor: '2026-05-10T09:00:01.200Z', next_cursor: '2026-05-10T09:00:02.000Z',
+               already_handled: 2000, not_ingested: 500, not_ingested_exact: false },
+  }
+  const { ctx, getElementById } = loadAuditView({ rows: [row] })
+  await ctx.renderAudit({ innerHTML: '' })
+  const html = getElementById('audit-body').innerHTML
+
+  assert.match(html, /mails sautés \(même seconde\)/)
+  assert.doesNotMatch(html, /ti-dots/, 'badge dédié')
+  assert.match(html, /≥ 500 mails non ingérés/, 'décompte (minimum si non exact)')
+  assert.match(html, /seconde 2026-05-10 09:00:01 UTC/)
+})
+
 test('audit : catégorie « Pont mail » → filtre sur les actions du pont mail', async () => {
   const { ctx, auditCalls } = loadAuditView({ rows: [ABANDONED], category: 'mail' })
   const container = { innerHTML: '' }
@@ -116,5 +133,6 @@ test('audit : catégorie « Pont mail » → filtre sur les actions du pont mail
 
   assert.match(container.innerHTML, /<option value="mail" selected>/, 'catégorie proposée dans le filtre')
   assert.equal(auditCalls.length, 1)
-  assert.deepEqual(auditCalls[0].actions_in.split(',').sort(), ['mail_ingest_abandoned', 'mail_ingest_blocked'])
+  assert.deepEqual(auditCalls[0].actions_in.split(',').sort(),
+    ['mail_ingest_abandoned', 'mail_ingest_blocked', 'mail_ingest_second_skipped'])
 })

@@ -272,21 +272,34 @@ test('pollOnce : garde-fou (> MAX_SKIP_PAGES pages d\'ex aequo déjà traités) 
     // pas 02.200 — sinon le mail de 09:00:02 serait sauté.
     const second = '2026-05-10T09:00:01.200Z'
     const ties = Array.from({ length: MAX_SKIP_PAGES * 50 + 10 }, () => fakeMail({ receivedDateTime: second }))
+    // Deux exclus (Envoyés) dans la même seconde : pas comptés comme perdus.
+    const excludedTies = Array.from({ length: 2 }, () => fakeMail({ receivedDateTime: second, parentFolderId: 'sent-id' }))
     const later = fakeMail({ receivedDateTime: at(2) })
     const handled = ties.slice(0, MAX_SKIP_PAGES * 50)
     await db.query(`UPDATE settings SET value = $1 WHERE key = $2`, [second, `mail.cursor.${MAILBOX}`])
     await db.query(`INSERT INTO settings (key, value) VALUES ($1, $2)`, [
       `mail.cursor_state.${MAILBOX}`, JSON.stringify({ at: second, done: handled.map(m => m.id), retry: null }),
     ])
-    useGraph({ inbox: [...ties, later] })
+    useGraph({ inbox: [...ties, ...excludedTies, later] })
     const errors = []
     const log = { info() {}, warn() {}, error: (obj, msg) => errors.push({ obj, msg }) }
     try {
       await pollOnce(db, log)
       assert.equal(errors.length, 1, 'saut de seconde signalé en erreur')
       assert.equal(errors[0].obj.already_handled, handled.length)
+      assert.equal(errors[0].obj.not_ingested, 10, 'mails perdus décomptés (exclus non comptés)')
       assert.match(errors[0].msg, /PAS ingérés/)
       assert.equal(await cursorMs(), Date.parse(at(2)), 'seconde suivante exacte (millisecondes du curseur ignorées)')
+
+      // Visible dans l'interface : une ligne d'audit niveau error.
+      const { rows } = await db.query(
+        `SELECT target, details FROM audit_logs WHERE action = 'mail_ingest_second_skipped'`)
+      assert.equal(rows.length, 1)
+      assert.equal(rows[0].target, MAILBOX)
+      assert.deepEqual(rows[0].details, {
+        level: 'error', worker: 'email-bridge', cursor: second, next_cursor: new Date(Date.parse(at(2))).toISOString(),
+        already_handled: handled.length, not_ingested: 10, not_ingested_exact: true,
+      })
 
       await pollOnce(db, log)
       assert.ok((await ingestedIds()).includes(later.internetMessageId))
