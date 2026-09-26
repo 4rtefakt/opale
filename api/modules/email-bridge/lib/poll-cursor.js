@@ -18,7 +18,10 @@
 //             Graph : il change si le mail est déplacé de dossier pendant
 //             les reprises, le compteur repart alors de zéro (retarde
 //             l'abandon, ne perd rien — acceptable). `alerted` : blocage
-//             systémique déjà signalé à l'audit.
+//             déjà signalé à l'audit ;
+//   - scan  : { id, at, done, since } position où la recherche de verdict
+//             pour ce mail s'est arrêtée (cf. plus bas) — le curseur, lui,
+//             reste avant le mail en échec.
 //
 // Le listing est INCLUSIF (`ge at`) : un `gt` sautait pour toujours les
 // mails de même horodatage que le dernier traité (coupure de page, mail
@@ -75,6 +78,10 @@ export const MAX_INGEST_ATTEMPTS = 5
 // retarde les mails suivants de sa boîte de 30 min, une fois — rare, et
 // sans perte.
 export const MIN_POISON_AGE_MS = 30 * 60_000
+// Candidat à l'abandon sans verdict depuis 2 h (aucun mail suivant qui
+// écrive) : signalé une fois à l'audit (`mail_ingest_blocked`, reason
+// 'waiting') — sinon ce blocage resterait invisible.
+export const SUSPECT_ALERT_MS = 2 * 3600_000
 
 // Clé d'un mail dans `done` : l'id Graph (unique dans la boîte ; deux copies
 // d'un même internetMessageId — Envoyés + Réception — sont deux mails).
@@ -87,10 +94,12 @@ function parseState(raw, cursorIso) {
     const s = JSON.parse(raw)
     if (s && s.at === cursorIso && Array.isArray(s.done)) {
       const retry = s.retry?.id && Number.isInteger(s.retry.attempts) ? s.retry : null
-      return { done: new Set(s.done), retry }
+      const scan = retry && s.scan?.id === retry.id && Number.isFinite(Date.parse(s.scan.at)) && Array.isArray(s.scan.done)
+        ? s.scan : null
+      return { done: new Set(s.done), retry, scan }
     }
   } catch { /* état absent ou illisible → on repart de zéro */ }
-  return { done: new Set(), retry: null }
+  return { done: new Set(), retry: null, scan: null }
 }
 
 // Écrit curseur + état ensemble (une transaction), et seulement si le
@@ -150,19 +159,25 @@ async function countRestOfSecond({ mailbox, list, listFrom, nextLink, dateField,
   return { count, exact: false }
 }
 
-// Boîte bloquée par une panne probablement systémique : une ligne d'audit
-// (niveau error) avec de quoi agir. `log` = texte affiché dans le panneau
-// dépliable du journal d'audit ; `recovery_sql` = dernier recours si le
-// mail est lui-même irrécupérable (deux mails poison consécutifs).
-async function alertBlocked(db, log, { mailbox, cursorKey, message, dateField, record, nextError, tag }) {
+// Boîte bloquée : une ligne d'audit (niveau error) avec de quoi agir.
+//   reason 'systemic' : le mail suivant échoue aussi (panne probable) ;
+//   reason 'waiting'  : aucun mail suivant n'écrit depuis SUSPECT_ALERT_MS,
+//                       pas de verdict possible.
+// `log` = texte affiché dans le panneau dépliable du journal d'audit ;
+// `recovery_sql` = dernier recours si le mail est lui-même irrécupérable.
+async function alertBlocked(db, log, { mailbox, cursorKey, message, dateField, record, nextError = null, reason, tag }) {
   const ts = Date.parse(message[dateField])
   const sqlStr = s => `'${String(s).replace(/'/g, "''")}'`
   const recoverySql = Number.isFinite(ts)
     ? `UPDATE settings SET value = ${sqlStr(new Date(Math.floor(ts / 1000) * 1000 + 1000).toISOString())} WHERE key = ${sqlStr(cursorKey)};`
     : null
+  const cause = reason === 'waiting'
+    ? `aucun mail suivant n'a été écrit depuis pour confirmer qu'il est seul en cause — il n'est pas abandonné.`
+    : `le mail suivant échoue aussi — panne probablement systémique, aucun mail abandonné.`
   const details = {
     level: 'error',
     worker: tag,
+    reason,
     internet_message_id: record.internet_message_id,
     graph_message_id: record.id,
     date: message[dateField] || null,
@@ -173,9 +188,9 @@ async function alertBlocked(db, log, { mailbox, cursorKey, message, dateField, r
     recovery_sql: recoverySql,
     log: [
       `Ingestion bloquée : le mail ${record.internet_message_id || record.id} échoue depuis ${record.first_at} ` +
-        `(${record.attempts} tentatives) et le mail suivant échoue aussi — panne probablement systémique, aucun mail abandonné.`,
+        `(${record.attempts} tentatives) et ${cause}`,
       `Erreur : ${record.error}`,
-      `Mail suivant : ${nextError}`,
+      ...(nextError ? [`Mail suivant : ${nextError}`] : []),
       `1. Corriger la cause (base, droits, trigger, contrainte…) : l'ingestion reprend seule, rien n'est perdu.`,
       ...(recoverySql ? [
         `2. Seulement si ce mail est lui-même irrécupérable (deux mails poison consécutifs), passer au-delà en SQL`,
@@ -218,10 +233,14 @@ export async function pollMailboxCursor(db, log, {
 }) {
   const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [stateKey])
   const rawState = rows[0]?.value ?? null
-  let { done, retry } = parseState(rawState, cursor)
+  let { done, retry, scan } = parseState(rawState, cursor)
   // Mail candidat à l'abandon, dépassé provisoirement en attendant le
   // verdict du mail suivant ; `rollback` = position juste avant lui.
   let suspect = null
+  // Position où la recherche de verdict s'est arrêtée au tick précédent
+  // (`scan`, gardé dans l'état), et celle à garder en fin de tick.
+  let jumpTo = null
+  let keepScan = null
 
   let at = Date.parse(cursor)
   let errors = 0
@@ -268,7 +287,10 @@ export async function pollMailboxCursor(db, log, {
             // Le mail suivant échoue aussi : panne systémique probable. Rien
             // n'est abandonné ; retour juste avant le suspect (les mails
             // dépassés depuis — exclus ou déjà traités — n'ont rien écrit).
-            ({ at, done, retry } = suspect.rollback)
+            // La position juste avant ce mail est gardée : au tick suivant,
+            // si le suspect échoue encore, on y retourne sans tout relire.
+            keepScan = { id: suspect.key, at: new Date(at).toISOString(), done: [...done], since: suspect.since }
+            ;({ at, done, retry } = suspect.rollback)
             log?.error({
               mailbox, internetMessageId: retry.internet_message_id,
               attempts: retry.attempts, since: retry.first_at, err: retry.error, next_err: error,
@@ -276,7 +298,7 @@ export async function pollMailboxCursor(db, log, {
             // Une seule ligne d'audit par blocage (`alerted` gardé dans
             // l'état, effacé avec `retry` quand la boîte repart).
             if (!retry.alerted) {
-              await alertBlocked(db, log, { mailbox, cursorKey, message: suspect.message, dateField, record: retry, nextError: error, tag })
+              await alertBlocked(db, log, { mailbox, cursorKey, message: suspect.message, dateField, record: retry, nextError: error, reason: 'systemic', tag })
               retry.alerted = true
             }
             suspect = null
@@ -301,7 +323,18 @@ export async function pollMailboxCursor(db, log, {
           }
           // Candidat à l'abandon : dépassé provisoirement ; abandonné
           // seulement si le mail suivant est traité sans erreur.
-          suspect = { message: m, key, rollback: { at, done: new Set(done), retry: record } }
+          const resumed = scan?.id === key ? scan : null
+          suspect = {
+            message: m, key, since: resumed?.since || new Date(now()).toISOString(),
+            rollback: { at, done: new Set(done), retry: record },
+          }
+          scan = null
+          if (resumed) {
+            // Il échoue encore : la recherche de verdict reprend là où elle
+            // s'était arrêtée (mails suivants déjà vus : rien d'écrit).
+            jumpTo = resumed
+            break
+          }
         } else if (suspect && r?.wrote) {
           // Un mail suivant a ÉCRIT (commit) : la chaîne d'écriture marche,
           // l'échec était propre au suspect. Un mail qui n'écrit rien
@@ -328,6 +361,15 @@ export async function pollMailboxCursor(db, log, {
     else pages++
 
     if (blocked) break
+    if (jumpTo) {
+      at = Date.parse(jumpTo.at)
+      done = new Set(jumpTo.done)
+      listFrom = new Date(at).toISOString()
+      nextLink = null
+      graphNext = listFrom   // on relit depuis la position reprise
+      jumpTo = null
+      continue
+    }
     // Page suivante. Le nextLink Graph est un décalage (`$skip`), pas un
     // instantané : si un mail de cette page quitte la plage entre-temps
     // (suppression, brouillon envoyé, envoyé rangé ailleurs), la page
@@ -344,14 +386,23 @@ export async function pollMailboxCursor(db, log, {
     }
   } while (graphNext && pages < MAX_PAGES && skipPages < MAX_SKIP_PAGES && processed < PAGE_SIZE)
 
-  // Pas de mail suivant traité dans ce tick (fin de boîte, bornes du tick,
-  // listing en échec) : pas de verdict, le suspect n'est pas abandonné — il
-  // ne bloque de toute façon rien d'autre pour l'instant.
+  // Pas de mail suivant qui écrive dans ce tick (fin de boîte, bornes du
+  // tick, listing en échec) : pas de verdict, le suspect n'est pas
+  // abandonné. La position atteinte est gardée (`scan`) : au tick suivant,
+  // si le suspect échoue encore, la recherche reprend là — sans relire ni
+  // retraiter les mails déjà vus (un getMessage Graph par doublon côté
+  // Éléments envoyés). Au-delà de SUSPECT_ALERT_MS sans verdict, le
+  // blocage est signalé une fois à l'audit.
   if (suspect) {
-    ({ at, done, retry } = suspect.rollback)
+    keepScan = { id: suspect.key, at: new Date(at).toISOString(), done: [...done], since: suspect.since }
+    ;({ at, done, retry } = suspect.rollback)
     blocked = true
-    log?.warn({ mailbox, internetMessageId: suspect.message.internetMessageId, attempts: retry.attempts, since: retry.first_at, err: retry.error },
-      `${tag}: mail en échec prolongé, abandon en attente d'un mail suivant traité sans erreur`)
+    log?.warn({ mailbox, internetMessageId: retry.internet_message_id, attempts: retry.attempts, since: retry.first_at, err: retry.error },
+      `${tag}: mail en échec prolongé, abandon en attente d'un mail suivant qui écrive`)
+    if (!retry.alerted && now() - Date.parse(suspect.since) >= SUSPECT_ALERT_MS) {
+      await alertBlocked(db, log, { mailbox, cursorKey, message: suspect.message, dateField, record: retry, reason: 'waiting', tag })
+      retry.alerted = true
+    }
     suspect = null
   }
 
@@ -385,7 +436,7 @@ export async function pollMailboxCursor(db, log, {
   }
 
   const newCursor = new Date(at).toISOString()
-  const newState = JSON.stringify({ at: newCursor, done: [...done], retry })
+  const newState = JSON.stringify({ at: newCursor, done: [...done], retry, scan: retry && keepScan?.id === retry.id ? keepScan : undefined })
   if (newCursor !== cursor || newState !== rawState) {
     await saveCursor(db, log, {
       updatedBy, cursorKey, expected: cursor, entries: [[cursorKey, newCursor], [stateKey, newState]], mailbox, tag,

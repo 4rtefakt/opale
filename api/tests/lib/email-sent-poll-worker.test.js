@@ -20,6 +20,7 @@ import assert from 'node:assert/strict'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { installFakeGraph, graphTime, fakeMail } from '../helpers/fake-graph-mail.js'
 import { pollSentOnce } from '../../modules/email-bridge/lib/sent-poll-worker.js'
+import { MIN_POISON_AGE_MS, SUSPECT_ALERT_MS } from '../../modules/email-bridge/lib/poll-cursor.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip sent-poll-worker suite'
 
@@ -182,6 +183,98 @@ test('pollSentOnce : réponse poison suivie de 60 mails non rattachés puis d\'u
       assert.equal(abandoned, 1, 'poison abandonnée une fois le verdict atteint')
       assert.deepEqual(await ticketContents(), ['Réponse suivante'])
       assert.equal(await cursorMs(), Date.parse(at(100)))
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollSentOnce : poison suivie de 260 réponses déjà présentes (doublons) puis d\'une réponse → verdict atteint, rien relu deux fois',
+  { skip: SKIP }, async () => {
+    // Plus de MAX_PAGES × PAGE_SIZE mails qui n'écrivent rien après le
+    // suspect : la position provisoire est gardée d'un tick à l'autre (sinon
+    // chaque tick repartait du suspect, relisait les mêmes 250 mails — un
+    // getMessage Graph par doublon — et n'atteignait jamais le verdict).
+    await db.query(`INSERT INTO ticket_messages (ticket_id, type, author, content) VALUES ($1, 'comment', 'Agent', 'Déjà envoyé depuis Opale')`, [ticketId])
+    const poison = sentReply(1, 'Réponse poison')
+    const dups = Array.from({ length: 260 }, (_, i) => sentReply(2 + i, 'Déjà envoyé depuis Opale'))
+    const good = sentReply(400, 'Réponse suivante')
+    graph = installFakeGraph({ sent: [poison, ...dups, good] })
+    await db.query(`INSERT INTO test_failing_mail VALUES ($1)`, [poison.internetMessageId])
+    let t = Date.parse('2026-05-10T10:00:00Z')
+    const now = () => t
+    try {
+      for (let tick = 0; tick < 9; tick++) {   // 45 min
+        await pollSentOnce(db, null, { now })
+        t += 5 * 60_000
+      }
+      assert.ok((await ticketContents()).includes('Réponse suivante'), 'réponse suivante ajoutée')
+      const { rows } = await db.query(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'mail_ingest_abandoned'`)
+      assert.equal(rows[0].n, 1, 'poison abandonnée')
+      const refetched = dups.filter(d => graph.calls.filter(u => u.includes(`/messages/${encodeURIComponent(d.id)}`)).length > 1)
+      assert.equal(refetched.length, 0, 'aucun doublon relu (getMessage) deux fois')
+      assert.equal(await cursorMs(), Date.parse(at(400)))
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollSentOnce : verdict attendu sur plusieurs ticks puis échec du mail suivant → retour au point d\'avant le suspect, rien perdu',
+  { skip: SKIP }, async () => {
+    const poison = sentReply(1, 'Réponse A')
+    const perso = Array.from({ length: 260 }, (_, i) => fakeMail({
+      sentDateTime: at(2 + i), conversationId: `perso-${i}`, subject: `Perso ${i}`,
+      from: { emailAddress: { address: MAILBOX } },
+    }))
+    const next = sentReply(400, 'Réponse B')
+    graph = installFakeGraph({ sent: [poison, ...perso, next] })
+    for (const r of [poison, next]) await db.query(`INSERT INTO test_failing_mail VALUES ($1)`, [r.internetMessageId])
+    let t = Date.parse('2026-05-10T10:00:00Z')
+    const now = () => t
+    try {
+      for (let tick = 0; tick < 9; tick++) {
+        await pollSentOnce(db, null, { now })
+        t += 5 * 60_000
+      }
+      const { rows } = await db.query(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'mail_ingest_abandoned'`)
+      assert.equal(rows[0].n, 0, 'le mail suivant échoue aussi : panne systémique, aucun abandon')
+      assert.equal(await cursorMs(), Date.parse(T0), 'curseur resté avant le suspect')
+
+      // Rétablissement : le suspect est retenté en tête (pas abandonné parce
+      // que B écrit enfin) ; 262 mails à 50 par tick.
+      await db.query(`TRUNCATE TABLE test_failing_mail`)
+      for (let tick = 0; tick < 7; tick++) await pollSentOnce(db, null, { now })
+      assert.deepEqual(await ticketContents(), ['Réponse A', 'Réponse B'])
+      const { rows: after } = await db.query(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'mail_ingest_abandoned'`)
+      assert.equal(after[0].n, 0, 'le suspect n\'est pas abandonné au rétablissement')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollSentOnce : suspect sans verdict pendant plus de SUSPECT_ALERT_MS → UNE ligne d\'audit « boîte bloquée »',
+  { skip: SKIP }, async () => {
+    const poison = sentReply(1, 'Réponse poison')
+    const perso = Array.from({ length: 5 }, (_, i) => fakeMail({
+      sentDateTime: at(2 + i), conversationId: `perso-${i}`, subject: `Perso ${i}`,
+      from: { emailAddress: { address: MAILBOX } },
+    }))
+    graph = installFakeGraph({ sent: [poison, ...perso] })
+    await db.query(`INSERT INTO test_failing_mail VALUES ($1)`, [poison.internetMessageId])
+    let t = Date.parse('2026-05-10T10:00:00Z')
+    const now = () => t
+    try {
+      const ticks = (MIN_POISON_AGE_MS + SUSPECT_ALERT_MS) / (5 * 60_000) + 6
+      for (let tick = 0; tick < ticks; tick++) {
+        await pollSentOnce(db, null, { now })
+        t += 5 * 60_000
+      }
+      const { rows } = await db.query(`SELECT details FROM audit_logs WHERE action = 'mail_ingest_blocked'`)
+      assert.equal(rows.length, 1)
+      assert.equal(rows[0].details.reason, 'waiting')
+      assert.equal(rows[0].details.internet_message_id, poison.internetMessageId)
     } finally {
       graph.restore()
     }
