@@ -16,6 +16,14 @@ const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 // Couleurs autorisées pour les tags : palette fermée alignée avec le front.
 const TAG_COLORS = ['slate', 'blue', 'green', 'amber', 'red', 'violet', 'pink', 'teal']
 const PRIORITIES = ['low', 'normal', 'high', 'critical']
+// Valeurs de tickets.status (colonne TEXT libre en base) : celles du front
+// (open / in_progress / resolved / closed = archives) et 'merged', posé par
+// POST /:id/merge. Toute autre valeur est refusée (stockée puis rendue dans
+// les vues admin, elle ouvrait une XSS stockée).
+const STATUSES = ['open', 'in_progress', 'resolved', 'closed', 'merged']
+// Valeurs de tickets.source : 'manual' (UI/CLI), 'auto' (hook, is_auto),
+// 'email' (email-bridge) et les sources des propositions acceptées.
+const SOURCES = ['manual', 'auto', 'alert', 'script', 'email']
 const USER_ROLES = ['requester', 'involved']
 // Messages internes à l'équipe IT : jamais renvoyés à un non-admin (requester
 // ou assignee non-admin), ni cherchables par lui via ?q=.
@@ -307,12 +315,18 @@ export default async function ticketsRoute(fastify) {
       tag_ids,
     } = req.body || {}
     if (!title) return reply.code(400).send({ error: 'Titre requis' })
+    if (!PRIORITIES.includes(priority)) return reply.code(400).send({ error: 'Priorité invalide' })
+    if (!SOURCES.includes(source))      return reply.code(400).send({ error: 'Source invalide' })
 
     const { entraId, displayName } = fastify.getUserIdentity(req)
 
     // Non-admin : ticket pour lui-même uniquement (pas d'assignation, pas de
-    // tags, pas de demandeur tiers) et seulement un poste qui lui est assigné.
+    // tags, pas de demandeur tiers, pas de source système type 'auto') et
+    // seulement un poste qui lui est assigné.
     if (!(await fastify.isAdmin(req))) {
+      if (source !== 'manual') {
+        return reply.code(403).send({ error: 'Source réservée aux admins' })
+      }
       if (isSet(assigned_to_entra_id) || isSet(assigned_to_name)
           || (Array.isArray(tag_ids) && tag_ids.length)) {
         return reply.code(403).send({ error: 'Assignation et tags réservés aux admins' })
@@ -445,6 +459,17 @@ export default async function ticketsRoute(fastify) {
     if (!acl) return
     const { status, priority, assigned_to_entra_id, assigned_to_name, user_id, device_id } = req.body || {}
     const { displayName } = acl
+
+    if (status !== undefined && !STATUSES.includes(status)) {
+      return reply.code(400).send({ error: 'Statut invalide' })
+    }
+    if (priority !== undefined && !PRIORITIES.includes(priority)) {
+      return reply.code(400).send({ error: 'Priorité invalide' })
+    }
+    // 'merged' : posé par POST /:id/merge (admin), jamais par un non-admin.
+    if (status === 'merged' && !acl.isAdmin) {
+      return reply.code(403).send({ error: 'Statut réservé aux admins' })
+    }
 
     // Non-admin : ni réassignation ni changement de demandeur ; seul le
     // requester peut (dé)rattacher un poste, et uniquement un poste à lui.

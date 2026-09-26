@@ -1293,3 +1293,65 @@ test('ai-suggest et send-by-mail — requester non-admin → 403, rien d\'expos�
   assert.deepEqual(rows.map(r => r.type), ['internal_note'], 'ni suggestion créée ni note convertie')
   _aiStub = async () => 'Suggestion IA de test.'
 })
+
+// ─── Validation status / priority / source (XSS stockée) ────────────────────
+// Ces colonnes sont du TEXT libre et le front admin les rend dans ses vues :
+// toute valeur hors liste doit être refusée côté serveur, quel que soit
+// l'appelant. 'merged' et les sources système restent réservés aux admins.
+
+const XSS = '<img src=x onerror=alert(document.domain)>'
+
+test('POST / — priority ou source hors liste → 400 (admin comme non-admin), rien stocké', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-enum-post-admin')
+  const me    = await userAuth('oid-tk-enum-post-user')
+  for (const token of [admin.token, me.token]) {
+    for (const extra of [{ priority: XSS }, { priority: null }, { priority: 'urgent' }, { source: XSS }]) {
+      const res = await createTicketAs(token, { title: 'Enum POST', ...extra })
+      assert.equal(res.statusCode, 400, `attendu 400 pour ${JSON.stringify(extra)}`)
+    }
+  }
+  const { rows } = await db.query(`SELECT 1 FROM tickets WHERE title = 'Enum POST'`)
+  assert.equal(rows.length, 0)
+
+  // Valeurs de la liste toujours acceptées (front : low/normal/high ; CLI idem).
+  for (const priority of ['low', 'normal', 'high', 'critical']) {
+    assert.equal((await createTicketAs(me.token, { title: `Prio ${priority}`, priority })).statusCode, 201)
+  }
+})
+
+test('POST / — non-admin : source système (auto, email…) → 403 ; admin : source=auto OK', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-enum-src-admin')
+  const me    = await userAuth('oid-tk-enum-src-user')
+  for (const source of ['auto', 'email', 'alert', 'script']) {
+    assert.equal((await createTicketAs(me.token, { title: 'Src', source })).statusCode, 403, source)
+  }
+  assert.equal((await createTicketAs(me.token, { title: 'Src manual', source: 'manual' })).statusCode, 201)
+  const res = await createTicketAs(admin.token, { title: 'Src auto', source: 'auto' })
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.json().is_auto, true)
+})
+
+test('PATCH /:id — status / priority hors liste → 400 ; merged réservé aux admins', { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-enum-patch-admin')
+  const me    = await userAuth('oid-tk-enum-patch-user')
+  const id = (await createTicketAs(admin.token, { title: 'Enum PATCH', user_id: me.user.entraId })).json().id
+  const patch = (token, payload) => fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${id}`,
+    headers: { authorization: `Bearer ${token}` }, payload,
+  })
+
+  for (const token of [admin.token, me.token]) {
+    for (const payload of [{ status: XSS }, { priority: XSS }, { status: 'reopened' }, { priority: null }]) {
+      assert.equal((await patch(token, payload)).statusCode, 400, `attendu 400 pour ${JSON.stringify(payload)}`)
+    }
+  }
+  assert.equal((await patch(me.token, { status: 'merged' })).statusCode, 403)
+  const { rows: [tk] } = await db.query('SELECT status, priority FROM tickets WHERE id = $1', [id])
+  assert.deepEqual(tk, { status: 'open', priority: 'normal' })
+
+  // Transitions utilisées par le front / le CLI toujours acceptées.
+  for (const status of ['in_progress', 'resolved', 'open', 'closed']) {
+    assert.equal((await patch(me.token, { status })).statusCode, 200, status)
+  }
+  assert.equal((await patch(me.token, { priority: 'high' })).statusCode, 200)
+})
