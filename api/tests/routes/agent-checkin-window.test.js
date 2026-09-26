@@ -103,6 +103,24 @@ test('POST /checkin — maintenance_window décodable : transmise telle quelle',
   assert.equal((await checkinResponse()).maintenance_window, null)
 })
 
+test('POST /checkin — maintenance_window : seules les clés exactes weekdays/start/end/tz sont envoyées', { skip: SKIP }, async () => {
+  // encoding/json associe les clés SANS tenir compte de la casse : renvoyée
+  // telle quelle, « Weekdays »:["1"] faisait échouer le décodage (chaque
+  // checkin), « START » écrasait start, « Start »/« End » donnaient à
+  // l'agent une fenêtre que le serveur ne voyait pas. Réponses décodées
+  // telles quelles par agent-go (TestCheckinResponse_DecodesSanitizedWindow).
+  const cases = [
+    ['{"Weekdays":["1"],"start":"02:00","end":"04:00"}', { start: '02:00', end: '04:00' }],
+    ['{"start":"02:00","end":"04:00","START":"x"}',      { start: '02:00', end: '04:00' }],
+    ['{"Start":"02:00","End":"04:00"}',                  {}],
+  ]
+  for (const [raw, sent] of cases) {
+    await setWindow(raw)
+    const body = await checkinResponse()
+    assert.deepEqual(body.maintenance_window, sent, `${raw} : fenêtre envoyée`)
+  }
+})
+
 // ─── Fenêtre configurée mais invalide : aucun déploiement ───────────────────
 
 // Poste avec un déploiement (package approuvé + snapshot) et un script en
@@ -148,6 +166,13 @@ test('POST /checkin — fenêtre configurée mais invalide : aucun déploiement 
     '{"start":2,"end":"05:00"}',
     '"02:00-05:00"',
     '{"start":',
+    // Clés hors weekdays/start/end/tz (casse, fautes de frappe) : l'agent
+    // Go les lit sans tenir compte de la casse, le serveur les ignorait.
+    '{"Weekdays":["1"],"start":"02:00","end":"05:00"}',
+    '{"start":"02:00","end":"05:00","START":"x"}',
+    '{"Start":"02:00","End":"05:00"}',
+    '{"days":[1,2,3]}',
+    '{"from":"02:00","to":"05:00"}',
   ]
   const warns = []
   const origWarn = fastify.log.warn

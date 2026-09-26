@@ -120,12 +120,18 @@ function getAgentBinaryMeta(arch = 'amd64') {
 // checkin chez l'agent (≤ 2.14 compris) : chaque checkin échoue et, après
 // une mise à jour, le rollback se déclenche. null = fenêtre absente pour
 // tous les agents. Entiers bornés à 32 bits (build 386).
+// Objet NEUF, limité aux clés exactes : encoding/json associe les clés
+// sans tenir compte de la casse (« Weekdays », « START » seraient lus).
+const WINDOW_KEYS = ['weekdays', 'start', 'end', 'tz']
 function windowForAgent(w) {
   if (!w || typeof w !== 'object' || Array.isArray(w)) return null
   const str = v => v === undefined || v === null || typeof v === 'string'
   const days = w.weekdays === undefined || w.weekdays === null
     || (Array.isArray(w.weekdays) && w.weekdays.every(d => Number.isInteger(d) && Math.abs(d) < 2 ** 31))
-  return str(w.start) && str(w.end) && str(w.tz) && days ? w : null
+  if (!(str(w.start) && str(w.end) && str(w.tz) && days)) return null
+  const out = {}
+  for (const k of WINDOW_KEYS) if (Object.hasOwn(w, k)) out[k] = w[k]
+  return out
 }
 
 // Problème d'une fenêtre configurée (JSON déjà parsé), ou null si elle est
@@ -134,6 +140,10 @@ const HHMM_RE = /^(\d{1,2}):(\d{2})$/
 function maintenanceWindowProblem(w) {
   if (w === null) return null
   if (!windowForAgent(w)) return 'types incompatibles (objet ; weekdays entiers ; start, end, tz chaînes)'
+  // Clé inconnue (casse, faute de frappe « days », « from »…) : l'agent la
+  // lirait peut-être (casse ignorée), le serveur non → avis divergents.
+  const unknown = Object.keys(w).find(k => !WINDOW_KEYS.includes(k))
+  if (unknown !== undefined) return `clé inconnue « ${clipStr(unknown, 40)} » (attendues : ${WINDOW_KEYS.join(', ')})`
   if (Array.isArray(w.weekdays) && w.weekdays.some(d => d < 0 || d > 6)) return 'weekdays hors 0-6'
   if (w.start || w.end) {
     const ok = s => { const m = typeof s === 'string' && s.match(HHMM_RE); return !!m && +m[1] <= 23 && +m[2] <= 59 }

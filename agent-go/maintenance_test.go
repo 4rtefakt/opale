@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
@@ -109,6 +110,39 @@ func TestMaintenanceWindow_BadInputFailOpen(t *testing.T) {
 // invalide (fail-open côté serveur, UTC côté agent) et heures hors du
 // format strict H:MM / HH:MM (refusées par la regex du serveur → fail-open,
 // acceptées par strconv.Atoi côté agent).
+// encoding/json associe les clés sans tenir compte de la casse : une
+// fenêtre brute avec « Weekdays »:["1"] fait échouer le décodage de TOUTE la
+// réponse du checkin, « START » écrase start. Le serveur n'envoie donc que
+// les clés exactes (windowForAgent) : ces réponses, reprises de
+// api/tests/routes/agent-checkin-window.test.js, se décodent comme attendu.
+func TestCheckinResponse_DecodesSanitizedWindow(t *testing.T) {
+	decode := func(window string) (*MaintenanceWindow, error) {
+		var resp CheckinResponse
+		err := json.Unmarshal([]byte(`{"ok":true,"maintenance_window":`+window+`}`), &resp)
+		return resp.MaintenanceWindow, err
+	}
+	// Brut (avant d409bff / clés strictes) : échec ou valeur détournée.
+	if _, err := decode(`{"Weekdays":["1"],"start":"02:00","end":"04:00"}`); err == nil {
+		t.Fatal("« Weekdays »:[\"1\"] brut : échec de décodage attendu (d'où le filtrage serveur)")
+	}
+	if w, _ := decode(`{"start":"02:00","end":"04:00","START":"x"}`); w == nil || w.Start != "x" {
+		t.Fatalf("« START » brut : écrasement de start attendu, reçu %+v", w)
+	}
+	// Envoyé par le serveur : clés exactes seulement.
+	for _, c := range []struct {
+		sent string
+		want MaintenanceWindow
+	}{
+		{`{"start":"02:00","end":"04:00"}`, MaintenanceWindow{Start: "02:00", End: "04:00"}},
+		{`{}`, MaintenanceWindow{}},
+	} {
+		w, err := decode(c.sent)
+		if err != nil || w == nil || w.Start != c.want.Start || w.End != c.want.End || len(w.Weekdays) != 0 || w.TZ != "" {
+			t.Fatalf("%s : %+v (%v), attendu %+v", c.sent, w, err, c.want)
+		}
+	}
+}
+
 func TestMaintenanceWindow_SameVerdictAsServer(t *testing.T) {
 	noon := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC) // hors 02:00-04:00
 	cases := []struct {
