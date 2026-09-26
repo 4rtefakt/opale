@@ -154,6 +154,26 @@ function New-SystemOnlyDirectory([string]$Path) {
     New-Item -ItemType Directory -Path $Path | Out-Null
 }
 
+# Avant d'écarter ou de (re)créer le dossier de données, le service
+# existant ne doit plus pouvoir démarrer : son exe est dans ce dossier, et
+# un utilisateur qui recréerait le dossier (course perdue par le renommage,
+# code 8) avec son propre exe le ferait lancer en SYSTEM — démarrage manuel,
+# boot ou actions de récupération du SCM (un service désactivé ne démarre
+# plus, même par elles). Les chemins de succès repassent le
+# service en start= auto.
+function Disable-AgentService {
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svc) {
+        & sc.exe config $ServiceName start= disabled | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "sc.exe config $ServiceName start= disabled : code $LASTEXITCODE" }
+        if ($svc.Status -ne 'Stopped') {
+            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+            $svc.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, (New-TimeSpan -Seconds 30))
+        }
+        Write-Output "Service $ServiceName arrêté et désactivé (dossier de données non fiable) : réactivé en fin d'installation réussie"
+    }
+}
+
 # Un utilisateur standard peut créer un sous-dossier de %ProgramData% (il
 # en devient propriétaire, donc peut toujours en réécrire l'ACL, y compris
 # via un handle WRITE_DAC ouvert avant qu'on ne change le propriétaire) ou
@@ -167,12 +187,13 @@ function New-SystemOnlyDirectory([string]$Path) {
 #     le renommage échoue si le nom a été recréé entre-temps (installation
 #     interrompue, code 8).
 function Initialize-DataDir {
-    if (($null -ne (Get-EntryAttributes $DataDir)) -and -not (Test-DataDirTrusted)) {
-        $aside = "$DataDir.untrusted-" + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-        [System.IO.Directory]::Move($DataDir, $aside)
-        Write-Output "ATTENTION : $DataDir n'est pas de confiance (propriétaire, ACL ou liens) : déplacé vers $aside"
-    }
-    if ($null -eq (Get-EntryAttributes $DataDir)) {
+    if (-not (Test-DataDirTrusted)) {
+        Disable-AgentService
+        if ($null -ne (Get-EntryAttributes $DataDir)) {
+            $aside = "$DataDir.untrusted-" + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            [System.IO.Directory]::Move($DataDir, $aside)
+            Write-Output "ATTENTION : $DataDir n'est pas de confiance (propriétaire, ACL ou liens) : déplacé vers $aside"
+        }
         $fresh = "$DataDir.new-" + [guid]::NewGuid().ToString('N')
         New-SystemOnlyDirectory $fresh
         try {
@@ -181,13 +202,37 @@ function Initialize-DataDir {
             if (@(Get-ChildItem -LiteralPath $fresh -Force).Count -ne 0) { throw "$fresh : dossier neuf non vide" }
             [System.IO.Directory]::Move($fresh, $DataDir)
         } catch {
-            Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+            # Suppression non récursive (ne suit aucune jonction, pas d'invite).
+            try { [System.IO.Directory]::Delete($fresh) } catch { }
             throw "création de $DataDir impossible (nom recréé entre-temps ?) : $_"
         }
     }
     Set-SystemOnlyAcl $DataDir $true
     if (-not (Test-DataDirTrusted)) {
         throw "$DataDir modifié pendant sa création : installation interrompue"
+    }
+}
+
+# Relance de l'agent existant après un échec : uniquement si le dossier de
+# données est de confiance ET que le service pointe exactement sur l'exe de
+# ce dossier. Sinon le service reste arrêté (et désactivé s'il l'a été par
+# Disable-AgentService) : on ne lance jamais un exe d'un dossier qu'un autre
+# compte a pu recréer.
+function Restore-AgentService {
+    if (-not $wasRunning) { return }
+    $image = ''
+    try {
+        $image = [string](Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName" -Name ImagePath -ErrorAction Stop).ImagePath
+    } catch {
+        $image = ''
+    }
+    $image = $image.Trim().Trim('"')
+    if ((Test-DataDirTrusted) -and ($image -ieq $ExePath) -and (Test-TrustedItem $ExePath)) {
+        & sc.exe config $ServiceName start= auto | Out-Null
+        Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        Write-Output "Agent existant relancé."
+    } else {
+        Write-Output "ATTENTION : service $ServiceName laissé arrêté/désactivé (dossier de données non fiable ou chemin inattendu : '$image')."
     }
 }
 
@@ -206,8 +251,8 @@ try {
     Initialize-DataDir
 } catch {
     Write-Output "ERREUR dossier de données : $_"
-    # Ne pas laisser l'agent existant arrêté.
-    if ($wasRunning) { Start-Service -Name $ServiceName -ErrorAction SilentlyContinue }
+    # Ne pas laisser l'agent existant arrêté… si c'est sûr.
+    Restore-AgentService
     exit 8
 }
 
@@ -229,8 +274,8 @@ try {
 } catch {
     Write-Output "ERREUR installation : $_"
     if ($tmpExe) { Remove-Item -LiteralPath $tmpExe -Force -ErrorAction SilentlyContinue }
-    # Ne pas laisser l'agent existant arrêté.
-    if ($wasRunning) { Start-Service -Name $ServiceName -ErrorAction SilentlyContinue }
+    # Ne pas laisser l'agent existant arrêté… si c'est sûr.
+    Restore-AgentService
     exit 3
 }
 

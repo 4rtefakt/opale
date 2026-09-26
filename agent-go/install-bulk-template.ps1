@@ -154,6 +154,29 @@ function New-SystemOnlyDirectory([string]$Path) {
     New-Item -ItemType Directory -Path $Path | Out-Null
 }
 
+# Avant d'écarter ou de (re)créer le dossier de données, le service
+# existant ne doit plus pouvoir démarrer : son exe est dans ce dossier, et
+# un utilisateur qui recréerait le dossier (course perdue par le renommage,
+# code 8) avec son propre exe le ferait lancer en SYSTEM — démarrage manuel,
+# boot ou actions de récupération du SCM (un service désactivé ne démarre
+# plus, même par elles). Même chose pour la tâche planifiée
+# héritée, qui exécute un script du dossier. Les chemins de succès repassent le
+# service en start= auto.
+function Disable-AgentService {
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svc) {
+        & sc.exe config $ServiceName start= disabled | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "sc.exe config $ServiceName start= disabled : code $LASTEXITCODE" }
+        if ($svc.Status -ne 'Stopped') {
+            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+            $svc.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, (New-TimeSpan -Seconds 30))
+        }
+        Log "Service $ServiceName stopped and disabled (untrusted data dir): re-enabled only by a successful install"
+    }
+    # Tâche planifiée héritée : elle exécute un script de ce dossier.
+    Remove-LegacyScheduledTask
+}
+
 # Un utilisateur standard peut créer un sous-dossier de %ProgramData% (il
 # en devient propriétaire, donc peut toujours en réécrire l'ACL, y compris
 # via un handle WRITE_DAC ouvert avant qu'on ne change le propriétaire) ou
@@ -167,12 +190,13 @@ function New-SystemOnlyDirectory([string]$Path) {
 #     le renommage échoue si le nom a été recréé entre-temps (installation
 #     interrompue, code 8).
 function Initialize-DataDir {
-    if (($null -ne (Get-EntryAttributes $DataDir)) -and -not (Test-DataDirTrusted)) {
-        $aside = "$DataDir.untrusted-" + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-        [System.IO.Directory]::Move($DataDir, $aside)
-        Log "WARN: $DataDir not trusted (owner, ACL or links): moved aside to $aside"
-    }
-    if ($null -eq (Get-EntryAttributes $DataDir)) {
+    if (-not (Test-DataDirTrusted)) {
+        Disable-AgentService
+        if ($null -ne (Get-EntryAttributes $DataDir)) {
+            $aside = "$DataDir.untrusted-" + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            [System.IO.Directory]::Move($DataDir, $aside)
+            Log "WARN: $DataDir not trusted (owner, ACL or links): moved aside to $aside"
+        }
         $fresh = "$DataDir.new-" + [guid]::NewGuid().ToString('N')
         New-SystemOnlyDirectory $fresh
         try {
@@ -181,7 +205,8 @@ function Initialize-DataDir {
             if (@(Get-ChildItem -LiteralPath $fresh -Force).Count -ne 0) { throw "$fresh : dossier neuf non vide" }
             [System.IO.Directory]::Move($fresh, $DataDir)
         } catch {
-            Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+            # Suppression non récursive (ne suit aucune jonction, pas d'invite).
+            try { [System.IO.Directory]::Delete($fresh) } catch { }
             throw "création de $DataDir impossible (nom recréé entre-temps ?) : $_"
         }
     }

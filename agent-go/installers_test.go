@@ -23,6 +23,19 @@ func readInstaller(t *testing.T, name string) string {
 	return strings.ReplaceAll(string(raw), "\r\n", "\n")
 }
 
+// psFuncBody — corps d'une fonction PowerShell de premier niveau ("" si absente).
+func psFuncBody(code, name string) string {
+	i := strings.Index(code, "function "+name)
+	if i < 0 {
+		return ""
+	}
+	body := code[i:]
+	if j := strings.Index(body, "\n}\n"); j >= 0 {
+		body = body[:j]
+	}
+	return body
+}
+
 // codeOnly retire les lignes de commentaire PowerShell.
 func codeOnly(src string) string {
 	var out []string
@@ -93,13 +106,61 @@ func TestInstallers_DataDirAclAndConfigWrite(t *testing.T) {
 		if iFresh < 0 || !(iFresh < iCreate && iCreate < iCheck && iCheck < iMove) {
 			t.Errorf("%s : séquence nom aléatoire → création → vérification → renommage absente (%d %d %d %d)", f, iFresh, iCreate, iCheck, iMove)
 		}
-		fn := code[strings.Index(code, "function New-SystemOnlyDirectory"):]
-		fn = fn[:strings.Index(fn, "\n}\n")]
+		fn := psFuncBody(code, "New-SystemOnlyDirectory")
 		if regexp.MustCompile(`New-Item[^\n]*-Force`).MatchString(fn) {
 			t.Errorf("%s : repli New-Item -Force (adopterait un dossier existant)", f)
 		}
 		if !regexp.MustCompile(`(?s)Initialize-DataDir\s*\}\s*catch\s*\{.{0,400}?exit 8`).MatchString(code) {
 			t.Errorf("%s : échec du DataDir sans code de sortie 8", f)
+		}
+		// Nettoyage du dossier temporaire : non récursif et sans invite.
+		if !strings.Contains(code, "[System.IO.Directory]::Delete($fresh)") || strings.Contains(code, "Remove-Item -LiteralPath $fresh") {
+			t.Errorf("%s : nettoyage de $fresh non fait par [IO.Directory]::Delete", f)
+		}
+
+		// Service existant désactivé AVANT d'écarter / recréer le dossier :
+		// sinon, course perdue (code 8), le SCM lancerait l'exe planté par
+		// l'utilisateur (démarrage, boot, actions de récupération).
+		init := psFuncBody(code, "Initialize-DataDir")
+		iDisable := strings.Index(init, "Disable-AgentService")
+		iAside := strings.Index(init, "[System.IO.Directory]::Move($DataDir, $aside)")
+		iNew := strings.Index(init, "New-SystemOnlyDirectory $fresh")
+		if iDisable < 0 || !(iDisable < iAside && iDisable < iNew) {
+			t.Errorf("%s : service non désactivé avant de toucher au DataDir (%d %d %d)", f, iDisable, iAside, iNew)
+		}
+		dis := psFuncBody(code, "Disable-AgentService")
+		for _, want := range []string{"& sc.exe config $ServiceName start= disabled", "if ($LASTEXITCODE -ne 0) { throw", "WaitForStatus"} {
+			if !strings.Contains(dis, want) {
+				t.Errorf("%s : Disable-AgentService sans %q", f, want)
+			}
+		}
+		// Les chemins de succès réactivent le service.
+		if !strings.Contains(code, "binPath= \"`\"$ExePath`\"\" start= auto") {
+			t.Errorf("%s : le chemin de succès ne repasse pas le service en start= auto", f)
+		}
+		if f == "install.ps1" {
+			// Seules relances : la fin d'installation réussie et
+			// Restore-AgentService (dossier de confiance + ImagePath exact).
+			if n := strings.Count(code, "Start-Service"); n != 2 {
+				t.Errorf("%s : %d Start-Service, attendu 2 (succès + Restore-AgentService)", f, n)
+			}
+			rs := psFuncBody(code, "Restore-AgentService")
+			iCond := strings.Index(rs, "if ((Test-DataDirTrusted) -and ($image -ieq $ExePath) -and (Test-TrustedItem $ExePath))")
+			if iCond < 0 || iCond > strings.Index(rs, "Start-Service") {
+				t.Errorf("%s : Restore-AgentService relance sans vérifier dossier et ImagePath", f)
+			}
+			if strings.Count(code, "    Restore-AgentService\n") != 2 {
+				t.Errorf("%s : les chemins d'échec doivent passer par Restore-AgentService", f)
+			}
+		} else {
+			// Templates : aucun démarrage hors du chemin de succès, et la tâche
+			// planifiée héritée (qui exécute un script du dossier) est retirée.
+			if strings.Contains(code, "Start-Service") || strings.Count(code, "sc.exe start") != 1 {
+				t.Errorf("%s : démarrage du service hors du chemin de succès", f)
+			}
+			if !strings.Contains(dis, "Remove-LegacyScheduledTask") {
+				t.Errorf("%s : tâche planifiée héritée non retirée avant de toucher au DataDir", f)
+			}
 		}
 		if !regexp.MustCompile(`Set-SystemOnlyAcl \$DataDir \$true\s+if \(-not \(Test-DataDirTrusted\)\) \{\s+throw`).MatchString(code) {
 			t.Errorf("%s : DataDir non revérifié après création", f)
