@@ -1,20 +1,8 @@
 import fp from 'fastify-plugin'
 
-// Durées de conservation RGPD (docs/rgpd.md)
-//
-// Note remote_session_logs (30j) plus court que remote_sessions (183j) :
-// les frames raw contiennent le contenu intégral du terminal (mots de
-// passe affichés, données users) — sensibilité bien plus haute que les
-// métadonnées de session. La FK ON DELETE CASCADE garantit en plus que
-// le log suit si la session parente est purgée.
-const RULES = [
-  { table: 'bandwidth_stats',      col: 'sampled_at', days: 30  },
-  { table: 'ping_stats',           col: 'sampled_at', days: 30  },
-  { table: 'remote_session_logs',  col: 'created_at', days: 30  },
-  { table: 'remote_sessions',      col: 'started_at', days: 183 },
-  { table: 'audit_logs',           col: 'created_at', days: 365 },
-  { table: 'script_executions',    col: 'started_at', days: 90  },
-]
+// Durées de conservation RGPD : définies dans lib/retention.js (seule
+// source, partagée avec le nettoyage du checkin agent).
+import { RETENTION_RULES } from '../lib/retention.js'
 
 // Timeout pour les déploiements bloqués en 'running' : si l'agent prend
 // un déploiement en charge puis crash (install qui kill le réseau / le
@@ -42,8 +30,9 @@ async function timeoutStuckDeployments(fastify) {
   }
 }
 
-async function runCleanup(fastify) {
-  for (const { table, col, days } of RULES) {
+// Exportée pour les tests.
+export async function runCleanup(fastify) {
+  for (const { table, col, days } of RETENTION_RULES) {
     try {
       const res = await fastify.db.query(
         `DELETE FROM ${table} WHERE ${col} < now() - interval '${days} days'`
