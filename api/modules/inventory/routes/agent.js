@@ -274,7 +274,7 @@ export default async function agentRoute(fastify) {
       // Trouver ou créer le device par hostname. FOR UPDATE : sérialise deux
       // exchanges concurrents sur le même poste (check + émission atomiques).
       let deviceId
-      let revokedUnused = 0
+      let revokedUnused = []
       const { rows: dev } = await client.query(
         'SELECT id, serial FROM devices WHERE hostname = $1 FOR UPDATE', [hostname]
       )
@@ -285,16 +285,17 @@ export default async function agentRoute(fastify) {
         } else {
           deviceId = dev[0].id
           // Jamais les tokens de rotation (émis à un agent déjà authentifié).
-          const { rowCount } = await client.query(
+          const { rows: revoked } = await client.query(
             `UPDATE agent_tokens SET revoked_at = now()
                WHERE device_id = $1
                  AND is_bootstrap = FALSE
                  AND revoked_at IS NULL
                  AND last_used_at IS NULL
-                 AND created_by IS DISTINCT FROM 'agent-rotation'`,
+                 AND created_by IS DISTINCT FROM 'agent-rotation'
+             RETURNING id`,
             [deviceId]
           )
-          revokedUnused = rowCount
+          revokedUnused = revoked.map(r => r.id)
         }
       } else {
         const { rows: nd } = await client.query(
@@ -362,6 +363,10 @@ export default async function agentRoute(fastify) {
         .send({ error: CLAIM_REFUSAL_MESSAGES[refused.reason] })
     }
 
+    // Tokens révoqués ci-dessus : la WS n'enregistre pas last_used_at, un
+    // tube peut être ouvert avec l'un d'eux (premier checkin pas encore fait).
+    fastify.agentWs?.evictTokens(result.revokedUnused, 'token-revoked')
+
     logAudit(fastify.db, fastify.log, {
       action:  'agent_bootstrap_exchange',
       byUser:  hostname,
@@ -369,7 +374,7 @@ export default async function agentRoute(fastify) {
       details: {
         bootstrap_label: result.bootstrapLabel,
         serial,
-        ...(result.revokedUnused ? { revoked_unused_tokens: result.revokedUnused } : {}),
+        ...(result.revokedUnused.length ? { revoked_unused_tokens: result.revokedUnused.length } : {}),
       },
     })
 
@@ -699,7 +704,7 @@ export default async function agentRoute(fastify) {
     // sont révoqués : un seul credential vivant par poste.
     if (!token.device_id && lookup.rows[0]) {
       let refusal = null
-      let revokedUnused = 0
+      let revokedUnused = []
       const client = await fastify.db.connect()
       try {
         await client.query('BEGIN')
@@ -727,10 +732,11 @@ export default async function agentRoute(fastify) {
                  AND is_bootstrap = FALSE
                  AND revoked_at IS NULL
                  AND last_used_at IS NULL
-                 AND created_by IS DISTINCT FROM 'agent-rotation'`,
+                 AND created_by IS DISTINCT FROM 'agent-rotation'
+             RETURNING id`,
             [lookup.rows[0].id, token.id]
           )
-          revokedUnused = revoked.rowCount
+          revokedUnused = revoked.rows.map(r => r.id)
         }
         await client.query('COMMIT')
       } catch (err) {
@@ -740,6 +746,8 @@ export default async function agentRoute(fastify) {
         client.release()
       }
       if (!refusal) {
+        // Même cas qu'à l'exchange : fermer la WS éventuelle des tokens révoqués.
+        fastify.agentWs?.evictTokens(revokedUnused, 'token-revoked')
         await logAudit(fastify.db, fastify.log, {
           action:  'agent_token_bound',
           byUser:  clipStr(hostname, 255),
@@ -748,7 +756,7 @@ export default async function agentRoute(fastify) {
             token_id:    token.id,
             token_label: token.label,
             serial:      clipStr(serial, 100),
-            ...(revokedUnused ? { revoked_unused_tokens: revokedUnused } : {}),
+            ...(revokedUnused.length ? { revoked_unused_tokens: revokedUnused.length } : {}),
           },
         })
       }
@@ -1356,6 +1364,16 @@ export default async function agentRoute(fastify) {
     }
     const hostname = devRows[0].hostname
 
+    // Socket fermée pendant les await d'authentification : son event
+    // 'close' est déjà passé, sans listener. L'enregistrer créerait une
+    // connexion fantôme (agent affiché en ligne, heartbeat jamais arrêté).
+    // Rien n'est encore mis en place à ce stade (ni registry, ni audit, ni
+    // timer), et plus aucun await jusqu'au socket.on('close') ci-dessous.
+    if (socket.readyState !== 1) {
+      fastify.log.info({ device_id: token.device_id }, 'agent ws fermée pendant l\'authentification')
+      return
+    }
+
     const conn = makeAgentConn(socket, {
       deviceId: token.device_id,
       tokenId:  token.id,
@@ -1381,6 +1399,45 @@ export default async function agentRoute(fastify) {
       heartbeat_timeout_s: HEARTBEAT_TIMEOUT_MS / 1000,
     })
 
+    // Revalidation du token à chaque heartbeat : la WS n'est authentifiée
+    // qu'à l'upgrade. Couvre l'expiration (fin de la grace de rotation) et
+    // les invalidations qui ne passent pas par le registry de ce process
+    // (autre instance, SQL direct, révocation entre l'auth et le register).
+    // Erreur DB : connexion conservée, nouvel essai au tick suivant.
+    let tokenCheckPending = false
+    const recheckToken = async () => {
+      if (tokenCheckPending || conn.revokedReason) return
+      tokenCheckPending = true
+      try {
+        const { rows: [t] } = await fastify.db.query(
+          `SELECT device_id, revoked_at IS NOT NULL AS revoked, expires_at <= now() AS expired
+             FROM agent_tokens WHERE id = $1`,
+          [token.id]
+        )
+        // Ligne absente : token supprimé, ce qui n'arrive qu'avec son poste
+        // (ON DELETE CASCADE). device_id différent : un checkin a rattaché
+        // le token à un autre poste (renommage sans série), la connexion
+        // est enregistrée sous l'ancien.
+        const reason = !t ? 'device-deleted'
+          : t.revoked ? 'token-revoked'
+          : t.expired ? 'token-expired'
+          : t.device_id !== token.device_id ? 'token-rebound'
+          : null
+        if (reason && socket.readyState === 1) {
+          fastify.log.info({ device_id: token.device_id, token_id: token.id, reason }, 'agent ws : token invalide, fermeture')
+          fastify.agentWs.evict(conn, reason)
+        }
+      } catch (err) {
+        fastify.log.warn({ err: err.message, device_id: token.device_id }, 'agent ws : revalidation du token impossible')
+      } finally {
+        tokenCheckPending = false
+      }
+    }
+    // Premier contrôle dès l'enregistrement (aucun await depuis register) :
+    // une révocation survenue entre authToken et register n'a trouvé aucune
+    // connexion à évincer et resterait sinon active jusqu'au premier tick.
+    recheckToken()
+
     // Heartbeat : ping périodique + close si pong manquant. Le timer est
     // détruit dans le handler onClose.
     const heartbeat = setInterval(() => {
@@ -1391,9 +1448,24 @@ export default async function agentRoute(fastify) {
         return
       }
       conn.send('ping', { ts: Date.now() })
+      recheckToken()
     }, HEARTBEAT_INTERVAL_MS)
 
+    // Session console portée par CETTE connexion (donc par ce poste) : un
+    // session_id connu ne vaut pas autorisation. La session d'un autre
+    // poste, ou d'une connexion précédente du même poste, est traitée comme
+    // inconnue. Aucune session n'est transférée d'une connexion à l'autre :
+    // un supersede ferme celles de l'ancienne (disconnect du registry).
+    const ownConsoleSession = (id) => {
+      const sess = fastify.consoleSessions.get(id)
+      if (!sess || sess.deviceId !== token.device_id || sess.agentConn !== conn) return null
+      return sess
+    }
+
     socket.on('message', (raw) => {
+      // Credential invalidé (cf. AgentWSRegistry.evict) : ws émet encore
+      // les frames reçues pendant le handshake de close, on les ignore.
+      if (conn.revokedReason) return
       // Garde-fou taille avant parsing JSON pour éviter qu'un agent
       // compromis n'épuise la mémoire avec une frame géante.
       if (raw.length > WS_FRAME_MAX_BYTES) {
@@ -1440,10 +1512,12 @@ export default async function agentRoute(fastify) {
         // ── Frames console.* (PR 2) ──────────────────────────────────────
         // L'agent envoie des frames console.* avec un session_id qu'on
         // mappe à la session enregistrée dans consoleSessions (la WS
-        // browser). Si la session a déjà été fermée côté serveur, on
-        // ignore — l'agent recevra console.close au prochain cycle.
+        // browser), uniquement si elle est portée par cette connexion
+        // (cf. ownConsoleSession). Si la session a déjà été fermée côté
+        // serveur, on ignore — l'agent recevra console.close au prochain
+        // cycle.
         case 'console.opened': {
-          const sess = fastify.consoleSessions.get(msg.id)
+          const sess = ownConsoleSession(msg.id)
           if (!sess) {
             conn.send('console.close', { reason: 'no-such-session' }, msg.id)
             break
@@ -1452,7 +1526,7 @@ export default async function agentRoute(fastify) {
           break
         }
         case 'console.data': {
-          const sess = fastify.consoleSessions.get(msg.id)
+          const sess = ownConsoleSession(msg.id)
           if (!sess) break
           // Capture la sortie terminal en 'out' avant de la pousser au
           // browser. Décodage base64 → bytes bruts pour le buffer.
@@ -1463,14 +1537,14 @@ export default async function agentRoute(fastify) {
           break
         }
         case 'console.error': {
-          const sess = fastify.consoleSessions.get(msg.id)
+          const sess = ownConsoleSession(msg.id)
           if (!sess) break
           sess.sendBrowser('error', msg.data || {})
           fastify.consoleSessions.close(msg.id, 'agent-error').catch(() => {})
           break
         }
         case 'console.exit': {
-          const sess = fastify.consoleSessions.get(msg.id)
+          const sess = ownConsoleSession(msg.id)
           if (!sess) break
           sess.sendBrowser('exit', msg.data || {})
           const reason = (msg.data && typeof msg.data.reason === 'string') ? msg.data.reason : 'exit'

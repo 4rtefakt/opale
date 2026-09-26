@@ -167,6 +167,21 @@ export default async function consoleRoute(fastify) {
       `🖥 Console SYSTEM ouverte par ${grant.identity.displayName} — motif : ${formatReasonLine(grant.reason)}`
     ).catch(err => fastify.log.warn({ err: err.message }, 'console open ticket event failed'))
 
+    // La connexion agent capturée plus haut a pu être évincée, remplacée
+    // (reconnexion) ou perdue pendant les await (takeover, INSERT de la
+    // session) : son disconnect est passé avant l'enregistrement de la
+    // session, qui serait liée à une connexion morte (browser bloqué sur
+    // « Ouverture… », poste marqué occupé). Pas d'await depuis create().
+    const currentConn = fastify.agentWs.get(grant.deviceId)
+    if (currentConn !== agentConn) {
+      sendBrowser('error', 'Agent déconnecté pendant l\'ouverture de la console')
+      // Raison de l'évincement si connue ; une autre connexion en place =
+      // reconnexion de l'agent (supersede).
+      const reason = agentConn.revokedReason || (currentConn ? 'superseded' : 'agent-disconnected')
+      await fastify.consoleSessions.close(session.id, reason)
+      return
+    }
+
     sendBrowser('status', `Ouverture console (${session.shell})…`)
 
     // Demande à l'agent d'ouvrir le ConPTY pour cette session_id. La réponse
