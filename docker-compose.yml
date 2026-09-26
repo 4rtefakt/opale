@@ -3,6 +3,11 @@ services:
     build: { context: ., dockerfile: api/Dockerfile }
     restart: unless-stopped
     env_file: .env
+    # Publié sur toutes les interfaces (inchangé). Derrière un reverse proxy
+    # sur le même hôte (Caddy), binder en "127.0.0.1:3010:3010" : sinon l'API
+    # (HTTP en clair) reste joignable en direct depuis le réseau. Obligatoire
+    # si TRUST_PROXY est activé : l'API fait alors confiance aux en-têtes
+    # X-Forwarded-*, qu'un client en accès direct pourrait falsifier.
     ports: ["3010:3010"]
     depends_on:
       db:
