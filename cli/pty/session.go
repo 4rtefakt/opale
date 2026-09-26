@@ -110,11 +110,12 @@ func pumpInput(r io.Reader, w *wsWriter) {
 
 // readLoop relaie les frames serveur vers stdout/stderr jusqu'à la fin de
 // session. nil : fin normale (frame exit, socket fermé sans motif). Erreur :
-// frame illisible, ou socket fermé avec un motif sans frame préalable —
+// frame illisible, socket fermé avec un motif sans frame préalable —
 // taken-over, agent-disconnected, server-shutdown, browser-frame-too-large
-// (api/modules/remote/lib/console-sessions.js close()). La session a alors
-// été coupée de l'extérieur : code de sortie non nul, et le motif n'est
-// affiché qu'une fois, par cobra, terminal restauré.
+// (api/modules/remote/lib/console-sessions.js close()) — ou connexion perdue
+// (FIN sans close, RST d'un NAT/VPN/proxy). La session a alors été coupée de
+// l'extérieur : code de sortie non nul, et le motif n'est affiché qu'une
+// fois, par cobra, terminal restauré.
 func readLoop(conn *websocket.Conn, stdout, stderr io.Writer) (err error) {
 	defer func() {
 		// Retour à la ligne : le « Error: » de cobra ne doit pas atterrir au
@@ -127,12 +128,23 @@ func readLoop(conn *websocket.Conn, stdout, stderr io.Writer) (err error) {
 		_, raw, rerr := conn.ReadMessage()
 		if rerr != nil {
 			// error et exit terminent la boucle : un motif lu ici n'a pas
-			// encore été expliqué à l'admin.
+			// encore été expliqué à l'admin. Une erreur de lecture d'origine
+			// locale (conn.Close de Connect) n'arrive qu'une fois la session
+			// finie côté stdin : son résultat n'est alors plus lu.
 			var ce *websocket.CloseError
-			if errors.As(rerr, &ce) && ce.Text != "" {
+			switch {
+			case errors.As(rerr, &ce) && ce.Code == websocket.CloseAbnormalClosure:
+				// FIN sans frame close : gorilla synthétise un 1006
+				// « unexpected EOF », peu parlant.
+				return errors.New("connexion au serveur perdue")
+			case errors.As(rerr, &ce) && ce.Text != "":
 				return fmt.Errorf("déconnecté : %s", ce.Text)
+			case errors.As(rerr, &ce):
+				return nil
+			default:
+				// RST : net.OpError, pas un CloseError.
+				return fmt.Errorf("connexion au serveur perdue : %v", rerr)
 			}
-			return nil
 		}
 		if end, err := handleFrame(raw, stdout, stderr); end || err != nil {
 			return err

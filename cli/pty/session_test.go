@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -398,6 +399,55 @@ func TestReadLoop_ErrorFrameExitsNonZero(t *testing.T) {
 		}
 		if !strings.HasSuffix(term.String(), "> \r\n") {
 			t.Errorf("%s : terminal = %q, doit finir par un retour à la ligne", tc.name, term.String())
+		}
+	}
+}
+
+// firstWriteWriter signale sa première écriture : le serveur de test attend
+// que la sortie soit affichée avant de couper la connexion.
+type firstWriteWriter struct {
+	buf   bytes.Buffer
+	once  sync.Once
+	first chan struct{}
+}
+
+func (w *firstWriteWriter) Write(p []byte) (int, error) {
+	n, err := w.buf.Write(p)
+	w.once.Do(func() { close(w.first) })
+	return n, err
+}
+
+// Connexion coupée sans frame close : FIN (gorilla synthétise un 1006
+// « unexpected EOF ») comme RST (NAT, VPN, proxy : net.OpError) → erreur
+// explicite et code non nul, après un retour à la ligne.
+func TestReadLoop_ConnectionLost(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rst  bool
+	}{{"FIN", false}, {"RST", true}} {
+		term := &firstWriteWriter{first: make(chan struct{})}
+		conn := dialTestWS(t, func(c *websocket.Conn) {
+			_ = c.WriteMessage(websocket.TextMessage, []byte(`{"type":"data","data":"UFM+IA=="}`)) // "PS> "
+			<-term.first
+			if tc.rst {
+				_ = c.UnderlyingConn().(*net.TCPConn).SetLinger(0)
+			}
+			// Retour du handler : Close() sans frame close → FIN, ou RST.
+		})
+		errc := make(chan error, 1)
+		go func() { errc <- readLoop(conn, term, term) }()
+		var err error
+		select {
+		case err = <-errc:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s : readLoop bloquée", tc.name)
+		}
+		if err == nil || !strings.HasPrefix(err.Error(), "connexion au serveur perdue") ||
+			(!tc.rst && err.Error() != "connexion au serveur perdue") {
+			t.Errorf("%s : err = %v, want « connexion au serveur perdue »", tc.name, err)
+		}
+		if got := term.buf.String(); got != "PS> \r\n" {
+			t.Errorf("%s : terminal = %q, want %q", tc.name, got, "PS> \r\n")
 		}
 	}
 }
