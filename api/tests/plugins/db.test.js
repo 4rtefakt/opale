@@ -109,15 +109,23 @@ test('DB_STATEMENT_TIMEOUT_MS : une requête trop longue est interrompue (57014)
 
 test('timeout de requête court : les migrations (connexion dédiée) ne sont pas concernées', { skip: SKIP }, async (t) => {
   const { connection } = await emptySchema(t)
-  // 1 ms suffirait à faire échouer n'importe quelle migration si le runner
-  // héritait du statement_timeout du pool : le démarrage doit réussir.
-  await boot(t, { env: { DB_STATEMENT_TIMEOUT_MS: '1' }, connection })
-  const files = await listMigrationFiles()
+  // Migration volontairement plus longue (0,5 s) que le statement_timeout
+  // du pool (100 ms) : elle échouerait si le runner en héritait. 100 ms
+  // laissent une large marge au SELECT 1 de démarrage du plugin, même sous
+  // charge (la version à 1 ms échouait parfois sur ce SELECT 1).
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'opale-mig-'))
+  t.after(() => fs.rm(dir, { recursive: true, force: true }))
+  await fs.writeFile(path.join(dir, '001_slow.sql'), 'SELECT pg_sleep(0.5);\nCREATE TABLE slow_done (id int);')
+
+  const app = await boot(t, { env: { DB_STATEMENT_TIMEOUT_MS: '100' }, connection, migrationsDir: dir })
   const check = new pg.Client(connection)   // relecture sans limite
   await check.connect()
   t.after(() => check.end())
-  const { rows: [{ n }] } = await check.query('SELECT count(*)::int AS n FROM schema_migrations')
-  assert.equal(n, files.length)
+  const { rows } = await check.query(`SELECT filename FROM schema_migrations`)
+  assert.deepEqual(rows, [{ filename: '001_slow.sql' }])
+  assert.equal((await check.query(`SELECT to_regclass('slow_done') AS r`)).rows[0].r, 'slow_done')
+  // Le pool applicatif, lui, applique bien la limite.
+  await assert.rejects(app.db.query('SELECT pg_sleep(0.5)'), (err) => err.code === '57014')
 })
 
 test('DB_CONNECTION_TIMEOUT_MS : Postgres qui ne répond pas → échec du démarrage en temps borné', { timeout: 5000 }, async (t) => {
