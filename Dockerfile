@@ -46,5 +46,16 @@ COPY --from=frontvendor /src/front/ ./front/
 COPY agent-go/keys/signing.pub ./agent-go/keys/signing.pub
 COPY agent-go/keys/laps.pub    ./agent-go/keys/laps.pub
 
+# ─── Utilisateur non-root ───────────────────────────────────────────────────
+# Le seul chemin écrit au runtime est le stockage des pièces jointes des
+# tickets (ATTACHMENTS_DIR, défaut /app/data/ticket-attachments, volume en
+# prod) : il appartient à node pour qu'un volume nommé NEUF en hérite au
+# premier montage. Le reste de /app reste à root, en lecture seule pour le
+# process. Les fichiers montés (clés privées, agent-go/dist, front/) doivent
+# être lisibles par l'uid/gid 1000 de `node` : voir docker-compose.example.yml
+# (et le chown unique d'un volume de pièces jointes créé avant ce changement).
+RUN mkdir -p /app/data/ticket-attachments && chown -R node:node /app/data
+USER node
+
 EXPOSE 3010
 CMD ["node", "index.js"]

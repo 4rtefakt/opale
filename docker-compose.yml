@@ -7,6 +7,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # L'image tourne en utilisateur non-root `node` (uid/gid 1000) : tout ce
+    # qui est monté ci-dessous doit lui être lisible. openssl crée les clés
+    # privées en 600 → une fois sur l'hôte :
+    #   sudo chgrp 1000 agent-go/keys/signing.key agent-go/keys/laps.key
+    #   sudo chmod 640  agent-go/keys/signing.key agent-go/keys/laps.key
+    # (sans ça : plus de signature des binaires → plus d'auto-update agent,
+    # et lecture LAPS en erreur).
     volumes:
       - ./front:/app/front:ro
       # Agent Go : binaire et clé privée de signature montés à part pour
@@ -14,6 +21,12 @@ services:
       - ./agent-go/dist:/app/agent-go/dist:ro
       - ./agent-go/keys/signing.key:/app/agent-go/keys/signing.key:ro
       - ./agent-go/keys/laps.key:/app/agent-go/keys/laps.key:ro
+      # Pièces jointes des tickets : seul chemin écrit par l'API. Un volume
+      # NEUF hérite du propriétaire `node` de l'image. Un volume créé AVANT
+      # le passage en USER node appartient à root → chown une seule fois,
+      # après le premier `up` avec la nouvelle image :
+      #   docker compose exec -u root api chown -R node:node /app/data/ticket-attachments
+      - attachments_data:/app/data/ticket-attachments
 
   db:
     image: postgres:16-alpine
@@ -65,3 +78,4 @@ services:
 volumes:
   pgdata:
   ollama_models:
+  attachments_data:

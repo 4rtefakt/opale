@@ -29,4 +29,31 @@ console.log(`${checked} paquets vérifiés, ${bad} écart(s) avec package-lock.j
 process.exit(bad || !checked ? 1 : 0)
 JS
 
+# ─── Utilisateur non-root ───────────────────────────────────────────────────
+echo "→ process non-root (node, uid 1000)"
+uid=$(docker run --rm "$image" id -u)
+if [ "$uid" != 1000 ]; then
+  echo "::error::l'image tourne en uid $uid (attendu 1000 = node)"
+  exit 1
+fi
+
+# Le code de l'application reste à root : le process ne peut pas le modifier.
+echo "→ /app en lecture seule pour le process"
+if docker run --rm "$image" touch /app/index.js 2>/dev/null; then
+  echo "::error::/app/index.js est modifiable par l'utilisateur du process"
+  exit 1
+fi
+
+# Pièces jointes (seul chemin écrit au runtime) : inscriptibles dans l'image
+# ET dans un volume nommé neuf, qui hérite du propriétaire du dossier de
+# l'image au premier montage (cas docker compose).
+echo "→ pièces jointes inscriptibles (image, puis volume nommé neuf)"
+# shellcheck disable=SC2016  # $d est expansé par le sh du conteneur.
+write_test='d=/app/data/ticket-attachments; mkdir "$d/ci" && echo ok > "$d/ci/f" && rm -r "$d/ci"'
+docker run --rm "$image" sh -c "$write_test"
+vol="opale-ci-attachments-$$"
+docker volume create "$vol" >/dev/null
+trap 'docker volume rm -f "$vol" >/dev/null 2>&1 || true' EXIT
+docker run --rm -v "$vol:/app/data/ticket-attachments" "$image" sh -c "$write_test"
+
 echo "OK: $image"

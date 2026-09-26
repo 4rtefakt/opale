@@ -42,10 +42,25 @@ services:
       #     openssl pkey -in agent-go/keys/signing.key -pubout > agent-go/keys/signing.pub
       #     openssl genrsa -out agent-go/keys/laps.key 4096
       #     openssl rsa -in agent-go/keys/laps.key -pubout > agent-go/keys/laps.pub
+      #   L'API tourne en utilisateur non-root `node` (uid/gid 1000) et
+      #   openssl crée les clés privées en 600 : rendez-les lisibles par ce
+      #   groupe (sinon : pas de signature des binaires → pas d'auto-update,
+      #   et lecture LAPS en erreur) :
+      #     sudo chgrp 1000 agent-go/keys/signing.key agent-go/keys/laps.key
+      #     sudo chmod 640  agent-go/keys/signing.key agent-go/keys/laps.key
       #   Puis (re)compilez l'agent : node agent-go/build.js --token … --url …
       - ./agent-go/dist:/app/agent-go/dist:ro
       - ./agent-go/keys/signing.key:/app/agent-go/keys/signing.key:ro
       - ./agent-go/keys/laps.key:/app/agent-go/keys/laps.key:ro
+
+      # ─ Pièces jointes des tickets (seul chemin ÉCRIT par l'API) ────────
+      # Volume nommé : survit aux rebuilds. Un volume NEUF hérite du
+      # propriétaire `node` du dossier dans l'image. Un volume créé AVANT
+      # le passage de l'image en USER node appartient à root → chown une
+      # seule fois, après le premier `up` avec la nouvelle image :
+      #   docker compose -f docker-compose.example.yml exec -u root api \
+      #     chown -R node:node /app/data/ticket-attachments
+      - attachments_data:/app/data/ticket-attachments
 
   db:
     image: postgres:16-alpine
@@ -157,6 +172,7 @@ services:
 
 volumes:
   pgdata:
+  attachments_data:
   # ollama_models:    # décommenter si le profile email-bridge est utilisé
   # caddy_data:
   # caddy_config:
