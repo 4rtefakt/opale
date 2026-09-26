@@ -3,6 +3,7 @@ package pty
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -503,5 +504,47 @@ func TestRunSession_Wiring(t *testing.T) {
 	}
 	if err == nil || err.Error() != "déconnecté : taken-over" {
 		t.Errorf("err = %v, want « déconnecté : taken-over »", err)
+	}
+}
+
+// La lecture fait foi : une touche frappée au moment de la fermeture fait
+// échouer l'écriture (stdin fini) avant que readLoop ait remonté le motif.
+func TestWaitEnd_ReadResultIsAuthoritative(t *testing.T) {
+	chans := func() (chan error, chan error) { return make(chan error, 1), make(chan error, 1) }
+	later := func(ch chan error, err error) {
+		go func() { time.Sleep(50 * time.Millisecond); ch <- err }()
+	}
+	motif := errors.New("déconnecté : taken-over")
+
+	// Écriture refusée d'abord, motif de fermeture juste après : le motif gagne.
+	readDone, inputDone := chans()
+	inputDone <- websocket.ErrCloseSent
+	later(readDone, motif)
+	if err := waitEnd(readDone, inputDone, 5*time.Second); err != motif {
+		t.Errorf("écriture refusée puis motif : err = %v, want %v", err, motif)
+	}
+
+	// Même course, fin normale côté lecture : pas d'erreur inventée.
+	readDone, inputDone = chans()
+	inputDone <- websocket.ErrCloseSent
+	later(readDone, nil)
+	if err := waitEnd(readDone, inputDone, 5*time.Second); err != nil {
+		t.Errorf("écriture refusée puis fin normale : err = %v, want nil", err)
+	}
+
+	// stdin fermé (terminal perdu) : fin sans erreur, sans attendre la lecture.
+	readDone, inputDone = chans()
+	inputDone <- nil
+	start := time.Now()
+	if err := waitEnd(readDone, inputDone, 5*time.Second); err != nil || time.Since(start) > time.Second {
+		t.Errorf("stdin fermé : err = %v après %v, want nil immédiat", err, time.Since(start))
+	}
+
+	// Écriture refusée et lecture muette : pas de blocage, perte de connexion.
+	readDone, inputDone = chans()
+	inputDone <- errors.New("write: broken pipe")
+	if err := waitEnd(readDone, inputDone, 50*time.Millisecond); err == nil ||
+		err.Error() != "connexion au serveur perdue : write: broken pipe" {
+		t.Errorf("lecture muette : err = %v", err)
 	}
 }

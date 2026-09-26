@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
@@ -64,20 +65,44 @@ func Connect(serverURL, wsPath string) error {
 // frames serveur → stdout/stderr, stdin → frames input. Sans TTY, donc
 // testable : Connect n'y ajoute que le mode raw, la taille et SIGWINCH.
 func runSession(conn *websocket.Conn, w *wsWriter, stdin io.Reader, stdout, stderr io.Writer) error {
-	done := make(chan error, 1)
-
 	// serveur → stdout
+	readDone := make(chan error, 1)
 	go func() {
-		done <- readLoop(conn, stdout, stderr)
+		readDone <- readLoop(conn, stdout, stderr)
 	}()
 
 	// stdin → serveur
+	inputDone := make(chan error, 1)
 	go func() {
-		pumpInput(stdin, w)
-		done <- nil
+		inputDone <- pumpInput(stdin, w)
 	}()
 
-	return <-done
+	return waitEnd(readDone, inputDone, endGrace)
+}
+
+// endGrace : délai laissé à la lecture pour expliquer une écriture refusée.
+const endGrace = 2 * time.Second
+
+// waitEnd attend la fin de session ; le résultat de la lecture fait foi. Une
+// touche frappée au moment d'une fermeture fait échouer l'écriture avant que
+// readLoop ait remonté le motif ou la perte de connexion : on l'attend, au
+// lieu de conclure « fin normale ».
+func waitEnd(readDone, inputDone <-chan error, grace time.Duration) error {
+	select {
+	case err := <-readDone:
+		return err
+	case werr := <-inputDone:
+		if werr == nil {
+			// stdin fermé (terminal perdu) : fin sans erreur.
+			return nil
+		}
+		select {
+		case err := <-readDone:
+			return err
+		case <-time.After(grace):
+			return fmt.Errorf("connexion au serveur perdue : %v", werr)
+		}
+	}
 }
 
 // wsWriter sérialise les écritures : gorilla/websocket n'admet qu'un seul
@@ -99,16 +124,17 @@ func (w *wsWriter) send(typ string, data any) error {
 	return w.conn.WriteMessage(websocket.TextMessage, msg)
 }
 
-// pumpInput relaie r vers le serveur jusqu'à une erreur de lecture ou d'écriture.
-func pumpInput(r io.Reader, w *wsWriter) {
+// pumpInput relaie r vers le serveur. nil : r épuisé ou illisible ; sinon
+// l'erreur d'écriture (connexion fermée ou perdue).
+func pumpInput(r io.Reader, w *wsWriter) error {
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
 		if err != nil {
-			return
+			return nil
 		}
 		if err := w.send("input", base64.StdEncoding.EncodeToString(buf[:n])); err != nil {
-			return
+			return err
 		}
 	}
 }
