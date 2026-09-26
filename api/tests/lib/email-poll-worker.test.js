@@ -26,7 +26,7 @@ import assert from 'node:assert/strict'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { installFakeGraph, graphTime, fakeMail } from '../helpers/fake-graph-mail.js'
 import { pollOnce } from '../../modules/email-bridge/lib/poll-worker.js'
-import { _resetSystemFolderCache } from '../../modules/email-bridge/lib/graph-mail.js'
+import { _resetSystemFolderCache, listMessagesSince as realListMessagesSince } from '../../modules/email-bridge/lib/graph-mail.js'
 import { MAX_INGEST_ATTEMPTS, MAX_SKIP_PAGES, MIN_POISON_AGE_MS } from '../../modules/email-bridge/lib/poll-cursor.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip poll-worker suite'
@@ -498,6 +498,33 @@ test('pollOnce : boîte bloquée par deux mails poison consécutifs → le SQL d
       const abandoned = await abandonedAudits()
       assert.deepEqual(abandoned.map(a => a.details.internet_message_id), [p2.internetMessageId])
       assert.deepEqual(await ingestedIds(), ids([good]))
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollOnce : curseur modifié par l\'admin pendant un tick (SQL de reprise) → le tick ne l\'écrase pas',
+  { skip: SKIP }, async () => {
+    // Pendant un blocage, chaque tick réécrit curseur + état : l'UPDATE de
+    // l'admin, s'il tombe en plein tick, ne doit pas être défait.
+    const a = fakeMail({ receivedDateTime: at(1) })
+    useGraph({ inbox: [a] })
+    const adminCursor = new Date(Date.parse(at(5))).toISOString()
+    let first = true
+    const listMessagesSince = async (...args) => {
+      if (first) {
+        first = false
+        await db.query(`UPDATE settings SET value = $1 WHERE key = $2`, [adminCursor, `mail.cursor.${MAILBOX}`])
+      }
+      return realListMessagesSince(...args)
+    }
+    const warns = []
+    const log = { info() {}, error() {}, warn: (_o, msg) => warns.push(msg) }
+    try {
+      await pollOnce(db, log, { listMessagesSince })
+      assert.equal(await cursorMs(), Date.parse(adminCursor), 'la valeur de l\'admin l\'emporte')
+      assert.ok(warns.some(m => /curseur modifié pendant le tick/.test(m)), 'sauvegarde ignorée signalée')
     } finally {
       graph.restore()
     }

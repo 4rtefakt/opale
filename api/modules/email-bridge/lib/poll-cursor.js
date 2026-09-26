@@ -92,15 +92,37 @@ function parseState(raw, cursorIso) {
   return { done: new Set(), retry: null }
 }
 
-// Écrit curseur + état dans une seule requête (atomique) : un arrêt entre
-// les deux ne peut pas laisser un état qui ne correspond pas au curseur.
-async function saveCursor(db, updatedBy, entries) {
+// Écrit curseur + état ensemble (une transaction), et seulement si le
+// curseur vaut encore `expected` (lu en début de tick) : un UPDATE de
+// l'admin pendant le tick (SQL de reprise d'un blocage) n'est pas défait —
+// la progression du tick est alors abandonnée, le tick suivant repart de
+// la valeur de l'admin (mails déjà ingérés dédoublonnés). FOR UPDATE : un
+// UPDATE concurrent attend la fin de cette transaction, puis l'emporte.
+async function saveCursor(db, log, { updatedBy, cursorKey, expected, entries, mailbox, tag }) {
   const values = entries.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2}, now(), $${entries.length * 2 + 1})`)
-  await db.query(`
-    INSERT INTO settings (key, value, updated_at, updated_by)
-    VALUES ${values.join(', ')}
-    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by
-  `, [...entries.flat(), updatedBy])
+  const client = await db.connect()
+  try {
+    await client.query('BEGIN')
+    const { rows } = await client.query('SELECT value FROM settings WHERE key = $1 FOR UPDATE', [cursorKey])
+    if ((rows[0]?.value ?? null) !== expected) {
+      await client.query('ROLLBACK')
+      log?.warn({ mailbox, expected, found: rows[0]?.value ?? null },
+        `${tag}: curseur modifié pendant le tick (reprise manuelle ?) — progression du tick non enregistrée`)
+      return false
+    }
+    await client.query(`
+      INSERT INTO settings (key, value, updated_at, updated_by)
+      VALUES ${values.join(', ')}
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by
+    `, [...entries.flat(), updatedBy])
+    await client.query('COMMIT')
+    return true
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw err
+  } finally {
+    client.release()
+  }
 }
 
 // Garde-fou : compte les mails à traiter de la seconde abandonnée qui n'ont
@@ -358,7 +380,9 @@ export async function pollMailboxCursor(db, log, {
   const newCursor = new Date(at).toISOString()
   const newState = JSON.stringify({ at: newCursor, done: [...done], retry })
   if (newCursor !== cursor || newState !== rawState) {
-    await saveCursor(db, updatedBy, [[cursorKey, newCursor], [stateKey, newState]])
+    await saveCursor(db, log, {
+      updatedBy, cursorKey, expected: cursor, entries: [[cursorKey, newCursor], [stateKey, newState]], mailbox, tag,
+    })
   }
   return { errors, abandoned }
 }
