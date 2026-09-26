@@ -2,6 +2,11 @@
 //   - l'inventaire (poste, disques, interfaces, séries) est écrit dans UNE
 //     transaction : un échec en cours de route laisse l'inventaire précédent
 //     intact (avant : interfaces supprimées puis partiellement réinsérées) ;
+//   - scripts et déploiements sont réservés ('running') dans UNE
+//     transaction : un échec de la réservation des déploiements ne laisse
+//     pas de script en 'running' sans l'avoir livré ;
+//   - le contenu de déploiement envoyé est lu AU MOMENT de la réservation
+//     (snapshot et statut approuvé du package à cet instant) ;
 //   - des checkins concurrents du même poste livrent chaque ligne une fois.
 
 import { test, before, after } from 'node:test'
@@ -136,6 +141,65 @@ test('nouveau poste : échec en plein inventaire → aucun poste à moitié cré
 })
 
 // ── (b) Réservation des scripts et déploiements ──────────────────────────────
+
+test('réservation : échec côté déploiements → scripts non réservés (pas de running orphelin)', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-CLAIM-TX' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const scriptId = await queueScript(device.id, 'script-claim-tx')
+  const { dep } = await snapshottedDeployment(device.id, 'Pkg Claim TX', 'Write-Output tx')
+
+  await db.query('ALTER TABLE deployments RENAME COLUMN started_at TO started_at_broken')
+  let res
+  try {
+    res = await checkin(fastify, secret, { hostname: device.hostname })
+  } finally {
+    await db.query('ALTER TABLE deployments RENAME COLUMN started_at_broken TO started_at')
+  }
+  assert.equal(res.statusCode, 500)
+  assert.equal(await statusOf('script_executions', scriptId), 'pending', 'script non consommé')
+  assert.equal(await statusOf('deployments', dep.id), 'pending')
+
+  const again = await checkin(fastify, secret, { hostname: device.hostname })
+  assert.equal(again.statusCode, 200, again.body)
+  assert.deepEqual(again.json().commands.map(c => c.id), [scriptId])
+  assert.deepEqual(again.json().deployments.map(d => d.deployment_id), [dep.id])
+})
+
+test('contenu envoyé = snapshot au moment de la réservation (ré-approbation pendant le checkin)', { skip: SKIP }, async (t) => {
+  const device = await seedDevice(db, { hostname: 'PC-CLAIM-SNAP' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const { dep } = await snapshottedDeployment(device.id, 'Pkg Claim Snap', 'Write-Output v1')
+
+  // Pendant le checkin (après la sélection des déploiements), un admin
+  // modifie puis ré-approuve le package : le snapshot est rafraîchi.
+  const app = await appWith(interleavingPool(/p\.detection_script IS NOT NULL/, () =>
+    db.query(`UPDATE deployment_snapshots SET install_script = 'Write-Output v2' WHERE deployment_id = $1`, [dep.id])))
+  t.after(() => app.close())
+
+  const res = await checkin(app, secret, { hostname: device.hostname })
+  assert.equal(res.statusCode, 200, res.body)
+  const sent = res.json().deployments
+  assert.equal(sent.length, 1)
+  const { rows: [snap] } = await db.query(
+    `SELECT install_script FROM deployment_snapshots WHERE deployment_id = $1`, [dep.id])
+  assert.equal(sent[0].install_script, snap.install_script, 'contenu envoyé = snapshot enregistré')
+  assert.equal(sent[0].install_script, 'Write-Output v2')
+})
+
+test('package repassé en draft pendant le checkin : déploiement non distribué, reste pending', { skip: SKIP }, async (t) => {
+  const device = await seedDevice(db, { hostname: 'PC-CLAIM-DRAFT' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const { dep, pkg } = await snapshottedDeployment(device.id, 'Pkg Claim Draft', 'Write-Output d')
+
+  const app = await appWith(interleavingPool(/p\.detection_script IS NOT NULL/, () =>
+    db.query(`UPDATE packages SET status = 'draft' WHERE id = $1`, [pkg.id])))
+  t.after(() => app.close())
+
+  const res = await checkin(app, secret, { hostname: device.hostname })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(res.json().deployments, [])
+  assert.equal(await statusOf('deployments', dep.id), 'pending')
+})
 
 test('checkins concurrents du même poste : chaque script / déploiement livré une seule fois', { skip: SKIP }, async () => {
   const device = await seedDevice(db, { hostname: 'PC-CLAIM-RACE' })

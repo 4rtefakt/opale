@@ -1217,29 +1217,50 @@ export default async function agentRoute(fastify) {
 
     // ── Réservation des scripts / déploiements envoyés ─────────────────────
     // Passage en 'running' juste avant la réponse : si une étape précédente
-    // du checkin lève, rien ne reste marqué 'running' sans avoir été livré
-    // (aucun timeout ne rattrape un script bloqué en 'running'). Le filtre
-    // status = 'pending' + RETURNING ne renvoie que les lignes réservées par
-    // CE checkin (deux checkins simultanés ne livrent pas deux fois la même).
+    // du checkin lève, rien ne reste marqué 'running' sans avoir été livré.
+    // Le filtre status = 'pending' + RETURNING ne renvoie que les lignes
+    // réservées par CE checkin (deux checkins simultanés ne livrent pas deux
+    // fois la même). Scripts et déploiements dans UNE transaction : un échec
+    // de la seconde réservation n'en laisse pas une moitié en 'running'.
+    // Le contenu envoyé est celui RETOURNÉ par la réservation (snapshot et
+    // package toujours approuvé à cet instant), pas celui lu à la sélection :
+    // une ré-approbation ou un retour en draft pendant le checkin est pris
+    // en compte. Ordre d'envoi : celui de la sélection.
     let scriptsToSend = []
-    if (pendingScripts.rows.length) {
-      const { rows } = await fastify.db.query(`
-        UPDATE script_executions SET status = 'running', started_at = now()
-        WHERE id = ANY($1::uuid[]) AND status = 'pending'
-        RETURNING id
-      `, [pendingScripts.rows.map(r => r.id)])
-      const claimed = new Set(rows.map(r => r.id))
-      scriptsToSend = pendingScripts.rows.filter(r => claimed.has(r.id))
-    }
     let deploymentsToSend = []
-    if (pendingDeployments.rows.length) {
-      const { rows } = await fastify.db.query(`
-        UPDATE deployments SET status = 'running', started_at = now()
-        WHERE id = ANY($1::uuid[]) AND status = 'pending'
-        RETURNING id
-      `, [pendingDeployments.rows.map(r => r.deployment_id)])
-      const claimed = new Set(rows.map(r => r.id))
-      deploymentsToSend = pendingDeployments.rows.filter(r => claimed.has(r.deployment_id))
+    if (pendingScripts.rows.length || pendingDeployments.rows.length) {
+      const claim = await fastify.db.connect()
+      try {
+        await claim.query('BEGIN')
+        if (pendingScripts.rows.length) {
+          const { rows } = await claim.query(`
+            UPDATE script_executions SET status = 'running', started_at = now()
+            WHERE id = ANY($1::uuid[]) AND status = 'pending'
+            RETURNING id, script_name, script_content
+          `, [pendingScripts.rows.map(r => r.id)])
+          const claimed = new Map(rows.map(r => [r.id, r]))
+          scriptsToSend = pendingScripts.rows.map(r => claimed.get(r.id)).filter(Boolean)
+        }
+        if (pendingDeployments.rows.length) {
+          const { rows } = await claim.query(`
+            UPDATE deployments d SET status = 'running', started_at = now()
+            FROM deployment_snapshots s, packages p
+            WHERE d.id = ANY($1::uuid[]) AND d.status = 'pending'
+              AND s.deployment_id = d.id
+              AND p.id = d.package_id AND p.status = 'approved'
+            RETURNING d.id AS deployment_id, s.name, s.type, s.winget_id,
+                      s.install_script, s.post_install_script, s.detection_script
+          `, [pendingDeployments.rows.map(r => r.deployment_id)])
+          const claimed = new Map(rows.map(r => [r.deployment_id, r]))
+          deploymentsToSend = pendingDeployments.rows.map(r => claimed.get(r.deployment_id)).filter(Boolean)
+        }
+        await claim.query('COMMIT')
+      } catch (err) {
+        await claim.query('ROLLBACK').catch(() => {})
+        throw err
+      } finally {
+        claim.release()
+      }
     }
 
     reply.send({
