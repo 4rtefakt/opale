@@ -1416,6 +1416,10 @@ export default async function agentRoute(fastify) {
         tokenCheckPending = false
       }
     }
+    // Premier contrôle dès l'enregistrement (aucun await depuis register) :
+    // une révocation survenue entre authToken et register n'a trouvé aucune
+    // connexion à évincer et resterait sinon active jusqu'au premier tick.
+    recheckToken()
 
     // Heartbeat : ping périodique + close si pong manquant. Le timer est
     // détruit dans le handler onClose.

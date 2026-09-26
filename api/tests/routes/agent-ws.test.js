@@ -478,6 +478,33 @@ test('heartbeat : erreur DB à la revalidation → connexion conservée, nouvel 
   assert.equal(info.reason, 'token-revoked')
 })
 
+test('révocation entre l\'authentification et l\'enregistrement de la WS → fermée sans attendre le heartbeat', { skip: SKIP }, async (t) => {
+  // Aucun tick : seul un contrôle fait à l'enregistrement peut fermer.
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const device = await seedDevice(db, { hostname: 'PC-WS-AUTH-RACE' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-auth-race' })
+
+  // Révocation par la route admin pendant la requête hostname du handler
+  // WS (après authToken, avant register) : evictTokens ne trouve encore
+  // aucune connexion.
+  let revoked
+  interceptQuery = (sql, params, next) => {
+    if (!/SELECT hostname FROM devices WHERE id = \$1/.test(sql)) return next()
+    interceptQuery = null
+    revoked = Promise.resolve(fastify.inject({
+      method: 'DELETE', url: `/api/settings/tokens/${tok.id}`, headers: adminAuth,
+    }))
+    return revoked.then(() => next())
+  }
+  const agent = await openWs('/api/agent/ws', { authorization: `Bearer ${tok.secret}` })
+
+  const info = await within(agent.closed, 2000, 'fermeture sans tick du heartbeat')
+  assert.equal((await revoked).statusCode, 204)
+  assert.equal(info.code, WS_CLOSE.AUTH_FAIL)
+  assert.equal(info.reason, 'token-revoked')
+  assert.equal(fastify.agentWs.get(device.id), null)
+})
+
 // ─── Frames console.* liées à la connexion émettrice ────────────────────────
 
 const b64 = (s) => Buffer.from(s).toString('base64')
