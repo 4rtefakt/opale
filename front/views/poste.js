@@ -64,13 +64,20 @@ export async function renderPosteDetail(container, id) {
 
   try {
     _device = await window.api.getDevice(id)
-    renderBody()
-    loadExecHistory()
-    loadDeviceCompliance(id)
-    if (window.appState?.user?.isAdmin && window.OPALE.moduleEnabled('remote')) loadRemoteSessionsHistory()
+    renderBodyAndPanels()
   } catch {
     showToast(t('error.generic'), 'error')
   }
+}
+
+// renderBody() remet les panneaux asynchrones (historique d'exécution,
+// conformité, sessions distantes) à l'état « chargement » : tout re-rendu de
+// la fiche doit les recharger.
+function renderBodyAndPanels() {
+  renderBody()
+  loadExecHistory()
+  loadDeviceCompliance(_device.id)
+  if (window.appState?.user?.isAdmin && window.OPALE.moduleEnabled('remote')) loadRemoteSessionsHistory()
 }
 
 function renderBody() {
@@ -111,7 +118,9 @@ function renderBody() {
               <span title="${esc('Empreinte SHA-256 apprise au premier contact' + (d.ssh_host_key_learned_at ? ' le ' + new Date(d.ssh_host_key_learned_at).toLocaleString('fr-FR') : ''))}"
                     style="font-family:var(--font-mono,monospace);font-size:11px">${esc(d.ssh_host_key_fp.slice(0, 16))}…</span>
               ${window.appState?.user?.isAdmin ? `<button class="btn btn-sm" style="margin-left:6px" onclick="resetSshHostKey()"
-                      title="À faire seulement après une réinstallation du poste : l'empreinte sera réapprise au prochain accès SSH">
+                      title="${d.ssh_host_key_policy === 'strict'
+                        ? 'À faire seulement après une réinstallation du poste : politique strict, l\'empreinte devra être provisionnée avant le prochain accès SSH'
+                        : 'À faire seulement après une réinstallation du poste : l\'empreinte sera réapprise au prochain accès SSH'}">
                 <i class="ti ti-refresh"></i> Réinitialiser</button>` : ''}`) : ''}
             ${d.compliance_state ? hwRow('ti-shield-check', t('poste.hw.compliance'), complianceBadge(d.compliance_state)) : ''}
             ${d.join_type        ? hwRow('ti-cloud',         t('poste.hw.join_type'),   formatJoinType(d.join_type)) : ''}
@@ -1832,9 +1841,11 @@ async function resetSshHostKey() {
     `peut signaler une interception : ne réinitialisez pas.`)) return
   try {
     await window.api.resetSshHostKey(_device.id)
-    showToast('Empreinte SSH réinitialisée — réapprise au prochain accès', 'success')
+    showToast(_device.ssh_host_key_policy === 'strict'
+      ? 'Empreinte SSH réinitialisée — à provisionner avant le prochain accès (politique strict)'
+      : 'Empreinte SSH réinitialisée — réapprise au prochain accès', 'success')
     _device = await window.api.getDevice(_device.id)
-    renderBody()
+    renderBodyAndPanels()
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   }
