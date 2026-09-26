@@ -784,159 +784,179 @@ export default async function agentRoute(fastify) {
     const ipNetbird       = ipNetbirdSent && isNetbirdIp(ip_netbird) ? ip_netbird : null
     const ipNetbirdReject = ipNetbirdSent && !ipNetbird
 
+    // ── Inventaire : une seule transaction ─────────────────────────────────
+    // Poste (UPDATE / INSERT), partitions, interfaces réseau (DELETE puis
+    // INSERT), bande passante, ping, perfs : tout ou rien. Chaque requête
+    // était validée isolément : un échec en cours de route (valeur refusée
+    // par Postgres, coupure, timeout) laissait un poste à moitié créé ou ses
+    // interfaces supprimées sans les nouvelles. Les nettoyages non bloquants
+    // restent hors transaction (pool) : leur échec ne doit pas l'annuler.
+    // Conformité, résultats de déploiement / détection et réservation des
+    // jobs viennent APRÈS le COMMIT (ils passent par le pool et référencent
+    // le poste, qui doit être visible).
     let deviceId
-    if (lookup.rows.length) {
-      deviceId = lookup.rows[0].id
-      await fastify.db.query(`
-        UPDATE devices SET
-          hostname          = $1,
-          os                = COALESCE($2, os),
-          os_build          = COALESCE($3, os_build),
-          ram_gb            = COALESCE($4, ram_gb),
-          disk_used_pct     = COALESCE($5, disk_used_pct),
-          disk_total_gb     = COALESCE($6, disk_total_gb),
-          ip_netbird        = CASE WHEN $12::boolean THEN NULL ELSE COALESCE($7, ip_netbird) END,
-          agent_version     = COALESCE($8, agent_version),
-          health_signals    = COALESCE($10::jsonb, health_signals),
-          health_updated_at = CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE health_updated_at END,
-          system_info       = COALESCE($11::jsonb, system_info),
-          last_seen         = now(),
-          updated_at        = now()
-        WHERE id = $9
-      `, [
-        hostname,
-        os            || null,
-        os_build      || null,
-        ram_gb        || null,
-        mainDisk?.used_pct  ?? null,
-        mainDisk?.size_gb   ?? null,
-        ipNetbird,
-        agent_version || null,
-        deviceId,
-        healthJSON,
-        sysInfoJSON,
-        ipNetbirdReject,
-      ])
-    } else {
-      const res = await fastify.db.query(`
-        INSERT INTO devices (
-          hostname, serial, os, os_build, ram_gb,
-          disk_used_pct, disk_total_gb, ip_netbird,
-          agent_version, health_signals,
-          health_updated_at, system_info,
-          source, last_seen, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
-          CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE NULL END,
-          $11::jsonb,
-          'agent',now(),now())
-        RETURNING id
-      `, [
-        hostname,
-        serial        || null,
-        os            || null,
-        os_build      || null,
-        ram_gb        || null,
-        mainDisk?.used_pct ?? null,
-        mainDisk?.size_gb  ?? null,
-        ipNetbird,
-        agent_version || null,
-        healthJSON,
-        sysInfoJSON,
-      ])
-      deviceId = res.rows[0].id
-    }
-
-    if (ipNetbirdReject) {
-      fastify.log.warn(
-        { device_id: deviceId, hostname, ip_netbird: clipStr(ip_netbird, 64) },
-        'checkin : ip_netbird hors 100.64.0.0/10 — ignorée, stockée NULL'
-      )
-    }
-
-    // ── Upsert partitions ───────────────────────────────────────────────────
-    for (const disk of disks) {
-      if (!disk.letter) continue
-      await fastify.db.query(`
-        INSERT INTO disks (device_id, letter, label, size_gb, used_pct, updated_at)
-        VALUES ($1, $2, $3, $4, $5, now())
-        ON CONFLICT (device_id, letter) DO UPDATE SET
-          label      = COALESCE(EXCLUDED.label, disks.label),
-          size_gb    = EXCLUDED.size_gb,
-          used_pct   = EXCLUDED.used_pct,
-          updated_at = now()
-      `, [deviceId, disk.letter, disk.label || null, disk.size_gb || null, disk.used_pct ?? null])
-    }
-
-    // ── Interfaces réseau (refresh complet) ────────────────────────────────
-    if (network.length > 0) {
-      await fastify.db.query(`DELETE FROM network_interfaces WHERE device_id = $1`, [deviceId])
-      for (const iface of network) {
-        if (!iface?.mac) continue
-        // Type : liste blanche (eth | wifi | netbird), absent → 'eth',
-        // valeur inconnue → NULL (non stockée).
-        const type = normalizeIfaceType(iface.type)
-        if (type === null) {
-          fastify.log.debug(
-            { device_id: deviceId, type: clipStr(iface.type, 32) },
-            'checkin : type d\'interface inconnu ignoré'
-          )
-        }
-        await fastify.db.query(`
-          INSERT INTO network_interfaces (device_id, mac, ip, adapter, type)
-          VALUES ($1, $2, $3, $4, $5)
-        `, [deviceId, iface.mac, iface.ip || null, iface.adapter || null, type])
+    const inv = await fastify.db.connect()
+    try {
+      await inv.query('BEGIN')
+      if (lookup.rows.length) {
+        deviceId = lookup.rows[0].id
+        await inv.query(`
+          UPDATE devices SET
+            hostname          = $1,
+            os                = COALESCE($2, os),
+            os_build          = COALESCE($3, os_build),
+            ram_gb            = COALESCE($4, ram_gb),
+            disk_used_pct     = COALESCE($5, disk_used_pct),
+            disk_total_gb     = COALESCE($6, disk_total_gb),
+            ip_netbird        = CASE WHEN $12::boolean THEN NULL ELSE COALESCE($7, ip_netbird) END,
+            agent_version     = COALESCE($8, agent_version),
+            health_signals    = COALESCE($10::jsonb, health_signals),
+            health_updated_at = CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE health_updated_at END,
+            system_info       = COALESCE($11::jsonb, system_info),
+            last_seen         = now(),
+            updated_at        = now()
+          WHERE id = $9
+        `, [
+          hostname,
+          os            || null,
+          os_build      || null,
+          ram_gb        || null,
+          mainDisk?.used_pct  ?? null,
+          mainDisk?.size_gb   ?? null,
+          ipNetbird,
+          agent_version || null,
+          deviceId,
+          healthJSON,
+          sysInfoJSON,
+          ipNetbirdReject,
+        ])
+      } else {
+        const res = await inv.query(`
+          INSERT INTO devices (
+            hostname, serial, os, os_build, ram_gb,
+            disk_used_pct, disk_total_gb, ip_netbird,
+            agent_version, health_signals,
+            health_updated_at, system_info,
+            source, last_seen, updated_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
+            CASE WHEN $10::jsonb IS NOT NULL THEN now() ELSE NULL END,
+            $11::jsonb,
+            'agent',now(),now())
+          RETURNING id
+        `, [
+          hostname,
+          serial        || null,
+          os            || null,
+          os_build      || null,
+          ram_gb        || null,
+          mainDisk?.used_pct ?? null,
+          mainDisk?.size_gb  ?? null,
+          ipNetbird,
+          agent_version || null,
+          healthJSON,
+          sysInfoJSON,
+        ])
+        deviceId = res.rows[0].id
       }
-    }
 
-    // ── Bande passante ──────────────────────────────────────────────────────
-    for (const bw of bandwidth) {
-      if (!bw.adapter) continue
-      await fastify.db.query(`
-        INSERT INTO bandwidth_stats (device_id, adapter, bytes_sent, bytes_recv)
-        VALUES ($1, $2, $3, $4)
-      `, [deviceId, bw.adapter, bw.bytes_sent ?? null, bw.bytes_recv ?? null])
-    }
-    // Nettoyage des samples > 7 jours (non-bloquant)
-    fastify.db.query(`DELETE FROM bandwidth_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
+      if (ipNetbirdReject) {
+        fastify.log.warn(
+          { device_id: deviceId, hostname, ip_netbird: clipStr(ip_netbird, 64) },
+          'checkin : ip_netbird hors 100.64.0.0/10 — ignorée, stockée NULL'
+        )
+      }
 
-    // ── Ping stats ──────────────────────────────────────────────────────────
-    const pings = Array.isArray(ping) ? ping : (ping ? [ping] : [])
-    for (const p of pings) {
-      if (!p?.host) continue
-      await fastify.db.query(`
-        INSERT INTO ping_stats (device_id, host, latency_ms, packet_loss_pct)
-        VALUES ($1, $2, $3, $4)
-      `, [deviceId, p.host, p.latency_ms ?? null, p.packet_loss_pct ?? null])
-    }
-    if (pings.length) {
-      fastify.db.query(`DELETE FROM ping_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
-    }
+      // ── Upsert partitions ───────────────────────────────────────────────────
+      for (const disk of disks) {
+        if (!disk.letter) continue
+        await inv.query(`
+          INSERT INTO disks (device_id, letter, label, size_gb, used_pct, updated_at)
+          VALUES ($1, $2, $3, $4, $5, now())
+          ON CONFLICT (device_id, letter) DO UPDATE SET
+            label      = COALESCE(EXCLUDED.label, disks.label),
+            size_gb    = EXCLUDED.size_gb,
+            used_pct   = EXCLUDED.used_pct,
+            updated_at = now()
+        `, [deviceId, disk.letter, disk.label || null, disk.size_gb || null, disk.used_pct ?? null])
+      }
 
-    // ── System perf (RAM/CPU/uptime/batterie) ──────────────────────────────
-    if (system_perf && typeof system_perf === 'object') {
-      const sp = system_perf
-      await fastify.db.query(`
-        INSERT INTO system_perf_stats (
-          device_id, ram_used_gb, ram_total_gb, ram_used_pct,
-          cpu_avg_pct, cpu_max_pct, uptime_seconds,
-          battery_pct, battery_status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      `, [
-        deviceId,
-        sp.ram_used_gb    ?? null,
-        sp.ram_total_gb   ?? null,
-        sp.ram_used_pct   ?? null,
-        sp.cpu_avg_pct    ?? null,
-        sp.cpu_max_pct    ?? null,
-        sp.uptime_seconds ?? null,
-        sp.battery_pct    ?? null,
-        sp.battery_status ?? null,
-      ])
-      // Cleanup non-bloquant
-      fastify.db.query(
-        `DELETE FROM system_perf_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`,
-        [deviceId]
-      ).catch(() => {})
+      // ── Interfaces réseau (refresh complet) ────────────────────────────────
+      if (network.length > 0) {
+        await inv.query(`DELETE FROM network_interfaces WHERE device_id = $1`, [deviceId])
+        for (const iface of network) {
+          if (!iface?.mac) continue
+          // Type : liste blanche (eth | wifi | netbird), absent → 'eth',
+          // valeur inconnue → NULL (non stockée).
+          const type = normalizeIfaceType(iface.type)
+          if (type === null) {
+            fastify.log.debug(
+              { device_id: deviceId, type: clipStr(iface.type, 32) },
+              'checkin : type d\'interface inconnu ignoré'
+            )
+          }
+          await inv.query(`
+            INSERT INTO network_interfaces (device_id, mac, ip, adapter, type)
+            VALUES ($1, $2, $3, $4, $5)
+          `, [deviceId, iface.mac, iface.ip || null, iface.adapter || null, type])
+        }
+      }
+
+      // ── Bande passante ──────────────────────────────────────────────────────
+      for (const bw of bandwidth) {
+        if (!bw.adapter) continue
+        await inv.query(`
+          INSERT INTO bandwidth_stats (device_id, adapter, bytes_sent, bytes_recv)
+          VALUES ($1, $2, $3, $4)
+        `, [deviceId, bw.adapter, bw.bytes_sent ?? null, bw.bytes_recv ?? null])
+      }
+      // Nettoyage des samples > 7 jours (non-bloquant)
+      fastify.db.query(`DELETE FROM bandwidth_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
+
+      // ── Ping stats ──────────────────────────────────────────────────────────
+      const pings = Array.isArray(ping) ? ping : (ping ? [ping] : [])
+      for (const p of pings) {
+        if (!p?.host) continue
+        await inv.query(`
+          INSERT INTO ping_stats (device_id, host, latency_ms, packet_loss_pct)
+          VALUES ($1, $2, $3, $4)
+        `, [deviceId, p.host, p.latency_ms ?? null, p.packet_loss_pct ?? null])
+      }
+      if (pings.length) {
+        fastify.db.query(`DELETE FROM ping_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
+      }
+
+      // ── System perf (RAM/CPU/uptime/batterie) ──────────────────────────────
+      if (system_perf && typeof system_perf === 'object') {
+        const sp = system_perf
+        await inv.query(`
+          INSERT INTO system_perf_stats (
+            device_id, ram_used_gb, ram_total_gb, ram_used_pct,
+            cpu_avg_pct, cpu_max_pct, uptime_seconds,
+            battery_pct, battery_status
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `, [
+          deviceId,
+          sp.ram_used_gb    ?? null,
+          sp.ram_total_gb   ?? null,
+          sp.ram_used_pct   ?? null,
+          sp.cpu_avg_pct    ?? null,
+          sp.cpu_max_pct    ?? null,
+          sp.uptime_seconds ?? null,
+          sp.battery_pct    ?? null,
+          sp.battery_status ?? null,
+        ])
+        // Cleanup non-bloquant
+        fastify.db.query(
+          `DELETE FROM system_perf_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`,
+          [deviceId]
+        ).catch(() => {})
+      }
+      await inv.query('COMMIT')
+    } catch (err) {
+      await inv.query('ROLLBACK').catch(() => {})
+      throw err
+    } finally {
+      inv.release()
     }
 
     // ── Évaluation conformité ──────────────────────────────────────────────
