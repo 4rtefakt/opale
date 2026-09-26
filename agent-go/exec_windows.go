@@ -163,11 +163,7 @@ func processDeployments(ctx context.Context, deps []Deployment, sink resultSink)
 			output = strings.TrimSpace(output + "\n[post-install]\n" + postOut)
 		}
 
-		sink.deployment(DeploymentResult{
-			DeploymentID: d.DeploymentID,
-			ExitCode:     exitCode,
-			Output:       output,
-		})
+		sink.deployment(deploymentResult(d, exitCode, output))
 
 		// Détection post-install : exit 0 = installé, rattachée au package
 		// (cf. postInstallDetection).

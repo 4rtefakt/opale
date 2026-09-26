@@ -79,6 +79,17 @@ type resultSink struct {
 	detection  func(DetectionResult)
 }
 
+// deploymentResult — résultat d'un déploiement, avec le jeton de
+// réservation reçu du serveur (renvoyé tel quel).
+func deploymentResult(d Deployment, exitCode int, output string) DeploymentResult {
+	return DeploymentResult{
+		DeploymentID: d.DeploymentID,
+		ClaimToken:   d.ClaimToken,
+		ExitCode:     exitCode,
+		Output:       output,
+	}
+}
+
 // postInstallDetection exécute via run le detection_script d'un déploiement
 // (exit 0 = installé) et rattache le résultat au package déployé. Sans
 // package_id (serveur antérieur à 2.15.1) : aucun résultat — l'id du

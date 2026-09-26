@@ -143,3 +143,30 @@ func TestPostInstallDetection_ReportsPackageID(t *testing.T) {
 		t.Fatalf("detection_script exécuté %d fois, attendu 2", len(ran))
 	}
 }
+
+// Le jeton de réservation reçu avec un déploiement repart tel quel avec son
+// résultat (le serveur n'applique ainsi un résultat qu'à la tentative qui
+// l'a produit) ; sans jeton (serveur plus ancien), le champ est omis et un
+// state.json d'avant 2.15.1 se relit.
+func TestDeploymentResult_EchoesClaimToken(t *testing.T) {
+	var resp CheckinResponse
+	raw := `{"ok":true,"deployments":[{"deployment_id":"dep-1","claim_token":"1790000000123456","type":"script"}]}`
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := json.Marshal(deploymentResult(resp.Deployments[0], 0, "ok"))
+	if !strings.Contains(string(out), `"claim_token":"1790000000123456"`) {
+		t.Fatalf("jeton non renvoyé : %s", out)
+	}
+
+	out, _ = json.Marshal(deploymentResult(Deployment{DeploymentID: "dep-2"}, 1, "ko"))
+	if strings.Contains(string(out), "claim_token") {
+		t.Fatalf("jeton vide envoyé : %s", out)
+	}
+
+	var st State
+	if err := json.Unmarshal([]byte(`{"pending_deployments":[{"deployment_id":"dep-3","exit_code":0,"output":"ok"}]}`), &st); err != nil ||
+		len(st.PendingDeployments) != 1 || st.PendingDeployments[0].ClaimToken != "" {
+		t.Fatalf("state.json 2.14 illisible : %+v (%v)", st, err)
+	}
+}
