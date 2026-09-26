@@ -321,6 +321,53 @@ test('POST /:id/approve — draft → approved', { skip: SKIP }, async () => {
   assert.ok(res.json().approved_by, 'approved_by doit être renseigné')
 })
 
+test('POST /:id/approve — package winget au winget_id hors format ou absent → 409, reste en draft', { skip: SKIP }, async () => {
+  // Valeurs enregistrées avant la validation : l'approbation est le point de
+  // passage unique avant distribution, elle ne doit pas les laisser partir.
+  const token = await adminToken('oid-pkg-approv-badwinget-admin')
+  for (const [name, wingetId] of [['Pkg Approve Legacy', 'Legacy Id avec espaces'], ['Pkg Approve Null', null]]) {
+    const pkg = await insertPackage(db, { name, status: 'draft', wingetId })
+    const res = await fastify.inject({
+      method: 'POST', url: `/api/packages/${pkg.id}/approve`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(res.statusCode, 409, name)
+    assert.match(res.json().error, /winget_id/)
+    const { rows: [row] } = await db.query(`SELECT status FROM packages WHERE id = $1`, [pkg.id])
+    assert.equal(row.status, 'draft')
+  }
+})
+
+test('POST /:id/approve — package script : winget_id ignoré, approbation acceptée', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-approv-script-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Approve Script', type: 'script', status: 'draft', wingetId: 'Legacy Id avec espaces' })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/approve`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 200)
+})
+
+test('PATCH /api/packages/:id — passage script → winget avec un winget_id hérité hors format → 400', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-patch-totype-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Script To Winget', type: 'script', status: 'draft', wingetId: 'Legacy Id avec espaces' })
+  const patch = (payload) => fastify.inject({
+    method: 'PATCH', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload,
+  })
+  // Même valeur renvoyée par le formulaire, mais le type change : refusé.
+  const bad = await patch({ type: 'winget', winget_id: 'Legacy Id avec espaces' })
+  assert.equal(bad.statusCode, 400)
+  assert.match(bad.json().error, /winget_id/)
+  const { rows: [row] } = await db.query(`SELECT type FROM packages WHERE id = $1`, [pkg.id])
+  assert.equal(row.type, 'script')
+  // Avec un identifiant valide, le passage est accepté.
+  const good = await patch({ type: 'winget', winget_id: 'Valid.Package' })
+  assert.equal(good.statusCode, 200)
+  assert.equal(good.json().type, 'winget')
+})
+
 test('POST /:id/approve — déjà approuvé → 409', { skip: SKIP }, async () => {
   const token = await adminToken('oid-pkg-approv2-admin')
   const pkg = await insertPackage(db, { name: 'Pkg Already Approved', status: 'approved' })
