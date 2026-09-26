@@ -172,13 +172,10 @@ func processDeployments(ctx context.Context, deps []Deployment) ([]DeploymentRes
 			Output:       output,
 		})
 
-		// Détection post-install : exit 0 = installé
-		if d.DetectionScript != "" {
-			detExit, _ := runPowerShell(ctx, d.DetectionScript)
-			detResults = append(detResults, DetectionResult{
-				PackageID: d.DeploymentID,
-				Detected:  detExit == 0,
-			})
+		// Détection post-install : exit 0 = installé, rattachée au package
+		// (cf. postInstallDetection).
+		if det, ok := postInstallDetection(ctx, d, runPowerShell); ok {
+			detResults = append(detResults, det)
 		}
 	}
 	return depResults, detResults
