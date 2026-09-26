@@ -2,14 +2,16 @@
 //
 // Toutes les `intervalMs` (30 s par défaut) :
 //   1. Pour chaque mailbox configurée :
-//      a. lit les messages reçus depuis le curseur
+//      a. lit les messages reçus depuis le curseur (pages suivies, bornées)
 //      b. pour chaque message → processOne() : ingest + classify + action
-//      c. avance le curseur au max(receivedDateTime) de la page
+//      c. avance le curseur au receivedDateTime du dernier mail parcouru —
+//         jamais au-delà d'un mail en échec, retenté au tick suivant puis
+//         abandonné s'il échoue durablement seul (cf. poll-cursor.js)
 //
-// Curseur : par mailbox, setting `mail.cursor.<address>`. Bootstrap = now()
-// (pas de backfill historique). Avancement à max(receivedDateTime) de la
-// page traitée, pas à now() — évite de sauter un mail arrivé pendant qu'on
-// traitait la page.
+// Curseur : par mailbox, setting `mail.cursor.<address>` (+ état
+// `mail.cursor_state.<address>`, cf. poll-cursor.js). Bootstrap = now()
+// (pas de backfill historique). Avancement au dernier mail parcouru, pas à
+// now() — évite de sauter un mail arrivé pendant qu'on traitait la page.
 //
 // Idempotence : INSERT mapping avec ON CONFLICT DO NOTHING en début de tx
 // dans processOne. Une race entre deux ticks ne crée pas de doublon.
@@ -20,6 +22,7 @@
 
 import { listMessagesSince } from './graph-mail.js'
 import { processOne } from './process-mail.js'
+import { pollMailboxCursor } from './poll-cursor.js'
 import { nonOverlapping } from '../../../lib/non-overlapping.js'
 
 const DEFAULT_INTERVAL_MS = 30_000
@@ -41,6 +44,7 @@ async function setSetting(db, key, value) {
 }
 
 function cursorKey(mailbox) { return `mail.cursor.${mailbox.toLowerCase()}` }
+function cursorStateKey(mailbox) { return `mail.cursor_state.${mailbox.toLowerCase()}` }
 
 function parseMailboxes(csv) {
   if (!csv) return []
@@ -56,9 +60,9 @@ function parseMailboxes(csv) {
 // ── Un tick de poll ───────────────────────────────────────────────────────────
 
 // `injection` exposé pour les tests : permet de remplacer Graph et le
-// classifieur sans monkey-patcher d'imports globaux.
+// classifieur (et l'horloge : `now`) sans monkey-patcher d'imports globaux.
 export async function pollOnce(db, log, injection = {}) {
-  const { listMessagesSince: list = listMessagesSince, classifierFn } = injection
+  const { listMessagesSince: list = listMessagesSince, classifierFn, now } = injection
 
   const enabled = await getSetting(db, 'mail.poll_enabled')
   if (enabled !== 'true') return { skipped: 'disabled' }
@@ -71,9 +75,22 @@ export async function pollOnce(db, log, injection = {}) {
     actions: { message_appended: 0, proposal_created: 0, proposal_created_no_match: 0,
                skipped_other: 0, skipped_error: 0, already_ingested: 0 },
     errors: 0,
+    abandoned: 0,   // mails « poison » abandonnés (cf. poll-cursor.js)
   }
 
   for (const mailbox of mailboxes) {
+    // Une boîte en échec (verrou tenu sur son curseur, erreur DB…) est
+    // sautée pour ce tick, sans empêcher les suivantes.
+    try {
+      await pollMailbox(mailbox)
+    } catch (err) {
+      stats.errors++
+      log?.warn({ err: err.message, mailbox }, 'email-bridge: boîte en échec pour ce tick')
+    }
+  }
+  return stats
+
+  async function pollMailbox(mailbox) {
     const key = cursorKey(mailbox)
     let cursor = await getSetting(db, key)
     if (!cursor) {
@@ -81,7 +98,7 @@ export async function pollOnce(db, log, injection = {}) {
       cursor = rows[0].now.toISOString()
       await setSetting(db, key, cursor)
       log?.info({ mailbox, cursor }, 'email-bridge: curseur initialisé (pas de backfill)')
-      continue
+      return
     }
 
     // Normaliser le format du curseur avant de l'envoyer à Graph. Si
@@ -94,7 +111,7 @@ export async function pollOnce(db, log, injection = {}) {
     if (Number.isNaN(parsed.getTime())) {
       stats.errors++
       log?.warn({ mailbox, cursor }, 'email-bridge: curseur illisible, skip mailbox (ré-initialiser via /api/settings)')
-      continue
+      return
     }
     const cursorIso = parsed.toISOString()
     if (cursorIso !== cursor) {
@@ -102,24 +119,13 @@ export async function pollOnce(db, log, injection = {}) {
       cursor = cursorIso
     }
 
-    let page
-    try {
-      page = await list(mailbox, cursor, { top: 50 })
-    } catch (err) {
-      stats.errors++
-      log?.warn({ err: err.message, mailbox }, 'email-bridge: listMessages a échoué')
-      continue
-    }
-
-    const messages = page.value || []
-    let lastReceivedAt = null
-
-    for (const m of messages) {
-      if (m.receivedDateTime && (!lastReceivedAt || m.receivedDateTime > lastReceivedAt)) {
-        lastReceivedAt = m.receivedDateTime
-      }
+    // `memo` : données gardées par poll-cursor entre deux reprises du même
+    // mail — ici la classification, pour ne pas rappeler le LLM.
+    const handle = async (m, { memo } = {}) => {
       try {
-        const out = await processOne(db, log, { graphMessage: m, mailbox, classifierFn })
+        const out = await processOne(db, log, {
+          graphMessage: m, mailbox, classifierFn, classifierResult: memo?.classifier,
+        })
         if (out?.action && stats.actions[out.action] !== undefined) stats.actions[out.action]++
         if (out?.action === 'proposal_created' || out?.action === 'message_appended') {
           log?.info({
@@ -129,17 +135,30 @@ export async function pollOnce(db, log, injection = {}) {
             intent: out.intent,
           }, 'email-bridge: mail traité')
         }
+        // Transaction annulée : rien d'écrit → retenté (curseur non avancé).
+        // Les autres 'skipped_error' sont définitifs (mail inexploitable).
+        if (out?.retryable) {
+          return { retry: true, error: out.error, memo: out.classifier ? { classifier: out.classifier } : undefined }
+        }
+        // `wrote` : écriture commitée (pas already_ingested / skip) — seule
+        // preuve que la chaîne d'écriture fonctionne (verdict poll-cursor).
+        return { wrote: out?.committed === true }
       } catch (err) {
         stats.errors++
         log?.warn({ err: err.message, mailbox, internetMessageId: m.internetMessageId },
           'email-bridge: processOne a planté')
+        return { retry: true, error: err.message }
       }
     }
 
-    if (lastReceivedAt) await setSetting(db, key, lastReceivedAt)
+    const res = await pollMailboxCursor(db, log, {
+      mailbox, cursor, cursorKey: key, stateKey: cursorStateKey(mailbox),
+      dateField: 'receivedDateTime', list, handle,
+      updatedBy: 'email-bridge-worker', tag: 'email-bridge', now,
+    })
+    stats.errors += res.errors
+    stats.abandoned += res.abandoned
   }
-
-  return stats
 }
 
 export function startMailPollWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {

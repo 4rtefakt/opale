@@ -29,6 +29,8 @@ import { matchSender } from './match-sender.js'
 import { matchThread } from './match-thread.js'
 import { getMessage }  from './graph-mail.js'
 import { extractMailBodyText, htmlToText } from './body-text.js'
+import { stripNul } from './sanitize.js'
+import { storedMessageId, messageIdLookupKeys } from './message-id.js'
 
 function indexHeaders(graphMessage) {
   const idx = {}
@@ -70,10 +72,14 @@ async function appendSentMessageToTicket(client, { ticketId, authorName, content
 // (match, dédup, garde anti-doublon) mais N'ÉCRIT RIEN et retourne l'action
 // qui SERAIT prise — pas de divergence de logique avec le vrai traitement.
 //
-// Retour : { action, ticket_id? }
+// Retour : { action, ticket_id?, error?, retryable?, committed? }
 //   action : 'message_appended' | 'skipped_no_match' | 'skipped_duplicate'
 //            | 'already_ingested' | 'skipped_error'
-export async function processSentOne(db, log, { graphMessage, mailbox, getMessageFn = getMessage, dryRun = false }) {
+//   retryable : true si la transaction a échoué (rien d'écrit, à retenter) ;
+//            absent pour le 'skipped_error' définitif (sans internetMessageId).
+export async function processSentOne(db, log, { graphMessage: rawMessage, mailbox, getMessageFn = getMessage, dryRun = false }) {
+  // Caractères NUL retirés d'entrée (cf. sanitize.js).
+  const graphMessage = stripNul(rawMessage)
   const internetMessageId = graphMessage?.internetMessageId
   if (!internetMessageId) {
     log?.warn({ mailbox, graphId: graphMessage?.id }, 'sent: mail sans internetMessageId, skip')
@@ -85,8 +91,8 @@ export async function processSentOne(db, log, { graphMessage, mailbox, getMessag
   // internet_message_id garantit qu'on n'append jamais deux fois la réponse.
   {
     const { rows } = await db.query(
-      `SELECT id FROM email_thread_mapping WHERE internet_message_id = $1`,
-      [internetMessageId]
+      `SELECT id FROM email_thread_mapping WHERE internet_message_id = ANY($1)`,
+      [messageIdLookupKeys(internetMessageId)]   // forme brute et stockée (cf. message-id.js)
     )
     if (rows.length) return { action: 'already_ingested' }
   }
@@ -113,7 +119,7 @@ export async function processSentOne(db, log, { graphMessage, mailbox, getMessag
   let bodyText = null
   try {
     const full = await getMessageFn(mailbox, graphMessage.id)
-    bodyText = extractMailBodyText(graphMessage, full)
+    bodyText = stripNul(extractMailBodyText(graphMessage, full))
   } catch (err) {
     log?.warn({ err: err.message, internetMessageId },
       'sent: full body fetch failed, fallback bodyPreview')
@@ -156,7 +162,7 @@ export async function processSentOne(db, log, { graphMessage, mailbox, getMessag
       ON CONFLICT (internet_message_id) DO NOTHING
       RETURNING id
     `, [
-      internetMessageId,
+      storedMessageId(internetMessageId),
       graphMessage.conversationId || null,
       graphMessage.id || null,
       mailbox,
@@ -176,11 +182,14 @@ export async function processSentOne(db, log, { graphMessage, mailbox, getMessag
     })
 
     await client.query('COMMIT')
-    return { action: 'message_appended', ticket_id: threadMatch.ticket_id }
+    // `committed` : une écriture a réellement abouti (cf. poll-cursor).
+    return { action: 'message_appended', ticket_id: threadMatch.ticket_id, committed: true }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     log?.warn({ err: err.message, mailbox, internetMessageId }, 'sent: tx process échouée')
-    return { action: 'skipped_error', error: err.message }
+    // Rien n'a été écrit (rollback) : `retryable` → le worker n'avance pas
+    // son curseur au-delà de ce mail et le retente au tick suivant.
+    return { action: 'skipped_error', error: err.message, retryable: true }
   } finally {
     client.release()
   }

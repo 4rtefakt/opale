@@ -232,6 +232,32 @@ test('POST /inbox/:id/to-ticket — crée un ticket + repointe le mapping',
   }
 )
 
+test('POST /inbox/:id/to-ticket — corps Graph contenant NUL → ticket créé, NUL retiré (pas de 500)',
+  { skip: SKIP }, async () => {
+    const { token } = await adminAuth('oid-inbox-nul-adm', 'Nul Admin')
+    const mappingId = await seedInboxMapping(db, { subject: 'Poste bloqué' })
+    // Graph simulé (aucun appel réseau) : corps complet avec un caractère NUL.
+    const original = globalThis.fetch
+    globalThis.fetch = async (url) => {
+      const body = /login\.microsoftonline\.com/.test(String(url))
+        ? { access_token: 'tok', expires_in: 3600 }
+        : { body: { contentType: 'text', content: 'Bonjour\u0000, mon poste ne démarre plus.' } }
+      return { ok: true, status: 200, headers: new Headers(), json: async () => body, text: async () => JSON.stringify(body) }
+    }
+    try {
+      const res = await fastify.inject({
+        method: 'POST', url: `/api/email/inbox/${mappingId}/to-ticket`,
+        headers: { authorization: `Bearer ${token}` },
+      })
+      assert.equal(res.statusCode, 201)
+      const { rows } = await db.query(`SELECT content FROM ticket_messages WHERE ticket_id = $1`, [res.json().ticket.id])
+      assert.deepEqual(rows.map(r => r.content), ['Bonjour, mon poste ne démarre plus.'])
+    } finally {
+      globalThis.fetch = original
+    }
+  }
+)
+
 test('POST /inbox/:id/to-ticket — déjà lié → 409',
   { skip: SKIP }, async () => {
     const { token } = await adminAuth('oid-inbox-tot-twice')

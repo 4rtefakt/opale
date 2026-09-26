@@ -22,6 +22,8 @@ import { matchThread }   from './match-thread.js'
 import { classifyWithOllama } from './classify.js'
 import { getMessage }    from './graph-mail.js'
 import { extractMailBodyText, htmlToText } from './body-text.js'
+import { stripNul }      from './sanitize.js'
+import { storedMessageId, messageIdLookupKeys } from './message-id.js'
 
 // Microsoft Graph dit que `bodyPreview` est plain text, mais en pratique
 // quelques mails Outlook (forwards inline, contenus mixtes) ont du HTML
@@ -138,10 +140,17 @@ async function appendReplyToProposal(client, { proposalId, graphMessage, sender,
 // mapping, retourne immédiatement {skipped: 'already-ingested'} sans rien
 // modifier.
 //
-// Retour : {action, ticket_id?, proposal_id?, intent?, error?}
+// Retour : {action, ticket_id?, proposal_id?, intent?, error?, retryable?, committed?}
 //   action : 'message_appended' | 'reply_appended_to_proposal' |
 //            'pending_review' | 'already_ingested' | 'skipped_error'
-export async function processOne(db, log, { graphMessage, mailbox, classifierFn }) {
+//   retryable : true si la transaction a échoué (rien d'écrit, à retenter) ;
+//            absent pour un 'skipped_error' définitif (mail sans
+//            internetMessageId, proposal disparue — mapping déjà écrit).
+//            Accompagné de `classifier` (réutilisable via `classifierResult`).
+export async function processOne(db, log, { graphMessage: rawMessage, mailbox, classifierFn, classifierResult }) {
+  // Caractères NUL retirés d'entrée (sujet, expéditeur, raw…) : sinon rejet
+  // Postgres systématique, mail « poison » fabricable de l'extérieur.
+  const graphMessage = stripNul(rawMessage)
   const internetMessageId = graphMessage.internetMessageId
   if (!internetMessageId) {
     log?.warn({ mailbox, graphId: graphMessage.id }, 'process: mail sans internetMessageId, skip')
@@ -153,8 +162,8 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
   // sur internet_message_id (ON CONFLICT DO NOTHING dans l'INSERT mapping).
   {
     const { rows } = await db.query(
-      `SELECT id FROM email_thread_mapping WHERE internet_message_id = $1`,
-      [internetMessageId]
+      `SELECT id FROM email_thread_mapping WHERE internet_message_id = ANY($1)`,
+      [messageIdLookupKeys(internetMessageId)]   // forme brute et stockée (cf. message-id.js)
     )
     if (rows.length) return { action: 'already_ingested' }
   }
@@ -185,7 +194,9 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
     intent = 'reply'
     classifier = { intent: 'reply', confidence: 1, reason: 'thread match (pending proposal)' }
   } else {
-    classifier = await classifySafe(db, log, {
+    // `classifierResult` : classification d'une tentative précédente de ce
+    // mail (transaction annulée) — évite de rappeler le LLM à chaque reprise.
+    classifier = classifierResult || await classifySafe(db, log, {
       from: fromAddress, subject: graphMessage.subject, bodyPreview: safeBodyPreview(graphMessage),
     }, { classifierFn })
     intent = classifier.intent
@@ -200,7 +211,7 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
   if (threadMatch?.ticket_id || threadMatch?.proposal_id) {
     try {
       const full = await getMessage(mailbox, graphMessage.id)
-      bodyText = extractMailBodyText(graphMessage, full)
+      bodyText = stripNul(extractMailBodyText(graphMessage, full))
     } catch (err) {
       log?.warn({ err: err.message, internetMessageId },
         'process: full body fetch failed, fallback sur bodyPreview')
@@ -225,7 +236,7 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
       ON CONFLICT (internet_message_id) DO NOTHING
       RETURNING id
     `, [
-      internetMessageId,
+      storedMessageId(internetMessageId),
       graphMessage.conversationId || null,
       graphMessage.id || null,
       mailbox,
@@ -233,7 +244,7 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
       graphMessage.subject || null,
       graphMessage.receivedDateTime || null,
       JSON.stringify(graphMessage),
-      JSON.stringify(classifier),
+      JSON.stringify(stripNul(classifier)),
     ])
     if (insertMapping.rowCount === 0) {
       await client.query('ROLLBACK')
@@ -283,11 +294,18 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
     `, [ticketId, proposalId, action, errorMessage, mappingId])
 
     await client.query('COMMIT')
-    return { action, ticket_id: ticketId, proposal_id: proposalId, intent, error: errorMessage }
+    // `committed` : une écriture a réellement abouti (preuve, pour le
+    // worker, que la chaîne d'écriture fonctionne — cf. poll-cursor).
+    return { action, ticket_id: ticketId, proposal_id: proposalId, intent, error: errorMessage, committed: true }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     log?.warn({ err: err.message, mailbox, internetMessageId }, 'email-bridge: tx process échouée')
-    return { action: 'skipped_error', error: err.message }
+    // Rien n'a été écrit (rollback) : `retryable` → le worker n'avance pas
+    // son curseur au-delà de ce mail et le retente au tick suivant.
+    // `classifier` (vraie classification seulement, pas un fallback) : à
+    // repasser en `classifierResult` à la reprise.
+    const reusable = !threadMatch && !classifier?.fallback ? classifier : undefined
+    return { action: 'skipped_error', error: err.message, retryable: true, classifier: reusable }
   } finally {
     client.release()
   }

@@ -121,3 +121,65 @@ test('listMessagesSince : exclut Sent/Drafts/Deleted/Junk/Outbox via parentFolde
     _resetSystemFolderCache()
   }
 })
+
+// ── Curseur inclusif et pagination (worker de polling) ───────────────────────
+
+test('buildListMessagesPath : inclusive → filtre `ge` (défaut `gt` inchangé)', () => {
+  const since = '2026-05-16T10:40:32.000Z'
+  assert.match(buildListMessagesPath('box@example.com', since, { inclusive: true }),
+    /receivedDateTime\+ge\+2026-05-16T10%3A40%3A32\.000Z/)
+  assert.match(buildListMessagesPath('box@example.com', since),
+    /receivedDateTime\+gt\+2026-05-16T10%3A40%3A32\.000Z/)
+})
+
+const FOLDER_ROUTES = [
+  [/login\.microsoftonline\.com.*token/, { body: { access_token: 'tok', expires_in: 3600 } }],
+  ['mailFolders/sentitems',    { body: { id: 'sent-id' } }],
+  ['mailFolders/drafts',       { body: { id: 'drafts-id' } }],
+  ['mailFolders/deleteditems', { body: { id: 'deleted-id' } }],
+  ['mailFolders/junkemail',    { body: { id: 'junk-id' } }],
+  ['mailFolders/outbox',       { body: {}, ok: false, status: 404 }],
+]
+
+test('listMessagesSince : nextLink suivi tel quel, `scanned` garde les mails exclus', async () => {
+  _resetSystemFolderCache()
+  const nextLink = 'https://graph.microsoft.com/v1.0/users/box%40example.com/messages?%24top=50&%24skip=50'
+  const mock = mockFetchRouter([
+    ...FOLDER_ROUTES,
+    [/\/messages\?/, { body: {
+      value: [
+        { id: '1', parentFolderId: 'sent-id',  subject: 'exclu' },
+        { id: '2', parentFolderId: 'inbox-id', subject: 'gardé' },
+      ],
+    }}],
+  ])
+  try {
+    const page = await listMessagesSince('box@example.com', '2026-05-16T10:40:32.000Z', { nextLink })
+    const listCalls = mock.calls.filter(c => /\/messages\?/.test(c.url))
+    assert.deepEqual(listCalls.map(c => c.url), [nextLink], 'la page suivante est demandée via le nextLink')
+    assert.deepEqual(page.value.map(m => m.id), ['2'])
+    assert.deepEqual(page.scanned.map(m => m.id), ['1', '2'], 'page brute conservée pour avancer le curseur')
+  } finally {
+    mock.restore()
+    _resetSystemFolderCache()
+  }
+})
+
+test('listMessagesSince : nextLink hors graph.microsoft.com/v1.0 refusé, jeton non envoyé', async () => {
+  _resetSystemFolderCache()
+  const mock = mockFetchRouter([...FOLDER_ROUTES, [/.*/, { body: { value: [] } }]])
+  try {
+    for (const nextLink of [
+      'https://evil.example.com/v1.0/users/x/messages?%24skip=50',
+      'https://graph.microsoft.com.evil.example.com/v1.0/users/x/messages',
+      'https://graph.microsoft.com/v1.0@evil.example.com/users/x/messages',
+    ]) {
+      await assert.rejects(listMessagesSince('box@example.com', null, { nextLink }), /nextLink inattendu/)
+    }
+    const foreign = mock.calls.filter(c => !/^https:\/\/(graph\.microsoft\.com\/v1\.0\/|login\.microsoftonline\.com\/)/.test(c.url))
+    assert.deepEqual(foreign, [], 'aucune requête vers un hôte étranger')
+  } finally {
+    mock.restore()
+    _resetSystemFolderCache()
+  }
+})

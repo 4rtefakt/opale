@@ -9,6 +9,9 @@
 
 import { createTicketFromMapping, dismissInboxMapping } from '../lib/inbox.js'
 import { htmlToText } from '../lib/body-text.js'
+import { MAX_INGEST_ATTEMPTS } from '../lib/poll-cursor.js'
+
+const BLOCKED_DISPLAY_MS = 5 * 60_000
 
 export default async function emailRoute(fastify) {
 
@@ -42,11 +45,12 @@ export default async function emailRoute(fastify) {
   // Liste les mailboxes configurées + leur curseur courant + compteur ingérés.
   fastify.get('/status', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows: setRows } = await fastify.db.query(
-      `SELECT key, value FROM settings WHERE key IN ('mail.inboxes', 'mail.poll_enabled') OR key LIKE 'mail.cursor.%'`
+      `SELECT key, value FROM settings WHERE key IN ('mail.inboxes', 'mail.poll_enabled', 'mail.sent_mailboxes')
+         OR key LIKE 'mail.cursor%' OR key LIKE 'mail.sent\\_cursor%'`
     )
     const settings = Object.fromEntries(setRows.map(r => [r.key, r.value]))
-    const inboxes = (settings['mail.inboxes'] || '')
-      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    const csv = key => (settings[key] || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    const inboxes = csv('mail.inboxes')
 
     const { rows: countRows } = await fastify.db.query(`
       SELECT mailbox, COUNT(*)::int AS total, MAX(received_at) AS last_received_at
@@ -62,9 +66,33 @@ export default async function emailRoute(fastify) {
         cursor: settings[`mail.cursor.${m}`] || null,
         total_ingested: byMailbox.get(m)?.total || 0,
         last_received_at: byMailbox.get(m)?.last_received_at || null,
+        blocked: blockedState(settings[`mail.cursor.${m}`], settings[`mail.cursor_state.${m}`]),
+      })),
+      // Éléments envoyés (sent-poll-worker) : curseur et blocage seulement.
+      sent_mailboxes: csv('mail.sent_mailboxes').map(m => ({
+        address: m,
+        cursor: settings[`mail.sent_cursor.${m}`] || null,
+        blocked: blockedState(settings[`mail.sent_cursor.${m}`], settings[`mail.sent_cursor_state.${m}`]),
       })),
     })
   })
+
+  // Mail en échec qui retient le curseur d'une boîte (cf. lib/poll-cursor.js),
+  // lu dans son état JSON — ignoré s'il se rapporte à un autre curseur,
+  // comme le fait le worker. Pas affiché pour un premier échec passager :
+  // seulement après MAX_INGEST_ATTEMPTS tentatives ou BLOCKED_DISPLAY_MS.
+  function blockedState(cursor, rawState) {
+    try {
+      const state = JSON.parse(rawState)
+      const r = state?.retry
+      if (!r || !cursor || state.at !== new Date(cursor).toISOString()) return null
+      const age = Date.now() - Date.parse(r.first_at)
+      if (!(r.attempts >= MAX_INGEST_ATTEMPTS || age >= BLOCKED_DISPLAY_MS)) return null
+      return { since: r.first_at ?? null, attempts: r.attempts, error: r.error ?? null, internet_message_id: r.internet_message_id ?? null }
+    } catch {
+      return null
+    }
+  }
 
   // GET /api/email/stats?days=7 — breakdown des actions du pipeline sur la
   // fenêtre donnée. Utilisé par le bandeau "cette semaine" en haut de la

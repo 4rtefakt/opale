@@ -28,6 +28,10 @@ const _CATEGORIES = {
          'ssh_host_key_learned', 'ssh_host_key_mismatch', 'ssh_host_key_reset',
          'ip_netbird_cleared'],
   },
+  mail: {
+    label: 'Pont mail',
+    in: ['mail_ingest_abandoned', 'mail_ingest_blocked', 'mail_ingest_second_skipped'],
+  },
   agent_conn: {
     label: 'Connexion agent (bruyant)',
     in: ['agent_ws_connect', 'agent_ws_disconnect', 'agent_checkin', 'setup_script'],
@@ -147,6 +151,9 @@ const _BADGE = {
   agent_console_takeover:    ['b-prog',   'ti-hand-grab'],
   ssh_open:                  ['b-prog',   'ti-terminal'],
   ssh_close:                 ['b-done',   'ti-terminal'],
+  mail_ingest_abandoned:     ['b-prog',   'ti-mail-x'],
+  mail_ingest_blocked:       ['b-prog',   'ti-mail-pause'],
+  mail_ingest_second_skipped: ['b-prog',  'ti-mail-exclamation'],
 }
 
 // Libellés FR pour les actions remontées dans les badges. Si absent,
@@ -170,6 +177,9 @@ const _ACTION_LABEL = {
   ssh_host_key_mismatch:            'clé d\'hôte SSH inattendue',
   ssh_host_key_reset:               'clé d\'hôte SSH réinitialisée',
   ip_netbird_cleared:               'IP Netbird invalide purgée',
+  mail_ingest_abandoned:            'mail abandonné (ingestion)',
+  mail_ingest_blocked:              'boîte mail bloquée',
+  mail_ingest_second_skipped:       'mails sautés (même seconde)',
 }
 
 function _formatDuration(s) {
@@ -188,6 +198,16 @@ function _reasonShort(reason) {
   const note = (reason.note || '').slice(0, 60)
   const ellipsis = (reason.note || '').length > 60 ? '…' : ''
   return note ? `motif: ${reason.category} — ${note}${ellipsis}` : `motif: ${reason.category}`
+}
+
+// Horodatage ISO → « AAAA-MM-JJ HH:MM:SS UTC » (résumés du pont mail).
+function _utc(iso) {
+  return String(iso).replace('T', ' ').replace(/(\.\d+)?Z$/, ' UTC')
+}
+
+function _truncate(s, n) {
+  const str = s ? String(s) : ''
+  return str.length > n ? str.slice(0, n) + '…' : str
 }
 
 function _summary(action, details) {
@@ -213,6 +233,23 @@ function _summary(action, details) {
   if (action === 'ssh_host_key_mismatch')            return [details.hostname, `attendue ${details.expected_fingerprint || '?'}`, `présentée ${details.presented_fingerprint || '?'}`].join(' · ')
   if (action === 'ssh_host_key_reset')               return details.hostname || ''
   if (action === 'ip_netbird_cleared')               return [details.hostname, details.ip_netbird].filter(Boolean).join(' · ')
+  // Pont mail (cf. email-bridge/lib/poll-cursor.js) : mail abandonné, ou
+  // boîte bloquée (panne systémique ; reprise SQL dans `details.log`, affiché
+  // dans le panneau dépliable). Champs issus du mail et d'une erreur DB : le
+  // résumé est échappé au rendu.
+  if (action === 'mail_ingest_abandoned') {
+    const date = details.date ? `mail du ${_utc(details.date)}` : ''
+    return [date, details.internet_message_id, _truncate(details.error, 160)].filter(Boolean).join(' · ')
+  }
+  if (action === 'mail_ingest_blocked') {
+    const since = details.since ? `bloquée depuis ${_utc(details.since)}` : ''
+    const attempts = details.attempts ? `${details.attempts} tentatives` : ''
+    return [since, attempts, details.internet_message_id, _truncate(details.error, 120)].filter(Boolean).join(' · ')
+  }
+  if (action === 'mail_ingest_second_skipped') {
+    const lost = `${details.not_ingested_exact ? '' : '≥ '}${details.not_ingested ?? '?'} mails non ingérés`
+    return [lost, details.cursor ? `seconde ${_utc(details.cursor)}` : ''].filter(Boolean).join(' · ')
+  }
   return ''
 }
 
