@@ -267,6 +267,20 @@ docker compose -f docker-compose.example.yml build api
 docker compose -f docker-compose.example.yml up -d api
 ```
 
+**Health check** — `GET /api/health` (no authentication) answers
+`200 {"status":"ok"}` when the API and PostgreSQL respond, `503
+{"status":"unavailable"}` otherwise (cause in the API log; no details in the
+response). Use it for uptime monitoring or a compose healthcheck:
+
+```yaml
+  api:
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3010/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
+
 **Updating the frontend** (no rebuild needed — `front/` is volume-mounted)
 ```bash
 git pull
