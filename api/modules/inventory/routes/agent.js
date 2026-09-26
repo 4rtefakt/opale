@@ -174,6 +174,9 @@ function hashToken(t) {
   return crypto.createHash('sha256').update(t).digest('hex')
 }
 
+// Taille de script_executions.output (VARCHAR(10000), migration 029).
+const SCRIPT_OUTPUT_MAX = 10000
+
 // Taille max d'un POST /setup-log (route sans auth) : large pour un log
 // d'installation, borné pour ne pas remplir audit_logs (défaut Fastify : 1 Mio).
 const SETUP_LOG_BODY_LIMIT = 64 * 1024
@@ -546,6 +549,9 @@ export default async function agentRoute(fastify) {
     if (!execution_id) return reply.code(400).send({ error: 'execution_id requis' })
 
     const status = exit_code === 0 ? 'done' : 'error'
+    // Sortie tronquée à la taille de la colonne (VARCHAR(10000), migration
+    // 029) : au-delà, l'UPDATE échouait (22001 → 500), le résultat était
+    // perdu et le script restait 'running'.
     // Le filtre device_id = token.device_id empêche un agent compromis de
     // remonter de faux résultats pour les exécutions d'autres devices
     // (cross-device tampering).
@@ -554,7 +560,7 @@ export default async function agentRoute(fastify) {
       SET status = $1, exit_code = $2, output = $3, completed_at = now()
       WHERE id = $4 AND mode = 'agent' AND device_id = $5
       RETURNING device_id, script_name
-    `, [status, exit_code ?? -1, (output || '').slice(0, 100000), execution_id, token.device_id])
+    `, [status, exit_code ?? -1, (output || '').slice(0, SCRIPT_OUTPUT_MAX), execution_id, token.device_id])
 
     // Audit log (uniquement en cas de succès, pour valoriser dans Rapports)
     if (status === 'done' && updated.rows[0]) {

@@ -223,3 +223,26 @@ test('checkins concurrents du même poste : chaque script / déploiement livré 
   assert.deepEqual([...sentScripts].sort(), [...scripts].sort(), 'chaque script une fois')
   assert.deepEqual([...sentDeps].sort(), [...deps].sort(), 'chaque déploiement une fois')
 })
+
+// ── (c) Résultat de script : jamais perdu pour une sortie trop longue ───────
+
+test('POST /result — sortie > 10 000 caractères : résultat enregistré (tronqué), plus de 500', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-RESULT-LONG' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const scriptId = await queueScript(device.id, 'long-output')
+  const got = await checkin(fastify, secret, { hostname: device.hostname })
+  assert.deepEqual(got.json().commands.map(c => c.id), [scriptId])
+
+  // script_executions.output est VARCHAR(10000) (migration 029).
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/agent/result',
+    headers: { authorization: `Bearer ${secret}` },
+    payload: { execution_id: scriptId, exit_code: 0, output: 'é'.repeat(12000) + 'FIN' },
+  })
+  assert.equal(res.statusCode, 204, res.body)
+  const { rows: [r] } = await db.query(
+    `SELECT status, exit_code, length(output) AS len FROM script_executions WHERE id = $1`, [scriptId])
+  assert.equal(r.status, 'done')
+  assert.equal(r.exit_code, 0)
+  assert.equal(r.len, 10000)
+})
