@@ -61,3 +61,27 @@ test('sondes concurrentes : une seule requête DB en vol', async (t) => {
   assert.equal(calls, 1)
   assert.ok(responses.every(r => r.statusCode === 200))
 })
+
+test('base lente : les sondes suivantes ne relancent pas de requête tant que la première n’est pas terminée', async (t) => {
+  // Le délai de 2 s borne la RÉPONSE, pas la requête : si la sonde relançait
+  // un SELECT 1 à chaque appel une fois le délai écoulé, un flot de sondes
+  // non authentifiées occuperait tout le pool pendant un ralentissement.
+  let calls = 0
+  let answer
+  const db = { query: () => { calls++; return new Promise((r) => { answer = r }) } }
+  const app = await build(t, db, { dbTimeoutMs: 50 })
+
+  for (let i = 0; i < 3; i++) {
+    const res = await app.inject({ method: 'GET', url: '/api/health' })
+    assert.equal(res.statusCode, 503)
+  }
+  assert.equal(calls, 1, 'une seule requête en vol malgré 3 sondes expirées')
+
+  answer({ rows: [{ '?column?': 1 }] })
+  await new Promise((r) => setTimeout(r, 10))
+  const pending = app.inject({ method: 'GET', url: '/api/health' })
+  await new Promise((r) => setTimeout(r, 10))
+  assert.equal(calls, 2, 'nouvelle requête une fois la précédente terminée')
+  answer({ rows: [{ '?column?': 1 }] })
+  assert.equal((await pending).statusCode, 200)
+})
