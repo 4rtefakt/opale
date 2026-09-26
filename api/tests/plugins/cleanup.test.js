@@ -4,9 +4,10 @@
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import Fastify from 'fastify'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
-import { runCleanup } from '../../plugins/cleanup.js'
+import cleanupPlugin, { runCleanup } from '../../plugins/cleanup.js'
 import * as retention from '../../lib/retention.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
@@ -77,4 +78,40 @@ test('lib/retention.js : une règle par table, tables et colonnes existantes', {
     assert.equal(retention.retentionDays(table), days)
   }
   assert.throws(() => retention.retentionDays('inconnue'), /inconnue/)
+})
+
+// ── Exécutions bloquées en 'running' ─────────────────────────────────────────
+
+test('scripts agent réservés sans résultat depuis plus d’1 h : passés en erreur (comme les déploiements)', { skip: SKIP }, async (t) => {
+  const ins = async (mode, status, minutesAgo) => (await db.query(`
+    INSERT INTO script_executions (device_id, mode, status, script_name, started_at, queued_at)
+    VALUES ($1, $2, $3, 'stuck', now() - make_interval(mins => $4), now() - make_interval(mins => $4))
+    RETURNING id`, [deviceId, mode, status, minutesAgo])).rows[0].id
+  const stale   = await ins('agent', 'running', 120)
+  const recent  = await ins('agent', 'running', 10)
+  const waiting = await ins('agent', 'pending', 180)   // poste éteint : attente légitime
+  const ssh     = await ins('ssh',   'running', 120)   // hors périmètre (exécuté par l'API)
+  const { rows: [pkg] } = await db.query(`INSERT INTO packages (name, status) VALUES ('Stuck pkg', 'approved') RETURNING id`)
+  const { rows: [dep] } = await db.query(`
+    INSERT INTO deployments (package_id, device_id, status, started_at)
+    VALUES ($1, $2, 'running', now() - interval '2 hours') RETURNING id`, [pkg.id, deviceId])
+
+  // Le plugin lance les timeouts au démarrage (onReady), puis toutes les 15 min.
+  const app = Fastify({ logger: false })
+  app.decorate('db', db)
+  await app.register(cleanupPlugin)
+  await app.ready()
+  t.after(() => app.close())
+
+  const row = async (id) => (await db.query(
+    `SELECT status, output, completed_at FROM script_executions WHERE id = $1`, [id])).rows[0]
+  const s1 = await row(stale)
+  assert.equal(s1.status, 'error')
+  assert.match(s1.output, /Timeout : aucun résultat reçu de l'agent après 60 min/)
+  assert.ok(s1.completed_at)
+  assert.equal((await row(recent)).status, 'running')
+  assert.equal((await row(waiting)).status, 'pending')
+  assert.equal((await row(ssh)).status, 'running')
+  const { rows: [d] } = await db.query(`SELECT status FROM deployments WHERE id = $1`, [dep.id])
+  assert.equal(d.status, 'failed', 'timeout des déploiements inchangé')
 })
