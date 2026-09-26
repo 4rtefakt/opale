@@ -316,11 +316,15 @@ test('POST /checkin — un déploiement pending d\'un package approuvé est dist
   const deps = res.json().deployments
   assert.equal(deps.length, 1)
   // Forme exacte attendue par les agents déployés (agent-go/types.go Deployment).
+  // package_id : ajouté pour 2.15.0 ; un agent ≤ 2.14 ignore ce champ
+  // inconnu (json.Unmarshal sans DisallowUnknownFields), les autres clés
+  // sont inchangées.
   assert.deepEqual(Object.keys(deps[0]).sort(), [
     'deployment_id', 'detection_script', 'install_script', 'name',
-    'post_install_script', 'type', 'winget_id',
+    'package_id', 'post_install_script', 'type', 'winget_id',
   ])
   assert.equal(deps[0].deployment_id, dep.id)
+  assert.equal(deps[0].package_id, pkg.id)
   assert.equal(deps[0].install_script, 'Write-Output ok')
 
   const { rows: [row] } = await db.query(`SELECT status FROM deployments WHERE id = $1`, [dep.id])

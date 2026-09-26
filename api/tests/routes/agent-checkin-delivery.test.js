@@ -7,7 +7,10 @@
 //   - un agent < 2.15.0 ignore la réponse du re-checkin qui remonte ses
 //     résultats de déploiement : rien n'y est réservé, les travaux partent
 //     au checkin suivant (un agent ≥ 2.15.0 traite cette réponse).
-//     Réponse portant une mise à jour : cf. agent-checkin-update-jobs.test.js.
+//     Réponse portant une mise à jour : cf. agent-checkin-update-jobs.test.js ;
+//   - détection post-install : le déploiement envoyé porte son package_id ;
+//     un agent ≤ 2.14 qui remonte le deployment_id à sa place voit sa
+//     détection rattachée au package de ce déploiement (de CE poste).
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -232,4 +235,57 @@ test('POST /checkin — agent ≥ 2.15.0 : le re-checkin réserve le lot suivant
   assert.deepEqual(body.deployments.map(d => d.deployment_id), [eleventh.id])
   assert.deepEqual(body.commands.map(c => c.id), [scriptId])
   assert.equal(await statusOf('deployments', eleventh.id), 'running')
+})
+
+// ─── Détection post-install : package_id ────────────────────────────────────
+
+async function softwareRows(deviceId) {
+  const { rows } = await db.query(
+    `SELECT package_id, detected FROM device_software WHERE device_id = $1 ORDER BY package_id`, [deviceId]
+  )
+  return rows
+}
+
+test('POST /checkin — déploiement livré avec le package_id de son package (distinct du deployment_id)', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-PKGID' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const { dep, pkg } = await snapshottedDeployment(device.id, 'Pkg PkgId', { detectionScript: 'exit 0' })
+  assert.notEqual(dep.id, pkg.id)
+
+  const res = await checkin(secret, { hostname: device.hostname })
+  assert.equal(res.statusCode, 200, res.body)
+  const [sent] = res.json().deployments
+  assert.equal(sent.deployment_id, dep.id)
+  assert.equal(sent.package_id, pkg.id)
+
+  // Agent ≥ 2.15.0 : détection post-install remontée avec ce package_id.
+  const ack = await checkin(secret, {
+    hostname: device.hostname, agent_version: '2.15.0',
+    deployment_results: [{ deployment_id: dep.id, exit_code: 0, output: 'ok' }],
+    detection_results:  [{ package_id: sent.package_id, detected: true }],
+  })
+  assert.equal(ack.statusCode, 200, ack.body)
+  assert.deepEqual(await softwareRows(device.id), [{ package_id: pkg.id, detected: true }])
+})
+
+test('POST /checkin — détection post-install d\'un agent ≤ 2.14 (deployment_id en package_id) : rattachée au package du déploiement du poste', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-PKGID-LEGACY' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+  const { dep, pkg } = await snapshottedDeployment(device.id, 'Pkg PkgId Legacy', { detectionScript: 'exit 0' })
+  // Déploiement d'un AUTRE poste : son id ne doit rien rattacher ici.
+  const other = await seedDevice(db, { hostname: 'PC-PKGID-OTHER' })
+  const { dep: otherDep } = await snapshottedDeployment(other.id, 'Pkg PkgId Other', { detectionScript: 'exit 0' })
+  await checkin(secret, { hostname: device.hostname, agent_version: '2.14.0' })
+
+  const res = await checkin(secret, {
+    hostname: device.hostname, agent_version: '2.14.0',
+    deployment_results: [{ deployment_id: dep.id, exit_code: 0, output: 'ok' }],
+    detection_results:  [
+      { package_id: dep.id, detected: true },
+      { package_id: otherDep.id, detected: true },
+    ],
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(await softwareRows(device.id), [{ package_id: pkg.id, detected: true }])
+  assert.deepEqual(await softwareRows(other.id), [])
 })

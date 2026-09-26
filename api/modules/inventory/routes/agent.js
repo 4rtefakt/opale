@@ -1019,16 +1019,27 @@ export default async function agentRoute(fastify) {
     }
 
     // ── Résultats des scripts de détection ─────────────────────────────────
+    // package_id attendu. Pour la détection post-install, un agent ≤ 2.14
+    // remonte à sa place l'id du DÉPLOIEMENT (il ne recevait pas le
+    // package_id) : rattaché au package de ce déploiement s'il appartient à
+    // CE poste. Un id inconnu n'insère rien.
     for (const r of detection_results) {
       if (!r.package_id) continue
       try {
-        await fastify.db.query(`
+        const res = await fastify.db.query(`
           INSERT INTO device_software (device_id, package_id, detected, checked_at)
-          VALUES ($1, $2, $3, now())
+          SELECT $1, COALESCE(p.id, d.package_id), $3, now()
+          FROM (SELECT $2::uuid AS id) x
+          LEFT JOIN packages    p ON p.id = x.id
+          LEFT JOIN deployments d ON d.id = x.id AND d.device_id = $1
+          WHERE p.id IS NOT NULL OR d.id IS NOT NULL
           ON CONFLICT (device_id, package_id) DO UPDATE SET
             detected   = EXCLUDED.detected,
             checked_at = now()
         `, [deviceId, r.package_id, r.detected ?? false])
+        if (!res.rowCount) {
+          fastify.log.warn({ package_id: r.package_id }, 'detection result : package inconnu')
+        }
       } catch (err) {
         fastify.log.warn({ err: err.message, package_id: r.package_id }, 'detection result update failed')
       }
@@ -1300,7 +1311,7 @@ export default async function agentRoute(fastify) {
             WHERE d.id = ANY($1::uuid[]) AND d.status = 'pending'
               AND s.deployment_id = d.id
               AND p.id = d.package_id AND p.status = 'approved'
-            RETURNING d.id AS deployment_id, s.name, s.type, s.winget_id,
+            RETURNING d.id AS deployment_id, d.package_id, s.name, s.type, s.winget_id,
                       s.install_script, s.post_install_script, s.detection_script
           `, [pendingDeployments.rows.map(r => r.deployment_id)])
           const claimed = new Map(rows.map(r => [r.deployment_id, r]))
@@ -1322,6 +1333,9 @@ export default async function agentRoute(fastify) {
       commands:   scriptsToSend.map(r => ({ id: r.id, name: r.script_name, script: r.script_content })),
       deployments: deploymentsToSend.map(r => ({
         deployment_id:       r.deployment_id,
+        // Ajout 2.15.0 (détection post-install) ; ignoré par les agents
+        // plus anciens (champ JSON inconnu).
+        package_id:          r.package_id,
         name:                r.name,
         type:                r.type,
         winget_id:           r.winget_id,
