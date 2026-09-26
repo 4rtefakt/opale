@@ -155,6 +155,13 @@ const HASH_PRIORITIES = ['low', 'normal', 'high', 'critical']
 const UUID_RE         = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const DATE_RE         = /^\d{4}-\d{2}-\d{2}$/
 
+// AAAA-MM-JJ et date réelle : l'aller-retour par Date rejette 2026-02-30.
+function isValidDay(s) {
+  if (!DATE_RE.test(s || '')) return false
+  const d = new Date(s + 'T00:00:00Z')
+  return !isNaN(d) && d.toISOString().slice(0, 10) === s
+}
+
 function readFiltersFromHash() {
   const hash = window.location.hash || ''
   const qIdx = hash.indexOf('?')
@@ -166,8 +173,8 @@ function readFiltersFromHash() {
   if (sp.get('tag'))          f.tag      = sp.get('tag').split(',').filter(id => UUID_RE.test(id))
   if (sp.get('assigned_to'))  f.assigned_to = sp.get('assigned_to')
   if (sp.get('assigned_label'))  f.assigned_label = sp.get('assigned_label')
-  if (DATE_RE.test(sp.get('created_from') || '')) f.created_from = sp.get('created_from')
-  if (DATE_RE.test(sp.get('created_to')   || '')) f.created_to   = sp.get('created_to')
+  if (isValidDay(sp.get('created_from'))) f.created_from = sp.get('created_from')
+  if (isValidDay(sp.get('created_to')))   f.created_to   = sp.get('created_to')
   return f
 }
 
