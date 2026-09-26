@@ -677,10 +677,67 @@ export default async function agentRoute(fastify) {
     // en a une, aucun token actif déjà utilisé — cf. lib/device-claim.js).
     // Sinon un token non lié fuité usurperait n'importe quel poste existant.
     // Nouveau hostname : inchangé (création du device + rattachement).
+    // Contrôle + rattachement dans une transaction qui verrouille la ligne
+    // devices (FOR UPDATE, comme /exchange-token) : deux claims concurrents
+    // (deux tokens non liés, ou exchange + checkin) sont sérialisés, le
+    // second voit le token du premier comme déjà utilisé. Comme à
+    // l'exchange, les autres tokens jamais utilisés du poste (sauf rotation)
+    // sont révoqués : un seul credential vivant par poste.
     if (!token.device_id && lookup.rows[0]) {
-      const refusal = await checkDeviceClaim(fastify.db, {
-        device: lookup.rows[0], serial, excludeTokenId: token.id,
-      })
+      let refusal = null
+      let revokedUnused = 0
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        const { rows: [locked] } = await client.query(
+          'SELECT id, serial FROM devices WHERE id = $1 FOR UPDATE', [lookup.rows[0].id]
+        )
+        refusal = await checkDeviceClaim(client, {
+          device: locked || lookup.rows[0], serial, excludeTokenId: token.id,
+        })
+        if (!refusal) {
+          const bound = await client.query(
+            `UPDATE agent_tokens SET device_id = $1, last_used_at = now()
+               WHERE id = $2 AND (device_id IS NULL OR device_id = $1)`,
+            [lookup.rows[0].id, token.id]
+          )
+          if (!bound.rowCount) {
+            // Même token rattaché entre-temps à un autre poste.
+            await client.query('ROLLBACK')
+            return reply.code(403).send({ error: 'Token lié à un autre device' })
+          }
+          const revoked = await client.query(
+            `UPDATE agent_tokens SET revoked_at = now()
+               WHERE device_id = $1
+                 AND id <> $2
+                 AND is_bootstrap = FALSE
+                 AND revoked_at IS NULL
+                 AND last_used_at IS NULL
+                 AND created_by IS DISTINCT FROM 'agent-rotation'`,
+            [lookup.rows[0].id, token.id]
+          )
+          revokedUnused = revoked.rowCount
+        }
+        await client.query('COMMIT')
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        throw err
+      } finally {
+        client.release()
+      }
+      if (!refusal) {
+        await logAudit(fastify.db, fastify.log, {
+          action:  'agent_token_bound',
+          byUser:  clipStr(hostname, 255),
+          target:  lookup.rows[0].id,
+          details: {
+            token_id:    token.id,
+            token_label: token.label,
+            serial:      clipStr(serial, 100),
+            ...(revokedUnused ? { revoked_unused_tokens: revokedUnused } : {}),
+          },
+        })
+      }
       if (refusal) {
         fastify.log.warn(
           { hostname, device_id: lookup.rows[0].id, token_id: token.id, reason: refusal.reason },

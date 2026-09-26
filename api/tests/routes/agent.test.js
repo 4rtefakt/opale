@@ -927,6 +927,56 @@ test('POST /checkin — token non lié, poste existant avec une autre série →
   assert.equal(bound, 0, 'aucun token rattaché au poste')
 })
 
+test('POST /checkin — deux tokens non liés en concurrence sur le même poste : un seul est rattaché', { skip: SKIP }, async () => {
+  // Claim + rattachement sérialisés (verrou sur la ligne devices) : sans ça,
+  // les deux checkins passaient le contrôle avant que l'un ou l'autre ne
+  // soit lié, et les deux tokens se retrouvaient rattachés au poste.
+  const device = await seedDevice(db, { hostname: 'PC-UNBOUND-RACE' })
+  const a = await seedAgentToken(db, { label: 'unbound-race-a' })
+  const b = await seedAgentToken(db, { label: 'unbound-race-b' })
+
+  const [ra, rb] = await Promise.all([
+    checkinWith(a.secret, { hostname: 'PC-UNBOUND-RACE' }),
+    checkinWith(b.secret, { hostname: 'PC-UNBOUND-RACE' }),
+  ])
+  assert.deepEqual([ra.statusCode, rb.statusCode].sort(), [200, 409], `a=${ra.body} b=${rb.body}`)
+
+  const { rows } = await db.query(
+    `SELECT id FROM agent_tokens WHERE device_id = $1 AND revoked_at IS NULL`, [device.id]
+  )
+  assert.equal(rows.length, 1, 'un seul token rattaché au poste')
+  assert.equal(rows[0].id, ra.statusCode === 200 ? a.id : b.id)
+})
+
+test('POST /checkin — rattachement d\'un token non lié : révoque les autres tokens jamais utilisés du poste (sauf rotation)', { skip: SKIP }, async () => {
+  const device = await seedDeviceWithSerial(db, 'PC-UNBOUND-CLEANUP', 'SN-UNBOUND-CLEANUP')
+  const orphan = await seedAgentToken(db, { deviceId: device.id, label: 'auto-orphan', createdBy: 'bootstrap:x' })
+  const bulk = await seedAgentToken(db, { deviceId: device.id, label: 'intune-bulk', createdBy: null })
+  const rot = await seedAgentToken(db, {
+    deviceId: device.id, label: 'rot-expired', createdBy: 'agent-rotation',
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+  })
+  const t = await seedAgentToken(db, { label: 'unbound-cleanup' })
+
+  const res = await checkinWith(t.secret, { hostname: 'PC-UNBOUND-CLEANUP', serial: 'SN-UNBOUND-CLEANUP' })
+  assert.equal(res.statusCode, 200, `body: ${res.body}`)
+  assert.equal(await tokenDevice(t.id), device.id)
+
+  const { rows } = await db.query(
+    `SELECT id, revoked_at FROM agent_tokens WHERE id = ANY($1::uuid[])`,
+    [[orphan.id, bulk.id, rot.id, t.id]]
+  )
+  const revoked = Object.fromEntries(rows.map(r => [r.id, r.revoked_at]))
+  assert.ok(revoked[orphan.id], 'orphelin révoqué')
+  assert.ok(revoked[bulk.id], 'token bulk jamais utilisé révoqué')
+  assert.equal(revoked[rot.id], null, 'token de rotation conservé')
+  assert.equal(revoked[t.id], null, 'le token rattaché reste valide')
+
+  // L'ancien token orphelin ne fonctionne plus.
+  const old = await checkinWith(orphan.secret, { hostname: 'PC-UNBOUND-CLEANUP', serial: 'SN-UNBOUND-CLEANUP' })
+  assert.equal(old.statusCode, 401)
+})
+
 // ─── POST /rotate-token ────────────────────────────────────────────────────
 
 test('POST /rotate-token — sans Bearer → 401', { skip: SKIP }, async () => {
