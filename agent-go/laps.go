@@ -29,10 +29,30 @@ const passwordCharset = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ234567
 
 // generateAdminPassword — produit un password cryptographique aléatoire
 // de la longueur demandée. Refus < 16 chars.
+//
+// Contient toujours au moins une minuscule, une majuscule et un chiffre
+// (tirage rejeté sinon, ce qui garde la distribution uniforme sur les
+// mots de passe acceptés) : la stratégie de complexité Windows (3
+// catégories sur 4) ne doit jamais faire échouer l'application locale,
+// qui a lieu APRÈS l'escrow.
 func generateAdminPassword(length int) (string, error) {
 	if length < 16 {
 		length = 16
 	}
+	for {
+		pw, err := randomPassword(length)
+		if err != nil {
+			return "", err
+		}
+		if strings.ContainsAny(pw, "abcdefghijkmnopqrstuvwxyz") &&
+			strings.ContainsAny(pw, "ABCDEFGHJKLMNPQRSTUVWXYZ") &&
+			strings.ContainsAny(pw, "23456789") {
+			return pw, nil
+		}
+	}
+}
+
+func randomPassword(length int) (string, error) {
 	out := make([]byte, length)
 	for i := range out {
 		// rejection sampling pour éviter le biais modulo
