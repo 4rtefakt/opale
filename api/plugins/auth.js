@@ -2,11 +2,34 @@ import crypto from 'crypto'
 import fp from 'fastify-plugin'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
 
+const JWKS_CACHE_MS = 10 * 60 * 1000
+
 // Entra signe ses JWT en RS256. Ses clés publiées (JWKS) ne portent pas de
 // champ `alg` : sans liste d'algorithmes, jose accepterait aussi une
 // signature PS256 faite avec la même clé RSA. On épingle l'algorithme
 // attendu (défense en profondeur contre la confusion d'algorithmes).
 export const JWT_ALGORITHMS = ['RS256']
+
+// Retourne la fonction qui fournit le JWKS à jwtVerify. En test, `jwks`
+// (createLocalJWKSet) évite le fetch HTTPS. En prod, le JWKS distant
+// Microsoft est construit UNE seule fois : jose gère lui-même le cache
+// (cacheMaxAge), le rafraîchissement quand une clé tourne (kid inconnu) et
+// le cooldown anti-martèlement. Le reconstruire périodiquement jetait cet
+// état interne et forçait un téléchargement à froid à chaque cycle.
+export function makeJwksGetter({
+  jwks = null,
+  createRemote = () => createRemoteJWKSet(
+    new URL('https://login.microsoftonline.com/common/discovery/v2.0/keys'),
+    { cacheMaxAge: JWKS_CACHE_MS }
+  ),
+} = {}) {
+  let remote = null
+  return function getJWKS() {
+    if (jwks) return jwks
+    if (!remote) remote = createRemote()
+    return remote
+  }
+}
 
 async function authPlugin(fastify, opts = {}) {
   // Sans ENTRA_CLIENT_ID, verifyToken passerait `audience: undefined` à
@@ -16,25 +39,10 @@ async function authPlugin(fastify, opts = {}) {
   // plutôt que de dégrader l'authentification en silence.
   assertEntraConfig()
 
-  // En prod opts.jwks est undefined → on construit un createRemoteJWKSet
-  // qui hit login.microsoftonline.com (comportement historique inchangé).
+  // En prod opts.jwks est undefined → JWKS distant login.microsoftonline.com.
   // En test on passe createLocalJWKSet pour éviter le fetch HTTPS et
   // valider la chaîne signature + iss + aud sur une keypair locale.
-  let jwks = opts.jwks || null
-  let jwksCachedAt = 0
-  const CACHE_MS = 10 * 60 * 1000
-
-  function getJWKS() {
-    if (opts.jwks) return opts.jwks
-    if (!jwks || Date.now() - jwksCachedAt > CACHE_MS) {
-      jwks = createRemoteJWKSet(
-        new URL('https://login.microsoftonline.com/common/discovery/v2.0/keys'),
-        { cacheMaxAge: CACHE_MS }
-      )
-      jwksCachedAt = Date.now()
-    }
-    return jwks
-  }
+  const getJWKS = makeJwksGetter({ jwks: opts.jwks || null })
 
   async function verifyToken(token) {
     assertEntraConfig()

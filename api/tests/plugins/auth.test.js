@@ -19,7 +19,7 @@ import Fastify from 'fastify'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
-import authPlugin from '../../plugins/auth.js'
+import authPlugin, { makeJwksGetter } from '../../plugins/auth.js'
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from 'jose'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip auth suite'
@@ -434,4 +434,26 @@ test('authenticate — JWT signé en PS256 avec la clé RSA (JWK Entra sans alg)
   } finally {
     await app.close()
   }
+})
+
+test('makeJwksGetter — JWKS distant construit une seule fois, pas de reconstruction périodique', (t) => {
+  t.mock.timers.enable({ apis: ['Date'] })
+  let created = 0
+  const getJWKS = makeJwksGetter({ createRemote: () => ({ instance: ++created }) })
+  const first = getJWKS()
+  t.mock.timers.tick(11 * 60 * 1000)   // au-delà de l'ancien cycle de 10 min
+  const second = getJWKS()
+  t.mock.timers.tick(24 * 60 * 60 * 1000)
+  const third = getJWKS()
+  assert.equal(created, 1, 'createRemoteJWKSet appelé une seule fois')
+  assert.equal(second, first)
+  assert.equal(third, first)
+})
+
+test('makeJwksGetter — JWKS local fourni (tests) → utilisé tel quel, pas de JWKS distant', () => {
+  let created = 0
+  const local = () => {}
+  const getJWKS = makeJwksGetter({ jwks: local, createRemote: () => { created++; return null } })
+  assert.equal(getJWKS(), local)
+  assert.equal(created, 0)
 })
