@@ -59,6 +59,20 @@ async function dbPlugin(fastify, opts = {}) {
       'db: connexion inactive du pool en erreur (écartée du pool)')
   })
 
+  // Même risque pour un client EMPRUNTÉ (pool.connect() : transactions du
+  // checkin, des tickets, du pont mail…) : pg-pool retire son listener à
+  // l'emprunt, et un backend tué pendant la transaction (redémarrage
+  // Postgres, pg_terminate_backend, coupure réseau) émettait un 'error' non
+  // géré qui arrêtait l'API. Listener posé sur chaque nouvelle connexion :
+  // la requête en cours échoue normalement (500 pour la route) et le client
+  // cassé est écarté au release().
+  pool.on('connect', (client) => {
+    client.on('error', (err) => {
+      fastify.log.warn({ err: err.message, code: err.code },
+        'db: connexion en erreur (écartée du pool)')
+    })
+  })
+
   try {
     await pool.query('SELECT 1')
     fastify.log.info('Base de données connectée')

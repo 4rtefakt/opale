@@ -8,6 +8,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import Fastify from 'fastify'
 import pg from 'pg'
 
@@ -145,4 +147,13 @@ test('valeur de timeout invalide : refus de démarrer', async (t) => {
     (async () => { await app.register(dbPlugin, { env: { DB_STATEMENT_TIMEOUT_MS: '30s' } }); await app.ready() })(),
     /DB_STATEMENT_TIMEOUT_MS invalide/
   )
+})
+
+test('client emprunté (pool.connect) dont le backend est tué en pleine transaction : le process survit', { skip: SKIP, timeout: 20000 }, () => {
+  // Sans listener 'error' sur le client emprunté, Node arrête le process
+  // (« Unhandled 'error' event ») : on l'exécute dans un processus enfant.
+  const child = path.join(path.dirname(fileURLToPath(import.meta.url)), '../helpers/db-client-error-child.mjs')
+  const r = spawnSync(process.execPath, [child], { env: process.env, encoding: 'utf8', timeout: 15000 })
+  assert.equal(r.status, 0, `exit ${r.status}\n${r.stderr}`)
+  assert.match(r.stdout, /SURVIVED 1/)
 })
