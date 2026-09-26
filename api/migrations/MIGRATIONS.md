@@ -32,15 +32,17 @@
   `api/tests/lib/migrations-replay.test.js` et
   `api/tests/lib/migrations.test.js`).
 - **Premier démarrage sur la prod** : le répéter d'abord sur une copie
-  restaurée de la base (`api/scripts/run-migrations.js`, sans démarrer
-  l'API), et comparer `settings`, `automation_costs` et les scripts
+  restaurée de la base (`api/scripts/run-migrations.js --database <base>`,
+  sans démarrer l'API ; il affiche sa cible et refuse si `--database` ne
+  correspond pas à la base résolue — `DATABASE_URL` / `PGURL` sont
+  prioritaires sur `POSTGRES_*`), et comparer `settings`, `automation_costs` et les scripts
   intégrés : les seeds `INSERT … ON CONFLICT DO NOTHING` recréent une ligne
   supprimée à la main (ou jamais appliquée) — `tickets.assistant.enabled` et
   `ask.enabled` valent `'true'` par défaut. Procédure complète, pré-vol et
   échappatoire en cas de boucle de redémarrage : `INSTALL.md` §9.
 - **Désactiver** : `DB_AUTO_MIGRATE=false` dans `.env`. Les migrations
-  s'appliquent alors à la main (`node scripts/run-migrations.js`, même
-  runner, ou `psql` comme avant — cf. `INSTALL.md`) ; au démarrage, la
+  s'appliquent alors à la main (`node scripts/run-migrations.js --database
+  <base>`, même runner, ou `psql` comme avant — cf. `INSTALL.md`) ; au démarrage, la
   table `schema_migrations` n'est ni créée ni lue.
 - **`001_init.sql`** est aussi monté sur `/docker-entrypoint-initdb.d/` du
   container PostgreSQL (`docker-compose*.yml`) : joué par Postgres à la

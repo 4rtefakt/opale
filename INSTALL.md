@@ -290,8 +290,10 @@ git pull
 **Applying a new migration** — nothing to do: new files in
 `api/migrations/` are applied when the updated API starts (see §5). With
 `DB_AUTO_MIGRATE=false`, apply them with
-`docker compose -f docker-compose.example.yml exec api node scripts/run-migrations.js`
-(same runner, records them in `schema_migrations`) or by hand:
+`docker compose -f docker-compose.example.yml exec -e DATABASE_URL= -e PGURL= api sh -c 'node scripts/run-migrations.js --database "$POSTGRES_DB"'`
+(same runner, records them in `schema_migrations`; it prints its target and
+refuses to run unless `--database` matches the database it would connect
+to) or by hand:
 ```bash
 docker compose -f docker-compose.example.yml exec -T db \
   psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
@@ -309,6 +311,7 @@ data) stops the start. Rehearse first:
 
 ```bash
 DC="docker compose -f docker-compose.example.yml"   # adapt to your compose file
+set -a; . ./.env; set +a     # POSTGRES_USER / POSTGRES_DB in this shell
 
 # 1. Back up the production database.
 $DC exec -T db pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > opale-before-runner.dump
@@ -323,10 +326,17 @@ $DC exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
 #    started, so nothing is sent (mail, Graph) from the copy.
 $DC build api
 $DC exec -T db createdb -U "$POSTGRES_USER" opale_rehearsal
-$DC exec -T db pg_restore -U "$POSTGRES_USER" -d opale_rehearsal < opale-before-runner.dump
-$DC run --rm --no-deps -e POSTGRES_DB=opale_rehearsal api node scripts/run-migrations.js
-#    → exit 0 and "64 migration(s) appliquée(s)". Anything else: read the
-#      error (file, line, SQLSTATE) and fix the drift before deploying.
+$DC exec -T db pg_restore --exit-on-error -U "$POSTGRES_USER" -d opale_rehearsal < opale-before-runner.dump
+#    DATABASE_URL / PGURL (maintenance scripts) take priority over POSTGRES_* :
+#    they are emptied here, otherwise the "rehearsal" would migrate PRODUCTION.
+#    The script also refuses to run unless --database is the database it
+#    would actually connect to.
+$DC run --rm --no-deps -e DATABASE_URL= -e PGURL= -e POSTGRES_DB=opale_rehearsal \
+  api node scripts/run-migrations.js --database opale_rehearsal
+#    → FIRST check the printed line "Cible : db:5432/opale_rehearsal …"; then
+#      exit 0 and "N migration(s) appliquée(s)" (N = number of files in
+#      api/migrations). Anything else: read the error (file, line, SQLSTATE)
+#      and fix the drift before deploying.
 
 # 4. Compare the seeded tables between production (before) and the rehearsal
 #    (after). Seed migrations use INSERT … ON CONFLICT DO NOTHING: a row you
@@ -357,18 +367,20 @@ Then deploy and start the new API as usual. A warning
 `migration appliquée` line per file; it takes a few seconds and the API only
 starts listening afterwards. Close any open `psql` session first: a table lock
 held for more than 60 s makes the start fail (it is retried by Docker).
-Check: `SELECT count(*), max(filename) FROM schema_migrations;` → `64`,
-`075_strip_onboarding_temp_passwords.sql`, and `GET /api/health` → 200.
+Check: `SELECT count(*), max(filename) FROM schema_migrations;` → the number
+of files in `api/migrations/` (64 in this release) and the last one
+(`075_strip_onboarding_temp_passwords.sql` here), and `GET /api/health` → 200.
 
 **If the API crash-loops on a migration** (log
 `Migration NNN_….sql en échec …`): set `DB_AUTO_MIGRATE=false` in `.env` and
 `$DC up -d api` to restore service immediately (the checkin keeps working
 even if `071` is missing), then fix the cause, apply with
-`$DC exec api node scripts/run-migrations.js`, and remove the setting.
+`$DC exec -e DATABASE_URL= -e PGURL= api sh -c 'node scripts/run-migrations.js --database "$POSTGRES_DB"'`
+(check the printed target), and remove the setting.
 Restore the dump only if the data itself is damaged.
 
 To keep applying migrations by hand, set `DB_AUTO_MIGRATE=false` before
-deploying (and use `node scripts/run-migrations.js` or `psql`).
+deploying (and use `scripts/run-migrations.js --database <db>` as above, or `psql`).
 
 **After the upgrade** (same release, not migrations):
 - Agent scripts stuck in `running` for more than 1 hour (and SSH executions
