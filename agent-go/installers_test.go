@@ -79,6 +79,28 @@ func TestInstallers_DataDirAclAndConfigWrite(t *testing.T) {
 		if !strings.Contains(code, "[System.IO.Directory]::CreateDirectory($Path, $sec)") {
 			t.Errorf("%s : DataDir non créé directement avec l'ACL SYSTEM-only", f)
 		}
+		// CreateDirectory / New-Item -Force adoptent SANS ERREUR un dossier
+		// existant (recréé par un utilisateur qui garde un handle WRITE_DAC) :
+		// création sous un nom aléatoire voisin, vérification, puis renommage
+		// (qui échoue si le nom a été recréé).
+		if strings.Contains(code, "New-SystemOnlyDirectory $DataDir") {
+			t.Errorf("%s : DataDir créé directement sur son nom définitif (adoptable)", f)
+		}
+		iFresh := strings.Index(code, `$fresh = "$DataDir.new-" + [guid]::NewGuid().ToString('N')`)
+		iCreate := strings.Index(code, "New-SystemOnlyDirectory $fresh")
+		iCheck := strings.Index(code, "if (-not (Test-TrustedItem $fresh))")
+		iMove := strings.Index(code, "[System.IO.Directory]::Move($fresh, $DataDir)")
+		if iFresh < 0 || !(iFresh < iCreate && iCreate < iCheck && iCheck < iMove) {
+			t.Errorf("%s : séquence nom aléatoire → création → vérification → renommage absente (%d %d %d %d)", f, iFresh, iCreate, iCheck, iMove)
+		}
+		fn := code[strings.Index(code, "function New-SystemOnlyDirectory"):]
+		fn = fn[:strings.Index(fn, "\n}\n")]
+		if regexp.MustCompile(`New-Item[^\n]*-Force`).MatchString(fn) {
+			t.Errorf("%s : repli New-Item -Force (adopterait un dossier existant)", f)
+		}
+		if !regexp.MustCompile(`(?s)Initialize-DataDir\s*\}\s*catch\s*\{.{0,400}?exit 8`).MatchString(code) {
+			t.Errorf("%s : échec du DataDir sans code de sortie 8", f)
+		}
 		if !regexp.MustCompile(`Set-SystemOnlyAcl \$DataDir \$true\s+if \(-not \(Test-DataDirTrusted\)\) \{\s+throw`).MatchString(code) {
 			t.Errorf("%s : DataDir non revérifié après création", f)
 		}

@@ -121,11 +121,14 @@ function Test-DataDirTrusted {
     }
 }
 
-# Création avec l'ACL SYSTEM-only dès l'origine : pas de fenêtre où le
-# dossier hérite de l'ACL de %ProgramData% (qui laisse les utilisateurs y
-# créer des fichiers). Repli New-Item si l'API .NET Framework manque
-# (PowerShell 7) ; Initialize-DataDir revérifie ensuite le dossier.
+# Création avec l'ACL SYSTEM-only dès l'origine (pas de fenêtre où le
+# dossier hérite de l'ACL de %ProgramData%). $Path doit être un nom
+# imprévisible : CreateDirectory (comme New-Item -Force) renvoie SANS
+# ERREUR un dossier déjà existant, sans lui appliquer l'ACL. Repli
+# New-Item SANS -Force (échoue si le nom existe) si l'API .NET Framework
+# manque (PowerShell 7).
 function New-SystemOnlyDirectory([string]$Path) {
+    $sec = $null
     try {
         $sec = New-Object System.Security.AccessControl.DirectorySecurity
         $sec.SetAccessRuleProtection($true, $false)
@@ -133,18 +136,33 @@ function New-SystemOnlyDirectory([string]$Path) {
             $systemSid, 'FullControl', @('ContainerInherit','ObjectInherit'), 'None', 'Allow')))
         $sec.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
             $adminSid, 'FullControl', @('ContainerInherit','ObjectInherit'), 'None', 'Allow')))
-        [void][System.IO.Directory]::CreateDirectory($Path, $sec)
     } catch {
-        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        $sec = $null
     }
+    if ($null -ne $sec) {
+        try {
+            [void][System.IO.Directory]::CreateDirectory($Path, $sec)
+            return
+        } catch [System.Management.Automation.MethodException] {
+            # Surcharge absente (.NET Core) ou échec : repli New-Item
+            # sans -Force ci-dessous (vérifié ensuite par Initialize-DataDir).
+        }
+    }
+    New-Item -ItemType Directory -Path $Path | Out-Null
 }
 
 # Un utilisateur standard peut créer un sous-dossier de %ProgramData% (il
-# en devient propriétaire, donc peut toujours en réécrire l'ACL) ou y
-# déposer fichiers, liens et jonctions avant l'installation. Un dossier
-# qui n'est pas de confiance est écarté par un simple renommage (jamais
-# Remove-Item -Recurse, qui suit les jonctions sous Windows PowerShell 5.1)
-# puis recréé ; le résultat est revérifié (course pendant la création).
+# en devient propriétaire, donc peut toujours en réécrire l'ACL, y compris
+# via un handle WRITE_DAC ouvert avant qu'on ne change le propriétaire) ou
+# y déposer fichiers, liens et jonctions. Règle : ne jamais adopter un
+# chemin qu'un autre compte a pu créer.
+#   - dossier existant de confiance (réinstallation, mise à jour) : gardé ;
+#   - sinon il est écarté par un simple renommage (jamais Remove-Item
+#     -Recurse, qui suit les jonctions sous Windows PowerShell 5.1) ;
+#   - le nouveau dossier est créé sous un nom aléatoire voisin, avec l'ACL
+#     SYSTEM-only, vérifié vide et de confiance, puis renommé en $DataDir :
+#     le renommage échoue si le nom a été recréé entre-temps (installation
+#     interrompue, code 8).
 function Initialize-DataDir {
     if (($null -ne (Get-EntryAttributes $DataDir)) -and -not (Test-DataDirTrusted)) {
         $aside = "$DataDir.untrusted-" + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -152,7 +170,17 @@ function Initialize-DataDir {
         Log "WARN: $DataDir not trusted (owner, ACL or links): moved aside to $aside"
     }
     if ($null -eq (Get-EntryAttributes $DataDir)) {
-        New-SystemOnlyDirectory $DataDir
+        $fresh = "$DataDir.new-" + [guid]::NewGuid().ToString('N')
+        New-SystemOnlyDirectory $fresh
+        try {
+            Set-SystemOnlyAcl $fresh $true
+            if (-not (Test-TrustedItem $fresh)) { throw "$fresh : ACL ou propriétaire inattendu" }
+            if (@(Get-ChildItem -LiteralPath $fresh -Force).Count -ne 0) { throw "$fresh : dossier neuf non vide" }
+            [System.IO.Directory]::Move($fresh, $DataDir)
+        } catch {
+            Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+            throw "création de $DataDir impossible (nom recréé entre-temps ?) : $_"
+        }
     }
     Set-SystemOnlyAcl $DataDir $true
     if (-not (Test-DataDirTrusted)) {
