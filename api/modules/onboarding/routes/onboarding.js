@@ -208,10 +208,12 @@ export default async function onboardingRoute(fastify) {
 }
 
 // Copie du résultat d'automatisation sans le mot de passe temporaire, pour
-// persistance dans onboarding_checks.auto_result.
+// persistance dans onboarding_checks.auto_result. passwordProfile aussi
+// (défense en profondeur) : Graph ne le renvoie pas aujourd'hui, mais s'il
+// le faisait il contiendrait le même mot de passe.
 function withoutSecrets(result) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result
-  const { temporaryPassword: _, ...rest } = result
+  const { temporaryPassword: _, passwordProfile: __, ...rest } = result
   return rest
 }
 

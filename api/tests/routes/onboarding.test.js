@@ -624,3 +624,31 @@ test('POST auto — automatisation en échec : toujours 500 avec auto_error (inc
   assert.equal(res.json().check.auto_error, 'Email requis pour créer le compte')
   assert.equal(res.json().warning, undefined)
 })
+
+test('POST auto create_account — passwordProfile renvoyé par Graph jamais stocké dans auto_result', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-ob-auto-pwdprofile')
+  const created = (await createOnboarding(token, {
+    person_name: 'Password Profile', email: 'password.profile@contoso.fr',
+  })).json()
+  const { rows: [check] } = await db.query(
+    `SELECT id FROM onboarding_checks WHERE onboarding_id = $1 AND step_id = 'create_account'`, [created.id]
+  )
+  const mock = mockGraphCreateUser({
+    id: '708192a3-0000-4000-8000-0000000000ff',
+    userPrincipalName: 'password.profile@contoso.fr',
+    passwordProfile: { password: 'EchoGraph#2026', forceChangePasswordNextSignIn: true },
+  })
+  let res
+  try {
+    res = await fastify.inject({
+      method: 'POST', url: `/api/onboarding/${created.id}/checks/${check.id}/auto`,
+      headers: { authorization: `Bearer ${token}` },
+    })
+  } finally {
+    mock.restore()
+  }
+  assert.equal(res.statusCode, 200)
+  const { rows: [chk] } = await db.query('SELECT auto_result FROM onboarding_checks WHERE id = $1', [check.id])
+  assert.ok(!chk.auto_result.includes('EchoGraph'), 'auto_result sans passwordProfile')
+  assert.ok(!chk.auto_result.includes('passwordProfile'))
+})
