@@ -4,7 +4,9 @@
 //   1. Pour chaque mailbox configurée :
 //      a. lit les messages reçus depuis le curseur (pages suivies, bornées)
 //      b. pour chaque message → processOne() : ingest + classify + action
-//      c. avance le curseur au receivedDateTime du dernier mail parcouru
+//      c. avance le curseur au receivedDateTime du dernier mail parcouru —
+//         jamais au-delà d'un mail en échec, retenté au tick suivant puis
+//         abandonné après MAX_INGEST_ATTEMPTS échecs (cf. poll-cursor.js)
 //
 // Curseur : par mailbox, setting `mail.cursor.<address>` (+ état
 // `mail.cursor_state.<address>`, cf. poll-cursor.js). Bootstrap = now()
@@ -73,6 +75,7 @@ export async function pollOnce(db, log, injection = {}) {
     actions: { message_appended: 0, proposal_created: 0, proposal_created_no_match: 0,
                skipped_other: 0, skipped_error: 0, already_ingested: 0 },
     errors: 0,
+    abandoned: 0,   // mails abandonnés après MAX_INGEST_ATTEMPTS échecs
   }
 
   for (const mailbox of mailboxes) {
@@ -116,10 +119,14 @@ export async function pollOnce(db, log, injection = {}) {
             intent: out.intent,
           }, 'email-bridge: mail traité')
         }
+        // Transaction annulée : rien d'écrit → retenté (curseur non avancé).
+        // Les autres 'skipped_error' sont définitifs (mail inexploitable).
+        if (out?.retryable) return { retry: true, error: out.error }
       } catch (err) {
         stats.errors++
         log?.warn({ err: err.message, mailbox, internetMessageId: m.internetMessageId },
           'email-bridge: processOne a planté')
+        return { retry: true, error: err.message }
       }
     }
 
@@ -129,6 +136,7 @@ export async function pollOnce(db, log, injection = {}) {
       updatedBy: 'email-bridge-worker', tag: 'email-bridge',
     })
     stats.errors += res.errors
+    stats.abandoned += res.abandoned
   }
 
   return stats

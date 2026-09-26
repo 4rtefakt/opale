@@ -138,9 +138,12 @@ async function appendReplyToProposal(client, { proposalId, graphMessage, sender,
 // mapping, retourne immédiatement {skipped: 'already-ingested'} sans rien
 // modifier.
 //
-// Retour : {action, ticket_id?, proposal_id?, intent?, error?}
+// Retour : {action, ticket_id?, proposal_id?, intent?, error?, retryable?}
 //   action : 'message_appended' | 'reply_appended_to_proposal' |
 //            'pending_review' | 'already_ingested' | 'skipped_error'
+//   retryable : true si la transaction a échoué (rien d'écrit, à retenter) ;
+//            absent pour un 'skipped_error' définitif (mail sans
+//            internetMessageId, proposal disparue — mapping déjà écrit).
 export async function processOne(db, log, { graphMessage, mailbox, classifierFn }) {
   const internetMessageId = graphMessage.internetMessageId
   if (!internetMessageId) {
@@ -287,7 +290,9 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn 
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     log?.warn({ err: err.message, mailbox, internetMessageId }, 'email-bridge: tx process échouée')
-    return { action: 'skipped_error', error: err.message }
+    // Rien n'a été écrit (rollback) : `retryable` → le worker n'avance pas
+    // son curseur au-delà de ce mail et le retente au tick suivant.
+    return { action: 'skipped_error', error: err.message, retryable: true }
   } finally {
     client.release()
   }

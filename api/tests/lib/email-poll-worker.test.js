@@ -9,6 +9,14 @@
 //   - pagination bornée par tick : reprise au tick suivant
 //   - horodatages égaux à la coupure de page / mail visible plus tard au
 //     même horodatage que le curseur → pas sautés (filtre `ge` + ids traités)
+//   - transaction en échec sur un mail → curseur arrêté avant lui, retenté
+//     au tick suivant sans retraiter les mails déjà ingérés
+//   - mail « poison » → abandonné (log + audit) après MAX_INGEST_ATTEMPTS
+//     échecs, la boîte n'est pas bloquée indéfiniment
+//
+// Les échecs de transaction sont provoqués par un trigger de test sur
+// email_thread_mapping (INSERT refusé pour les internet_message_id listés
+// dans test_failing_mail) : même chemin que prod (ROLLBACK dans processOne).
 
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -17,6 +25,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { installFakeGraph, graphTime, fakeMail } from '../helpers/fake-graph-mail.js'
 import { pollOnce } from '../../modules/email-bridge/lib/poll-worker.js'
 import { _resetSystemFolderCache } from '../../modules/email-bridge/lib/graph-mail.js'
+import { MAX_INGEST_ATTEMPTS } from '../../modules/email-bridge/lib/poll-cursor.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip poll-worker suite'
 
@@ -33,6 +42,21 @@ before(async () => {
   db = acquired.db; release = acquired.release
   await db.query(`UPDATE settings SET value = 'true' WHERE key = 'mail.poll_enabled'`)
   await db.query(`UPDATE settings SET value = $1 WHERE key = 'mail.inboxes'`, [MAILBOX])
+
+  await db.query(`CREATE TABLE test_failing_mail (internet_message_id TEXT PRIMARY KEY)`)
+  await db.query(`
+    CREATE FUNCTION test_fail_mapping_insert() RETURNS trigger AS $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM test_failing_mail WHERE internet_message_id = NEW.internet_message_id) THEN
+        RAISE EXCEPTION 'échec simulé pour %', NEW.internet_message_id;
+      END IF;
+      RETURN NEW;
+    END $$ LANGUAGE plpgsql
+  `)
+  await db.query(`
+    CREATE TRIGGER test_fail_mapping_insert BEFORE INSERT ON email_thread_mapping
+    FOR EACH ROW EXECUTE FUNCTION test_fail_mapping_insert()
+  `)
 })
 
 after(async () => {
@@ -44,6 +68,8 @@ beforeEach(async () => {
   if (SKIP) return
   _resetSystemFolderCache()
   await db.query(`TRUNCATE TABLE email_thread_mapping CASCADE`)
+  await db.query(`TRUNCATE TABLE test_failing_mail`)
+  await db.query(`DELETE FROM audit_logs WHERE action = 'mail_ingest_abandoned'`)
   await db.query(`DELETE FROM settings WHERE key LIKE 'mail.cursor%'`)
   await db.query(
     `INSERT INTO settings (key, value) VALUES ($1, $2)`,
@@ -69,6 +95,17 @@ async function cursorMs() {
 }
 
 const ids = mails => mails.map(m => m.internetMessageId)
+
+async function failMappingInsertFor(mail) {
+  await db.query(`INSERT INTO test_failing_mail VALUES ($1)`, [mail.internetMessageId])
+}
+
+async function abandonedAudits() {
+  const { rows } = await db.query(
+    `SELECT by_user, target, details FROM audit_logs WHERE action = 'mail_ingest_abandoned'`
+  )
+  return rows
+}
 
 test('pollOnce : page 1 entièrement exclue + nextLink → mail de la page 2 ingéré, curseur avancé',
   { skip: SKIP }, async () => {
@@ -151,6 +188,69 @@ test('pollOnce : mail visible plus tard au même horodatage que le curseur → i
       assert.deepEqual((await ingestedIds()).sort(), ids([first, late]).sort())
       assert.equal(stats.actions.already_ingested, 0,
         'le mail déjà traité au même horodatage est écarté sans être retraité')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollOnce : transaction en échec sur un mail → curseur arrêté avant lui, retenté au tick suivant sans doublon',
+  { skip: SKIP }, async () => {
+    const a = fakeMail({ receivedDateTime: at(1) })
+    const b = fakeMail({ receivedDateTime: at(2) })
+    const c = fakeMail({ receivedDateTime: at(3) })
+    useGraph({ inbox: [a, b, c] })
+    await failMappingInsertFor(b)
+    try {
+      const first = await pollOnce(db, null)
+      assert.equal(first.actions.skipped_error, 1, 'processOne a bien échoué sur b (ROLLBACK)')
+      assert.ok(!(await ingestedIds()).includes(b.internetMessageId))
+      assert.equal(await cursorMs(), Date.parse(at(1)), 'curseur arrêté juste avant le mail en échec')
+
+      // La cause de l'échec disparaît : b est retenté, a n'est pas retraité.
+      await db.query(`TRUNCATE TABLE test_failing_mail`)
+      const second = await pollOnce(db, null)
+      assert.deepEqual(await ingestedIds(), ids([a, b, c]))
+      assert.equal(second.actions.already_ingested, 0, 'les mails déjà ingérés ne sont pas rejoués')
+      assert.equal(await cursorMs(), Date.parse(at(3)))
+      assert.equal((await abandonedAudits()).length, 0)
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollOnce : mail « poison » → abandonné (audit) après MAX_INGEST_ATTEMPTS échecs, la boîte repart',
+  { skip: SKIP }, async () => {
+    const poison = fakeMail({ receivedDateTime: at(1) })
+    const next = fakeMail({ receivedDateTime: at(2) })
+    useGraph({ inbox: [poison, next] })
+    await failMappingInsertFor(poison)
+    try {
+      for (let attempt = 1; attempt < MAX_INGEST_ATTEMPTS; attempt++) {
+        await pollOnce(db, null)
+        assert.equal(await cursorMs(), Date.parse(T0),
+          `tentative ${attempt} : curseur pas avancé au-delà du mail en échec`)
+        assert.ok(!(await ingestedIds()).includes(poison.internetMessageId))
+      }
+      assert.equal((await abandonedAudits()).length, 0, 'pas d\'abandon avant la dernière tentative')
+
+      const stats = await pollOnce(db, null)
+      assert.equal(stats.abandoned, 1)
+      const audits = await abandonedAudits()
+      assert.equal(audits.length, 1)
+      assert.equal(audits[0].target, MAILBOX)
+      assert.equal(audits[0].by_user, 'system')
+      assert.equal(audits[0].details.internet_message_id, poison.internetMessageId)
+      assert.equal(audits[0].details.attempts, MAX_INGEST_ATTEMPTS)
+      assert.match(audits[0].details.error, /échec simulé/)
+
+      assert.deepEqual(await ingestedIds(), ids([next]), 'la boîte n\'est plus bloquée')
+      assert.equal(await cursorMs(), Date.parse(at(2)))
+
+      // Abandon définitif : plus retenté ensuite.
+      await pollOnce(db, null)
+      assert.equal((await abandonedAudits()).length, 1)
     } finally {
       graph.restore()
     }
