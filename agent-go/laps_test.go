@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/4rtefakt/opale/agent-go/branding"
 )
 
 // --- Fakes ------------------------------------------------------------------
@@ -24,6 +26,9 @@ type lapsFake struct {
 	escrowErr []error  // erreurs à renvoyer, consommées dans l'ordre (nil = OK)
 	applyRes  lapsApplyResult
 	applied   []string // "user:password"
+	modes     []string // "create" / "update:<sid>"
+	account   lapsAccount
+	lookupErr error
 	saveErr   error
 	saves     []State // copie du state à chaque save
 	st        *State
@@ -38,9 +43,19 @@ func (f *lapsFake) record(c string) {
 	f.mu.Unlock()
 }
 
-func (f *lapsFake) apply(username, password string) lapsApplyResult {
+func (f *lapsFake) lookup(username string) (lapsAccount, error) {
+	f.record("lookup")
+	return f.account, f.lookupErr
+}
+
+func (f *lapsFake) apply(username, password string, acct lapsAccount) lapsApplyResult {
 	f.record("apply")
 	f.applied = append(f.applied, username+":"+password)
+	if acct.Exists {
+		f.modes = append(f.modes, "update:"+acct.SID)
+	} else {
+		f.modes = append(f.modes, "create")
+	}
 	return f.applyRes
 }
 
@@ -403,6 +418,7 @@ func TestClassifyLAPSApplyExit(t *testing.T) {
 	}{
 		{false, false, -1, lapsSetUnchanged},
 		{true, false, 0, lapsSetOK},
+		{true, false, 10, lapsSetUnchanged},
 		{true, false, 11, lapsSetUnchanged},
 		{true, false, 12, lapsSetChangedPartial},
 		{true, false, 1, lapsSetUncertain},
@@ -468,5 +484,131 @@ func TestMaybeRotateAdminPassword_ResendsLegacyStash(t *testing.T) {
 	}
 	if st.PendingAdminCred != nil {
 		t.Fatalf("stash non effacé : %+v", st.PendingAdminCred)
+	}
+}
+
+// --- Règle « compte créé par l'agent » -----------------------------------------
+
+func TestCheckLAPSAccountManageable(t *testing.T) {
+	marker := branding.LAPSAccountDescription
+	const sidUser = "S-1-5-21-111-222-333-1001"
+	cases := []struct {
+		name    string
+		user    string
+		acct    lapsAccount
+		managed []string
+		ok      bool
+	}{
+		{"absent → création", "opale-recovery", lapsAccount{}, nil, true},
+		{"nom sensible", "Administrator", lapsAccount{}, nil, false},
+		{"RID 500 renommé, même avec la description", "opale-recovery", lapsAccount{Exists: true, SID: "S-1-5-21-111-222-333-500", Description: marker}, nil, false},
+		{"Invité RID 501", "opale-recovery", lapsAccount{Exists: true, SID: "S-1-5-21-111-222-333-501", Description: marker}, nil, false},
+		{"WDAGUtilityAccount RID 504", "opale-recovery", lapsAccount{Exists: true, SID: "S-1-5-21-111-222-333-504"}, []string{"S-1-5-21-111-222-333-504"}, false},
+		{"compte utilisateur existant", "jdupont", lapsAccount{Exists: true, SID: sidUser, Description: "Jean Dupont"}, nil, false},
+		{"compte existant sans description", "opale-recovery", lapsAccount{Exists: true, SID: sidUser}, nil, false},
+		{"créé par agent ≤ 2.14 (description)", "opale-recovery", lapsAccount{Exists: true, SID: sidUser, Description: marker}, nil, true},
+		{"SID enregistré (description modifiée)", "opale-recovery", lapsAccount{Exists: true, SID: sidUser, Description: "autre"}, []string{sidUser}, true},
+		{"SID hors domaine local", "opale-recovery", lapsAccount{Exists: true, SID: "S-1-5-18", Description: marker}, nil, false},
+		{"SID illisible", "opale-recovery", lapsAccount{Exists: true, SID: "garbage", Description: marker}, nil, false},
+	}
+	for _, c := range cases {
+		err := checkLAPSAccountManageable(c.user, c.acct, c.managed)
+		if (err == nil) != c.ok {
+			t.Errorf("%s : err=%v, attendu ok=%v", c.name, err, c.ok)
+		}
+	}
+}
+
+// Le serveur pointe la LAPS sur un compte existant que l'agent n'a pas
+// créé : ni escrow (qui écraserait le bon mot de passe), ni application.
+func TestLAPS_RefusesUnmanagedExistingAccount(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.username = "jdupont"
+	f.account = lapsAccount{Exists: true, SID: "S-1-5-21-1-2-3-1105", Description: "Jean Dupont"}
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 0 || len(f.applied) != 0 {
+		t.Fatalf("aucun escrow/apply attendu : escrows=%v applied=%v", f.escrowed, f.applied)
+	}
+	if st.LAPSRetryAfter.IsZero() {
+		t.Fatal("backoff attendu")
+	}
+}
+
+func TestLAPS_RefusesBuiltinAdministrator(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.account = lapsAccount{Exists: true, SID: "S-1-5-21-1-2-3-500", Description: branding.LAPSAccountDescription}
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 0 || len(f.applied) != 0 {
+		t.Fatalf("RID 500 ne doit jamais être géré : escrows=%v applied=%v", f.escrowed, f.applied)
+	}
+}
+
+func TestLAPS_LookupFailure_NoEscrow(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.lookupErr = errors.New("PowerShell absent")
+	f.rotator().run(context.Background(), st)
+	if len(f.escrowed) != 0 {
+		t.Fatalf("aucun escrow sans lookup : %v", f.escrowed)
+	}
+}
+
+// Compatibilité flotte : compte créé par un agent ≤ 2.14 (description
+// branding) → adopté, mis à jour en mode "update" sur son SID, SID mémorisé.
+func TestLAPS_AdoptsLegacyAccountByDescription(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.account = lapsAccount{Exists: true, SID: "S-1-5-21-1-2-3-1001", Description: branding.LAPSAccountDescription}
+	f.applyRes = lapsApplyResult{Outcome: lapsSetOK, SID: "S-1-5-21-1-2-3-1001"}
+	f.rotator().run(context.Background(), st)
+	if len(f.modes) != 1 || f.modes[0] != "update:S-1-5-21-1-2-3-1001" {
+		t.Fatalf("mode attendu update sur le SID vérifié, reçu %v", f.modes)
+	}
+	if len(st.LAPSManagedSIDs) != 1 || st.LAPSManagedSIDs[0] != "S-1-5-21-1-2-3-1001" {
+		t.Fatalf("SID non mémorisé : %v", st.LAPSManagedSIDs)
+	}
+}
+
+func TestLAPS_CreatesMissingAccountAndRecordsSID(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	f.applyRes = lapsApplyResult{Outcome: lapsSetOK, SID: "S-1-5-21-1-2-3-1007"}
+	f.rotator().run(context.Background(), st)
+	if len(f.modes) != 1 || f.modes[0] != "create" {
+		t.Fatalf("mode create attendu, reçu %v", f.modes)
+	}
+	if len(st.LAPSManagedSIDs) != 1 || st.LAPSManagedSIDs[0] != "S-1-5-21-1-2-3-1007" {
+		t.Fatalf("SID non mémorisé : %v", st.LAPSManagedSIDs)
+	}
+	// Rotation suivante : compte existant, description effacée par un
+	// admin, mais SID mémorisé → toujours géré.
+	st.LastAdminRotation = f.now.Add(-LAPSRotationInterval)
+	f.account = lapsAccount{Exists: true, SID: "S-1-5-21-1-2-3-1007", Description: ""}
+	f.rotator().run(context.Background(), st)
+	if len(f.modes) != 2 || f.modes[1] != "update:S-1-5-21-1-2-3-1007" {
+		t.Fatalf("2e rotation attendue en update, reçu %v", f.modes)
+	}
+	if len(st.LAPSManagedSIDs) != 1 {
+		t.Fatalf("SID dupliqué : %v", st.LAPSManagedSIDs)
+	}
+}
+
+func TestParseLAPSLookup(t *testing.T) {
+	if a, err := parseLAPSLookup("", lapsExitNotFound); err != nil || a.Exists {
+		t.Fatalf("absent : %+v %v", a, err)
+	}
+	desc := "Compte de récupération Opale"
+	out := "SID=S-1-5-21-1-2-3-1001\r\nDESC64=" + base64.StdEncoding.EncodeToString([]byte(desc)) + "\r\n"
+	a, err := parseLAPSLookup(out, lapsExitOK)
+	if err != nil || !a.Exists || a.SID != "S-1-5-21-1-2-3-1001" || a.Description != desc {
+		t.Fatalf("parse : %+v %v", a, err)
+	}
+	if _, err := parseLAPSLookup("", 1); err == nil {
+		t.Fatal("exit 1 doit être une erreur (pas « compte absent »)")
+	}
+	if _, err := parseLAPSLookup("DESC64=", lapsExitOK); err == nil {
+		t.Fatal("SID manquant doit être une erreur")
 	}
 }

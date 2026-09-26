@@ -11,8 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/4rtefakt/opale/agent-go/branding"
 )
 
 // LAPSRotationInterval — fréquence de rotation du mdp admin local.
@@ -163,10 +166,21 @@ type lapsApplyResult struct {
 	Err     error
 }
 
+// lapsAccount — état d'un compte local tel que vu avant la rotation.
+type lapsAccount struct {
+	Exists      bool
+	SID         string
+	Description string
+}
+
 // lapsAccountStore — accès aux comptes locaux. Implémenté par la couche
 // Windows (PowerShell) ; remplacé par un fake dans les tests.
 type lapsAccountStore interface {
-	apply(username, password string) lapsApplyResult
+	// lookup — état du compte (Exists=false s'il n'existe pas).
+	lookup(username string) (lapsAccount, error)
+	// apply — crée le compte (acct.Exists=false) ou change le mot de passe
+	// du compte acct.SID ; refuse si l'état a changé depuis lookup.
+	apply(username, password string, acct lapsAccount) lapsApplyResult
 }
 
 // lapsRotator — dépendances injectables de la machine à états.
@@ -320,6 +334,23 @@ func (r *lapsRotator) rotate(ctx context.Context, st *State, now time.Time) {
 		return
 	}
 
+	// Étape 0 : l'agent ne gère qu'un compte qu'il a créé (cf.
+	// checkLAPSAccountManageable). Vérifié AVANT tout escrow : un compte
+	// refusé ne doit pas écraser l'escrow serveur.
+	acct, err := r.accounts.lookup(username)
+	if err != nil {
+		logError("laps-lookup-fail", err, LogFields{"user": username})
+		r.fail(st, now)
+		_ = r.save()
+		return
+	}
+	if err := checkLAPSAccountManageable(username, acct, st.LAPSManagedSIDs); err != nil {
+		logError("laps-account-refused", err, LogFields{"user": username, "sid": acct.SID})
+		r.fail(st, now)
+		_ = r.save()
+		return
+	}
+
 	password, err := r.genPassword()
 	if err != nil {
 		logError("laps-genpw-fail", err, nil)
@@ -364,7 +395,14 @@ func (r *lapsRotator) rotate(ctx context.Context, st *State, now time.Time) {
 	_ = r.save()
 
 	// Étape 5 : application locale.
-	res := r.accounts.apply(username, password)
+	res := r.accounts.apply(username, password, acct)
+	if res.Outcome == lapsSetOK || res.Outcome == lapsSetChangedPartial {
+		sid := res.SID
+		if sid == "" {
+			sid = acct.SID
+		}
+		recordLAPSManagedSID(st, sid)
+	}
 	switch res.Outcome {
 	case lapsSetOK:
 		st.CurrentAdminCred = &AdminCredRecord{Username: username, EncB64: encB64, At: now}
@@ -408,6 +446,76 @@ func checkLAPSUsernameAllowed(username string) error {
 		}
 	}
 	return nil
+}
+
+// checkLAPSAccountManageable — règle de sécurité : l'agent ne rotate
+// (et n'ajoute aux Administrateurs) qu'un compte qu'il a lui-même créé.
+// Le nom du compte vient du serveur (paramètre runtime-config) : sans cette
+// règle, un changement de ce paramètre suffirait à prendre la main sur
+// n'importe quel compte local (Administrateur intégré renommé, compte
+// d'un utilisateur…).
+//
+//   - nom sensible (administrator, admin…) : refusé ;
+//   - compte absent : autorisé, l'agent le crée (description branding) ;
+//   - compte intégré (RID < 1000 : 500 Administrateur, 501 Invité,
+//     503 DefaultAccount, 504 WDAGUtilityAccount), quel que soit son nom :
+//     refusé ;
+//   - SID enregistré dans state.json (LAPSManagedSIDs, compte créé ou
+//     adopté par l'agent ≥ 2.15) : autorisé ;
+//   - description = branding.LAPSAccountDescription : autorisé
+//     (compatibilité : compte créé par un agent ≤ 2.14, qui posait cette
+//     description à la création ; son SID est alors enregistré) ;
+//   - tout autre compte existant : refusé.
+func checkLAPSAccountManageable(username string, acct lapsAccount, managedSIDs []string) error {
+	if err := checkLAPSUsernameAllowed(username); err != nil {
+		return err
+	}
+	if !acct.Exists {
+		return nil
+	}
+	rid, ok := localAccountRID(acct.SID)
+	if !ok {
+		return fmt.Errorf("SID inattendu pour un compte local : %q", acct.SID)
+	}
+	if rid < 1000 {
+		return fmt.Errorf("compte intégré Windows (RID %d) : jamais géré par la LAPS", rid)
+	}
+	for _, s := range managedSIDs {
+		if strings.EqualFold(s, acct.SID) {
+			return nil
+		}
+	}
+	want := strings.TrimSpace(branding.LAPSAccountDescription)
+	if want != "" && strings.TrimSpace(acct.Description) == want {
+		return nil
+	}
+	return fmt.Errorf("compte existant non créé par l'agent (description %q) : refusé", acct.Description)
+}
+
+// localAccountRID — RID d'un SID de compte local (S-1-5-21-x-y-z-RID).
+func localAccountRID(sid string) (uint64, bool) {
+	if !strings.HasPrefix(strings.ToUpper(sid), "S-1-5-21-") {
+		return 0, false
+	}
+	i := strings.LastIndexByte(sid, '-')
+	rid, err := strconv.ParseUint(sid[i+1:], 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return rid, true
+}
+
+// recordLAPSManagedSID — mémorise un compte créé/adopté par l'agent.
+func recordLAPSManagedSID(st *State, sid string) {
+	if sid == "" {
+		return
+	}
+	for _, s := range st.LAPSManagedSIDs {
+		if strings.EqualFold(s, sid) {
+			return
+		}
+	}
+	st.LAPSManagedSIDs = append(st.LAPSManagedSIDs, sid)
 }
 
 // fail — arme le backoff exponentiel après un échec.

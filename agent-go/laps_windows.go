@@ -23,8 +23,24 @@ type windowsLAPSAccounts struct{}
 
 func platformLAPSAccounts() lapsAccountStore { return windowsLAPSAccounts{} }
 
-// apply crée le compte si nécessaire, le met dans le groupe Administrateurs
-// local, l'active et fixe le mot de passe (cf. lapsApplyScript).
+// lookup — SID et description du compte (cf. lapsLookupScript).
+func (windowsLAPSAccounts) lookup(username string) (lapsAccount, error) {
+	if username == "" {
+		return lapsAccount{}, errors.New("username vide")
+	}
+	stdout, stderr, exitCode, _, _, err := runLAPSPowerShell(lapsLookupScript, []string{
+		"LAPS_USER=" + username,
+	}, "")
+	acct, perr := parseLAPSLookup(stdout, exitCode)
+	if perr != nil {
+		return lapsAccount{}, fmt.Errorf("%w (err: %v, stderr: %s)", perr, err, strings.TrimSpace(stderr))
+	}
+	return acct, nil
+}
+
+// apply crée le compte (acct.Exists=false) ou change le mot de passe du
+// compte acct.SID, puis l'active et le met dans le groupe Administrateurs
+// local (cf. lapsApplyScript).
 //
 // Le password n'apparaît JAMAIS dans la ligne de commande ni dans un
 // fichier sur disque : on le passe via stdin (pipe) à PowerShell qui le
@@ -32,16 +48,22 @@ func platformLAPSAccounts() lapsAccountStore { return windowsLAPSAccounts{} }
 //  1. l'agent (cleared by GC après envoi)
 //  2. le pipe (transient)
 //  3. la mémoire de la lsass (système OS, normal)
-func (windowsLAPSAccounts) apply(username, password string) lapsApplyResult {
+func (windowsLAPSAccounts) apply(username, password string, acct lapsAccount) lapsApplyResult {
 	if username == "" || password == "" {
 		return lapsApplyResult{Outcome: lapsSetUnchanged, Err: errors.New("username/password vide")}
 	}
 	if err := checkLAPSUsernameAllowed(username); err != nil {
 		return lapsApplyResult{Outcome: lapsSetUnchanged, Err: err}
 	}
+	mode := "update"
+	if !acct.Exists {
+		mode = "create"
+	}
 	stdout, stderr, exitCode, started, timedOut, err := runLAPSPowerShell(lapsApplyScript, []string{
 		"LAPS_USER=" + username,
 		"LAPS_DESC=" + branding.LAPSAccountDescription,
+		"LAPS_MODE=" + mode,
+		"LAPS_EXPECTED_SID=" + acct.SID,
 	}, password)
 	res := lapsApplyResult{
 		Outcome: classifyLAPSApplyExit(started, exitCode, timedOut),

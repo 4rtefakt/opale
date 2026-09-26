@@ -41,6 +41,10 @@ type State struct {
 	// escrowé. Sert à réaligner le serveur si une rotation échoue après
 	// l'escrow. Jamais de mot de passe en clair sur disque.
 	CurrentAdminCred *AdminCredRecord `json:"current_admin_cred,omitempty"`
+	// LAPSManagedSIDs : comptes locaux créés (ou adoptés, cf.
+	// checkLAPSAccountManageable) par l'agent — seuls comptes existants
+	// qu'il accepte de rotater.
+	LAPSManagedSIDs []string `json:"laps_managed_sids,omitempty"`
 	// Backoff après échec de rotation LAPS.
 	LAPSFailures   int       `json:"laps_failures,omitempty"`
 	LAPSRetryAfter time.Time `json:"laps_retry_after,omitempty"`

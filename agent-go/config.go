@@ -29,7 +29,8 @@ type Config struct {
 	// surprendre l'admin après upgrade.
 	LAPSEnabled bool `json:"laps_enabled,omitempty"`
 	// LAPSUser : compte local DÉDIÉ rotaté. Ne PAS pointer sur
-	// "Administrator" ou un compte existant pour éviter tout lockout.
+	// "Administrator" ou un compte existant pour éviter tout lockout
+	// (refusé par l'agent, cf. checkLAPSAccountManageable).
 	// Créé automatiquement par l'agent à la première rotation.
 	LAPSUser string `json:"laps_user,omitempty"`
 }
