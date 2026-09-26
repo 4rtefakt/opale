@@ -29,6 +29,15 @@ console.log(`${checked} paquets vérifiés, ${bad} écart(s) avec package-lock.j
 process.exit(bad || !checked ? 1 : 0)
 JS
 
+# ─── Version de Node ────────────────────────────────────────────────────────
+# Même majeure que la CI et que `engines` (Node 20 est en fin de vie).
+echo "→ Node 22"
+major=$(docker run --rm "$image" node -p 'process.versions.node.split(".")[0]')
+if [ "$major" != 22 ]; then
+  echo "::error::l'image embarque Node $major (attendu 22)"
+  exit 1
+fi
+
 # ─── Utilisateur non-root ───────────────────────────────────────────────────
 echo "→ process non-root (node, uid 1000)"
 uid=$(docker run --rm "$image" id -u)
