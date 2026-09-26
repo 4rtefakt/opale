@@ -8,10 +8,14 @@
 //     même poste n'est pas touchée.
 //
 // App complète (plugins agent-ws + console-sessions, routes agent, console,
-// settings, devices) et vrais clients WS via injectWS (@fastify/websocket).
+// settings, devices) en écoute sur 127.0.0.1, clients `ws` sur une vraie
+// socket TCP : le close handshake aboutit des deux côtés, le onClose du
+// handler serveur s'exécute (avec injectWS, la socket serveur reste en
+// CLOSING jusqu'au timer de 30 s de ws).
 
-import { test, before, after } from 'node:test'
+import { test, before, after, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import websocket from '@fastify/websocket'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
@@ -29,11 +33,45 @@ import consoleRoute          from '../../modules/remote/routes/console.js'
 import settingsRoute         from '../../modules/core/routes/settings.js'
 import { WS_CLOSE }          from '../../modules/inventory/lib/agent-ws.js'
 
+// Client `ws` : celui qu'embarque @fastify/websocket (pas de dépendance
+// directe du package api).
+const require = createRequire(import.meta.url)
+const WebSocket = createRequire(require.resolve('@fastify/websocket'))('ws')
+
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let schema, db, release, fastify, jwt, adminAuth
+let schema, db, release, fastify, jwt, adminAuth, baseUrl
 let prevEnv = {}
 const openSockets = []
+
+// Espion sur db.query : suivi des requêtes en vol (barrière déterministe,
+// cf. settleDb) et interception ponctuelle (interceptQuery), pour placer
+// une action entre deux requêtes d'un handler ou simuler une erreur DB.
+const inflight = new Set()
+let interceptQuery = null  // (sql, params, next) => Promise | null
+
+function spyDbQuery(pool) {
+  const orig = pool.query.bind(pool)
+  pool.query = (...args) => {
+    const next = () => orig(...args)
+    const p = (interceptQuery && typeof args[0] === 'string' && interceptQuery(args[0], args[1], next)) || next()
+    if (p && typeof p.then === 'function') {
+      inflight.add(p)
+      p.then(() => inflight.delete(p), () => inflight.delete(p))
+    }
+    return p
+  }
+}
+
+// Attend que plus aucune requête ne soit en vol (y compris celles lancées
+// par la continuation d'une requête terminée).
+async function settleDb() {
+  for (;;) {
+    await Promise.allSettled([...inflight])
+    await new Promise((r) => setImmediate(r))
+    if (!inflight.size) return
+  }
+}
 
 before(async () => {
   if (!isDbAvailable()) return
@@ -51,6 +89,7 @@ before(async () => {
 
   const acquired = await acquireSchema()
   schema = acquired.schema; db = acquired.db; release = acquired.release
+  spyDbQuery(db)
   jwt = await setupTestJwks()
 
   fastify = await buildApp({
@@ -66,6 +105,8 @@ before(async () => {
       await f.register(consoleRoute,  { prefix: '/api/console' })
     },
   })
+  await fastify.listen({ port: 0, host: '127.0.0.1' })
+  baseUrl = `ws://127.0.0.1:${fastify.server.address().port}`
 
   const a = await seedAdmin(db, { entraId: 'oid-admin-agent-ws', displayName: 'WS Admin', email: 'ws-admin@x' })
   const token = await jwt.sign({ oid: a.entraId, name: a.displayName, preferred_username: a.email })
@@ -82,6 +123,8 @@ after(async () => {
     else process.env[k] = v
   }
 })
+
+afterEach(() => { interceptQuery = null })
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -105,19 +148,20 @@ async function waitFor(fn, label, ms = 2000) {
 }
 
 // Client WS qui mémorise les frames reçues et la cause de fermeture.
-async function openWs(url, upgradeContext = {}) {
+async function openWs(path, headers = {}) {
   const frames = []
   let closeInfo = null
   let onClosed
   const closed = new Promise((r) => { onClosed = r })
-  const ws = await fastify.injectWS(url, upgradeContext, {
-    onInit: (sock) => {
-      sock.on('message', (m) => frames.push(JSON.parse(m.toString())))
-      sock.on('close', (code, reason) => {
-        closeInfo = { code, reason: reason.toString() }
-        onClosed(closeInfo)
-      })
-    },
+  const ws = new WebSocket(baseUrl + path, { headers })
+  ws.on('message', (m) => frames.push(JSON.parse(m.toString())))
+  ws.on('close', (code, reason) => {
+    closeInfo = { code, reason: reason.toString() }
+    onClosed(closeInfo)
+  })
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve)
+    ws.once('error', reject)
   })
   const client = {
     ws, frames, closed,
@@ -130,7 +174,7 @@ async function openWs(url, upgradeContext = {}) {
 
 // Agent connecté : welcome reçu, hello (capability console) traité.
 async function connectAgent(secret, deviceId) {
-  const agent = await openWs('/api/agent/ws', { headers: { authorization: `Bearer ${secret}` } })
+  const agent = await openWs('/api/agent/ws', { authorization: `Bearer ${secret}` })
   await waitFor(() => agent.frames.some(f => f.type === 'welcome'), 'welcome agent')
   agent.send('hello', { agent_version: '2.14.0', os: 'windows', arch: 'amd64', capabilities: ['console'] })
   await waitFor(() => fastify.agentWs.get(deviceId)?.capabilities.includes('console'), 'hello traité')
@@ -214,6 +258,49 @@ test('révocation admin du token → WS agent fermée, session console terminée
   const wsAudit = await waitFor(() => lastAudit('agent_ws_disconnect', device.id), 'audit agent_ws_disconnect')
   assert.equal(wsAudit.reason, 'token-revoked')
   assert.equal(wsAudit.token_id, tok.id)
+})
+
+async function auditRows(action, target) {
+  const { rows } = await db.query(
+    'SELECT details FROM audit_logs WHERE action = $1 AND target = $2', [action, target]
+  )
+  return rows
+}
+
+test('évincement : onClose serveur exécuté, un seul agent_ws_disconnect et un seul agent_console_close, heartbeat arrêté', { skip: SKIP }, async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const device = await seedDevice(db, { hostname: 'PC-WS-ONCLOSE' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-onclose' })
+  const agent = await connectAgent(tok.secret, device.id)
+  const browser = await openConsole(device.id, agent)
+
+  // Envois de la connexion côté serveur (ping du heartbeat) et close de la
+  // socket serveur (listener posé après celui du handler → onClose fait).
+  const sent = []
+  const origSend = agent.conn.send
+  agent.conn.send = (type, ...rest) => { sent.push(type); return origSend(type, ...rest) }
+  const serverClosed = new Promise((r) => agent.conn.socket.once('close', r))
+
+  const res = await fastify.inject({
+    method: 'DELETE', url: `/api/settings/tokens/${tok.id}`, headers: adminAuth,
+  })
+  assert.equal(res.statusCode, 204)
+  await within(agent.closed, 2000, 'close côté client')
+  await within(serverClosed, 2000, 'close côté serveur (onClose du handler)')
+  await within(browser.closed, 2000, 'close du browser')
+  await settleDb()
+
+  assert.equal(fastify.agentWs.get(device.id), null, 'désenregistrée')
+  const ws = await auditRows('agent_ws_disconnect', device.id)
+  assert.equal(ws.length, 1, `un seul agent_ws_disconnect : ${JSON.stringify(ws)}`)
+  assert.equal(ws[0].details.reason, 'token-revoked')
+  const closes = await auditRows('agent_console_close', device.id)
+  assert.equal(closes.length, 1, `un seul agent_console_close : ${JSON.stringify(closes)}`)
+  assert.equal(closes[0].details.session_id, browser.sessionId)
+
+  // Timer du heartbeat détruit par le onClose : plus de ping.
+  t.mock.timers.tick(30_000)
+  assert.ok(!sent.includes('ping'), `envois après close : ${sent.join(', ')}`)
 })
 
 test('révocation d\'un ancien token → la connexion de remplacement (autre token du poste) reste ouverte', { skip: SKIP }, async () => {
