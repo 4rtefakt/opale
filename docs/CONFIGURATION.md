@@ -176,7 +176,7 @@ Changing this name does **not** delete the previous account on already
 deployed endpoints — the old account is left in place and a new one is
 created at the next checkin. Clean the orphans manually if needed.
 
-Since agent 2.15.0 the agent only rotates an account it created itself: an
+Since agent 2.15.1 the agent only rotates an account it created itself: an
 account that does not exist yet (created with the branding description), or
 an existing account whose SID the agent recorded in `state.json`, or whose
 description equals the build's `lapsAccountDescription` (accounts created by
@@ -204,8 +204,16 @@ requires setting that account's description to the branding value first.
 }
 ```
 
-`weekdays`: 0=Sunday … 6=Saturday; empty/absent = every day. `end < start`
-crosses midnight. Invalid JSON fails open (window considered active).
+`weekdays`: 0=Sunday … 6=Saturday; empty/absent = every day. `start` /
+`end`: `H:MM` or `HH:MM` (00:00–23:59); `end < start` crosses midnight.
+`tz`: IANA name, default UTC. No setting (or `null` / `{}`) = always open.
+
+A window that is set but **invalid** (unreadable JSON, wrong JSON types,
+unknown time zone, malformed time, weekday outside 0–6) blocks
+deployments: none are sent, they stay *pending* until the setting is
+fixed, and the API logs a warning once per distinct value. Scripts and
+agent updates still treat it as open. The window is only sent to agents
+when its JSON types are ones they can decode (otherwise `null`).
 **No UI editor today** — set via SQL.
 
 ---
