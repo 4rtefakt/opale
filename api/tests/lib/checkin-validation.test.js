@@ -74,3 +74,14 @@ test('stripNul — retire les octets NUL de toutes les chaînes (valeurs et clé
   assert.equal(stripNul('a\u0000b'), 'ab')
   assert.equal(stripNul(42), 42)
 })
+
+test('stripNul — une clé qui devient __proto__ / constructor / prototype après nettoyage est écartée', () => {
+  // Les clés littérales __proto__ / constructor.prototype sont déjà refusées
+  // par le parseur JSON de Fastify ; leurs variantes masquées par un NUL ne
+  // le sont pas et, une fois nettoyées, remplaçaient le prototype de l'objet.
+  const out = stripNul(JSON.parse('{"__pro\\u0000to__": {"polluted": true}, "construct\\u0000or": 1, "proto\\u0000type": 2, "ok": "x\\u0000"}'))
+  assert.deepEqual(Object.keys(out), ['ok'])
+  assert.equal(out.ok, 'x')
+  assert.equal(Object.getPrototypeOf(out), Object.prototype)
+  assert.equal(out.polluted, undefined)
+})
