@@ -189,10 +189,13 @@ func TestRecoveryRestartsAlways(t *testing.T) {
 }
 
 // Après une permutation réussie, ne pas re-télécharger à chaque checkin
-// tant que le redémarrage n'a pas eu lieu.
+// tant que le redémarrage n'a pas eu lieu, mais le redemander.
 func TestHandleAgentUpdate_SkipsWhileRestartPending(t *testing.T) {
 	swappedVersion = "9.9.9"
-	defer func() { swappedVersion = "" }()
+	var restarts atomic.Int32
+	origRestart := restartServiceFn
+	restartServiceFn = func() error { restarts.Add(1); return nil }
+	defer func() { swappedVersion = ""; restartServiceFn = origRestart }()
 	cfg := &Config{Token: "t", URL: "http://127.0.0.1:1"} // injoignable : tout téléchargement échouerait
 	err := HandleAgentUpdate(context.Background(), cfg, &State{}, &AgentUpdate{
 		LatestVersion: "9.9.9", SHA256: "00", Signature: "AA==",
@@ -200,9 +203,32 @@ func TestHandleAgentUpdate_SkipsWhileRestartPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attendu nil (redémarrage en attente), reçu %v", err)
 	}
-	select {
-	case <-restartRequests: // redemandé pour que la boucle de service réessaie
-	default:
-		t.Fatal("redémarrage non redemandé")
+	if restarts.Load() != 1 {
+		t.Fatalf("redémarrage redemandé %d fois, attendu 1", restarts.Load())
+	}
+}
+
+// L'ancienne image qui tourne encore (redémarrage en attente) ne doit ni
+// valider l'update (le nouveau binaire perdrait sa surveillance rollback)
+// ni déclencher un rollback sur ses propres échecs.
+func TestCheckRollback_IgnoredWhileRestartPending(t *testing.T) {
+	t.Setenv("RMM_DATA_DIR", t.TempDir())
+	swappedVersion = "9.9.9"
+	var restarts atomic.Int32
+	origRestart := restartServiceFn
+	restartServiceFn = func() error { restarts.Add(1); return nil }
+	defer func() { swappedVersion = ""; restartServiceFn = origRestart }()
+
+	updatedAt := time.Now().UTC().Add(-time.Minute)
+	st := &State{LastUpdateAt: updatedAt, LastUpdateVersion: "9.9.9"}
+	CheckRollback(st, nil)
+	if !st.LastUpdateAt.Equal(updatedAt) || st.LastUpdateVersion != "9.9.9" {
+		t.Fatalf("surveillance du nouveau binaire retirée par l'ancienne image : %+v", st)
+	}
+	for i := 0; i < MaxFailedSinceUpdate+1; i++ {
+		CheckRollback(st, context.DeadlineExceeded)
+	}
+	if st.FailedSinceUpdate != 0 || restarts.Load() != 0 {
+		t.Fatalf("échecs de l'ancienne image comptés contre le nouveau binaire : failed=%d restarts=%d", st.FailedSinceUpdate, restarts.Load())
 	}
 }

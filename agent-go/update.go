@@ -38,8 +38,7 @@ func HandleAgentUpdate(ctx context.Context, cfg *Config, st *State, upd *AgentUp
 		logInfo("update-pending-restart", "binaire déjà remplacé, en attente de redémarrage", LogFields{
 			"version": swappedVersion,
 		})
-		requestServiceRestart()
-		return nil
+		return restartServiceFn()
 	}
 	if upd.LatestVersion == "" || upd.SHA256 == "" || upd.Signature == "" {
 		return errors.New("agent_update incomplet (version/sha256/signature manquants)")
@@ -109,13 +108,17 @@ func HandleAgentUpdate(ctx context.Context, cfg *Config, st *State, upd *AgentUp
 		"version": upd.LatestVersion,
 	})
 	// 7. Redémarrer le service.
-	return restartService()
+	return restartServiceFn()
 }
 
 // swappedVersion — version du binaire permuté sur disque par ce process
 // (vide tant qu'aucune mise à jour n'a été appliquée). Le process courant
 // exécute toujours l'ancienne image jusqu'au redémarrage.
 var swappedVersion string
+
+// restartServiceFn — indirection pour les tests (restartService lance un
+// helper systemd/launchd hors Windows).
+var restartServiceFn = restartService
 
 // atomicReplace : binary.exe → backup ; new.exe → binary.exe.
 // Sur Windows, on peut renommer un .exe en cours d'exécution (mais pas
@@ -151,6 +154,13 @@ func atomicReplace() error {
 func CheckRollback(st *State, lastCheckinErr error) {
 	// Pas d'update récent à surveiller
 	if st.LastUpdateAt.IsZero() {
+		return
+	}
+	// Ce process est l'ANCIENNE image (binaire permuté, redémarrage pas
+	// encore effectué) : ses checkins ne disent rien du nouveau binaire. Ni
+	// validation (qui retirerait la surveillance au nouveau binaire), ni
+	// rollback sur ses propres échecs.
+	if swappedVersion != "" {
 		return
 	}
 
@@ -195,7 +205,7 @@ func CheckRollback(st *State, lastCheckinErr error) {
 	st.FailedSinceUpdate = 0
 	st.Save()
 	// Redémarrer pour charger le binaire restauré
-	_ = restartService()
+	_ = restartServiceFn()
 }
 
 func rollback() error {
