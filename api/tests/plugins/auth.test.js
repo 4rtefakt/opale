@@ -20,6 +20,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
 import authPlugin from '../../plugins/auth.js'
+import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from 'jose'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip auth suite'
 
@@ -403,3 +404,34 @@ for (const key of ['ENTRA_CLIENT_ID', 'ENTRA_TENANT_ID']) {
     }
   })
 }
+
+// Les clés publiées par Entra (JWKS) n'ont pas de champ `alg` : sans
+// algorithme épinglé, jose accepte une signature PS256 faite avec la même
+// clé RSA. Le JWK de test est construit comme ceux d'Entra (sans `alg`).
+test('authenticate — JWT signé en PS256 avec la clé RSA (JWK Entra sans alg) → 401, RS256 accepté', { skip: SKIP }, async () => {
+  const { publicKey, privateKey } = await generateKeyPair('RS256', { extractable: true })
+  const jwk = await exportJWK(publicKey)
+  jwk.kid = crypto.randomBytes(8).toString('hex')
+  jwk.use = 'sig'
+  const app = await buildApp({
+    db,
+    jwks: createLocalJWKSet({ keys: [jwk] }),
+    routes: (f) => { f.get('/whoami', { preHandler: f.authenticate }, async () => ({ ok: true })) },
+  })
+  try {
+    const signWith = (alg) => new SignJWT({ oid: 'oid-alg-pin', name: 'Alg Pin' })
+      .setProtectedHeader({ alg, kid: jwk.kid })
+      .setIssuedAt()
+      .setIssuer(`https://login.microsoftonline.com/${process.env.ENTRA_TENANT_ID}/v2.0`)
+      .setAudience(process.env.ENTRA_CLIENT_ID)
+      .setExpirationTime('1h')
+      .sign(privateKey)
+
+    const ps = await app.inject({ method: 'GET', url: '/whoami', headers: { authorization: `Bearer ${await signWith('PS256')}` } })
+    assert.equal(ps.statusCode, 401, 'PS256 doit être refusé')
+    const rs = await app.inject({ method: 'GET', url: '/whoami', headers: { authorization: `Bearer ${await signWith('RS256')}` } })
+    assert.equal(rs.statusCode, 200, 'RS256 reste accepté')
+  } finally {
+    await app.close()
+  }
+})

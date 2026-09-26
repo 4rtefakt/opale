@@ -2,6 +2,12 @@ import crypto from 'crypto'
 import fp from 'fastify-plugin'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
 
+// Entra signe ses JWT en RS256. Ses clés publiées (JWKS) ne portent pas de
+// champ `alg` : sans liste d'algorithmes, jose accepterait aussi une
+// signature PS256 faite avec la même clé RSA. On épingle l'algorithme
+// attendu (défense en profondeur contre la confusion d'algorithmes).
+export const JWT_ALGORITHMS = ['RS256']
+
 async function authPlugin(fastify, opts = {}) {
   // Sans ENTRA_CLIENT_ID, verifyToken passerait `audience: undefined` à
   // jwtVerify, qui ne vérifie alors AUCUNE audience : tout token du tenant,
@@ -43,7 +49,7 @@ async function authPlugin(fastify, opts = {}) {
     for (const issuer of issuers) {
       for (const audience of audiences) {
         try {
-          const { payload } = await jwtVerify(token, getJWKS(), { issuer, audience })
+          const { payload } = await jwtVerify(token, getJWKS(), { issuer, audience, algorithms: JWT_ALGORITHMS })
           return payload
         } catch {}
       }
