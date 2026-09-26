@@ -669,11 +669,11 @@ export default async function agentRoute(fastify) {
     // → fail unique constraint sur hostname. Avec le fallback, on tombe
     // sur la row Intune et on l'UPDATE normalement.
     let lookup = serial
-      ? await fastify.db.query(`SELECT id, serial, source, disk_used_pct, compliance_state FROM devices WHERE serial = $1`, [serial])
-      : await fastify.db.query(`SELECT id, serial, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`, [hostname])
+      ? await fastify.db.query(`SELECT id, hostname, serial, source, disk_used_pct, compliance_state, agent_version FROM devices WHERE serial = $1`, [serial])
+      : await fastify.db.query(`SELECT id, hostname, serial, source, disk_used_pct, compliance_state, agent_version FROM devices WHERE hostname = $1`, [hostname])
     if (serial && !lookup.rows.length) {
       lookup = await fastify.db.query(
-        `SELECT id, serial, source, disk_used_pct, compliance_state FROM devices WHERE hostname = $1`,
+        `SELECT id, hostname, serial, source, disk_used_pct, compliance_state, agent_version FROM devices WHERE hostname = $1`,
         [hostname]
       )
     }
@@ -1213,13 +1213,45 @@ export default async function agentRoute(fastify) {
       }
     }
 
-    // ── Log checkin non-bloquant ───────────────────────────────────────────
-    await logAudit(fastify.db, fastify.log, {
-      action:  'agent_checkin',
-      byUser:  hostname,
-      target:  deviceId,
-      details: { level: 'info', disks: disks.length, ip_netbird: ipNetbird, new: !lookup.rows.length, agent_version: agent_version || null },
-    })
+    // ── Audit du checkin : événements significatifs uniquement ─────────────
+    // Plus une ligne par checkin (≈ 10 000 / jour pour 110 postes, gardées
+    // 365 j, jamais exploitées : le dashboard les masque, les Rapports
+    // comptent les postes actifs via devices.last_seen). On trace ce qui
+    // change l'identité ou l'état du poste, ou relève de la sécurité :
+    // enrôlement, renommage, série différente de celle du poste, version
+    // d'agent changée (mise à jour, 1er checkin d'un poste synchronisé par
+    // Intune), ip_netbird refusée. Rattachement / refus de token : actions
+    // dédiées ci-dessus. Même action 'agent_checkin' et mêmes champs qu'avant
+    // (vue Audit), plus `events`.
+    const prev = lookup.rows[0]
+    const events = []
+    if (!prev) {
+      events.push('enrolled')
+    } else {
+      if (prev.hostname !== hostname) events.push('hostname_changed')
+      if (serial && prev.serial
+          && String(serial).trim().toLowerCase() !== String(prev.serial).trim().toLowerCase()) {
+        events.push('serial_mismatch')
+      }
+      if (agent_version && prev.agent_version !== agent_version) events.push('agent_version_changed')
+    }
+    if (ipNetbirdReject) events.push('ip_netbird_rejected')
+    if (events.length) {
+      const warn = events.includes('serial_mismatch') || events.includes('ip_netbird_rejected')
+      await logAudit(fastify.db, fastify.log, {
+        action:  'agent_checkin',
+        byUser:  hostname,
+        target:  deviceId,
+        details: {
+          level: warn ? 'warn' : 'info',
+          events,
+          disks: disks.length, ip_netbird: ipNetbird, new: !prev, agent_version: agent_version || null,
+          ...(events.includes('hostname_changed') ? { previous_hostname: prev.hostname } : {}),
+          ...(events.includes('agent_version_changed') ? { previous_agent_version: prev.agent_version } : {}),
+          ...(events.includes('serial_mismatch') ? { serial: clipStr(serial, 100), device_serial: prev.serial } : {}),
+        },
+      })
+    }
 
     // ── Réservation des scripts / déploiements envoyés ─────────────────────
     // Passage en 'running' juste avant la réponse : si une étape précédente
