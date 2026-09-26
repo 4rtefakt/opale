@@ -177,8 +177,10 @@ func pendingDetectionBatch(st *State) []DetectionResult {
 
 // ackPendingResults retire de l'état les nDep premiers résultats de
 // déploiement et les nDet premiers de détection : ceux du checkin que le
-// serveur vient d'accepter. Les résultats ajoutés en fin de file pendant la
-// requête sont conservés (seul DoCheckin retire des entrées, en tête).
+// serveur vient d'accepter, pas ce qui a été ajouté en file depuis la
+// copie envoyée. State n'a pas de verrou : seule la goroutine des checkins
+// (runCheckin) le lit et l'écrit, DoCheckin compris ; les entrées
+// s'ajoutent en fin de file, seul DoCheckin en retire, en tête.
 func ackPendingResults(st *State, nDep, nDet int) {
 	st.PendingDeployments = dropPrefix(st.PendingDeployments, nDep)
 	st.PendingDetections = dropPrefix(st.PendingDetections, nDet)

@@ -199,8 +199,11 @@ func TestDoCheckin_ResultsSurviveRestartUntilAcknowledged(t *testing.T) {
 	}
 }
 
-// Un résultat ajouté pendant la requête (après la copie envoyée) n'a pas été
-// transmis : l'acquittement ne doit retirer que ce qui a été envoyé.
+// Un résultat ajouté après la copie envoyée n'a pas été transmis :
+// l'acquittement ne doit retirer que ce qui a été envoyé. En production,
+// seule la goroutine des checkins touche State (pas de verrou) ; le
+// handler ne l'écrit ici que pendant que DoCheckin attend la réponse, les
+// E/S réseau ordonnant les accès (go test -race sans alerte).
 func TestDoCheckin_KeepsResultsQueuedDuringRequest(t *testing.T) {
 	stubMetrics(t)
 	t.Setenv("RMM_DATA_DIR", t.TempDir())
