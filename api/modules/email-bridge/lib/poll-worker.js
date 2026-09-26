@@ -6,7 +6,7 @@
 //      b. pour chaque message → processOne() : ingest + classify + action
 //      c. avance le curseur au receivedDateTime du dernier mail parcouru —
 //         jamais au-delà d'un mail en échec, retenté au tick suivant puis
-//         abandonné après MAX_INGEST_ATTEMPTS échecs (cf. poll-cursor.js)
+//         abandonné s'il échoue durablement seul (cf. poll-cursor.js)
 //
 // Curseur : par mailbox, setting `mail.cursor.<address>` (+ état
 // `mail.cursor_state.<address>`, cf. poll-cursor.js). Bootstrap = now()
@@ -60,9 +60,9 @@ function parseMailboxes(csv) {
 // ── Un tick de poll ───────────────────────────────────────────────────────────
 
 // `injection` exposé pour les tests : permet de remplacer Graph et le
-// classifieur sans monkey-patcher d'imports globaux.
+// classifieur (et l'horloge : `now`) sans monkey-patcher d'imports globaux.
 export async function pollOnce(db, log, injection = {}) {
-  const { listMessagesSince: list = listMessagesSince, classifierFn } = injection
+  const { listMessagesSince: list = listMessagesSince, classifierFn, now } = injection
 
   const enabled = await getSetting(db, 'mail.poll_enabled')
   if (enabled !== 'true') return { skipped: 'disabled' }
@@ -75,7 +75,7 @@ export async function pollOnce(db, log, injection = {}) {
     actions: { message_appended: 0, proposal_created: 0, proposal_created_no_match: 0,
                skipped_other: 0, skipped_error: 0, already_ingested: 0 },
     errors: 0,
-    abandoned: 0,   // mails abandonnés après MAX_INGEST_ATTEMPTS échecs
+    abandoned: 0,   // mails « poison » abandonnés (cf. poll-cursor.js)
   }
 
   for (const mailbox of mailboxes) {
@@ -133,7 +133,7 @@ export async function pollOnce(db, log, injection = {}) {
     const res = await pollMailboxCursor(db, log, {
       mailbox, cursor, cursorKey: key, stateKey: cursorStateKey(mailbox),
       dateField: 'receivedDateTime', list, handle,
-      updatedBy: 'email-bridge-worker', tag: 'email-bridge',
+      updatedBy: 'email-bridge-worker', tag: 'email-bridge', now,
     })
     stats.errors += res.errors
     stats.abandoned += res.abandoned

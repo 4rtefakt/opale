@@ -13,7 +13,10 @@
 //             mails déjà ingérés sont dédoublonnés par internet_message_id ;
 //   - done  : ids Graph des mails déjà traités (ou volontairement ignorés) à
 //             l'horodatage `at` ;
-//   - retry : { id, attempts, error } du mail en échec qui bloque la boîte.
+//   - retry : { id, attempts, error, first_at } du mail en échec qui bloque
+//             la boîte. Clé = id Graph : il change si le mail est déplacé
+//             de dossier pendant les reprises, le compteur repart alors de
+//             zéro (retarde l'abandon, ne perd rien — acceptable).
 //
 // Le listing est INCLUSIF (`ge at`) : un `gt` sautait pour toujours les
 // mails de même horodatage que le dernier traité (coupure de page, mail
@@ -31,12 +34,22 @@
 // Échecs : le curseur n'avance que sur le préfixe contigu de mails traités
 // (ou exclus). Au premier échec transitoire (transaction annulée, DB
 // indisponible…), on arrête la boîte pour ce tick : le mail est retenté au
-// tick suivant, avant les suivants (ordre du fil préservé). Après
-// MAX_INGEST_ATTEMPTS échecs consécutifs du même mail, il est abandonné
-// (log + audit `mail_ingest_abandoned`) pour qu'un mail « poison » ne
-// bloque pas la boîte indéfiniment — même principe que le dead-letter de
-// l'outbox. Il reste ré-ingérable en reculant le curseur (les autres mails
-// sont alors dédoublonnés par internet_message_id).
+// tick suivant, avant les suivants (ordre du fil préservé).
+//
+// Abandon d'un mail « poison » (pour qu'il ne bloque pas la boîte
+// indéfiniment — même principe que le dead-letter de l'outbox), à trois
+// conditions :
+//   - au moins MAX_INGEST_ATTEMPTS échecs ET MIN_POISON_AGE_MS depuis le
+//     premier : un échec propre au mail mais passager (verrou sur son
+//     ticket, statement_timeout…) a le temps de se résorber ;
+//   - le mail SUIVANT de la boîte est traité sans erreur. S'il échoue lui
+//     aussi, la panne n'est pas propre au mail (pool saturé, trigger ou
+//     contrainte cassés, droits retirés…) : rien n'est abandonné, erreur
+//     journalisée à chaque tick, tout repart au rétablissement. Sans mail
+//     suivant, rien à débloquer : on attend.
+// L'abandon est journalisé (log error + audit `mail_ingest_abandoned`). Le
+// mail reste ré-ingérable en reculant le curseur (les autres mails sont
+// alors dédoublonnés par internet_message_id).
 
 import { logAudit } from '../../core/lib/audit.js'
 
@@ -44,6 +57,11 @@ export const PAGE_SIZE = 50
 export const MAX_PAGES = 5          // pages Graph avec du travail, par tick
 export const MAX_SKIP_PAGES = 40    // pages d'ids `done` seulement (ex aequo), par tick
 export const MAX_INGEST_ATTEMPTS = 5
+// 30 min : couvre les incidents passagers usuels (verrou long, failover ou
+// redémarrage Postgres, déploiement) ; en contrepartie un vrai mail poison
+// retarde les mails suivants de sa boîte de 30 min, une fois — rare, et
+// sans perte.
+export const MIN_POISON_AGE_MS = 30 * 60_000
 
 // Clé d'un mail dans `done` : l'id Graph (unique dans la boîte ; deux copies
 // d'un même internetMessageId — Envoyés + Réception — sont deux mails).
@@ -93,17 +111,19 @@ async function abandon(db, log, { mailbox, message, key, dateField, attempts, er
 //   list(mailbox, since, { top, inclusive, nextLink }) → page Graph
 //     (`value` = mails à traiter, `scanned` = tous les mails de la page) ;
 //   handle(message) → traite un mail de `value` ; { retry: true, error }
-//     si l'échec est transitoire (rien d'écrit, à retenter).
+//     si l'échec est transitoire (rien d'écrit, à retenter) ;
+//   now() → horloge (injectable pour les tests).
 // Retourne { errors, abandoned } (échecs de listing / mails abandonnés,
 // déjà loggés).
 export async function pollMailboxCursor(db, log, {
-  mailbox, cursor, cursorKey, stateKey, dateField, list, handle, updatedBy, tag,
+  mailbox, cursor, cursorKey, stateKey, dateField, list, handle, updatedBy, tag, now = Date.now,
 }) {
   const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [stateKey])
   const rawState = rows[0]?.value ?? null
-  const state = parseState(rawState, cursor)
-  const { done } = state
-  let { retry } = state
+  let { done, retry } = parseState(rawState, cursor)
+  // Mail candidat à l'abandon, dépassé provisoirement en attendant le
+  // verdict du mail suivant ; `rollback` = position juste avant lui.
+  let suspect = null
 
   let at = Date.parse(cursor)
   let errors = 0
@@ -142,17 +162,40 @@ export async function pollMailboxCursor(db, log, {
         const r = await handle(m)
         if (r?.retry) {
           const error = String(r.error || 'erreur inconnue').slice(0, 500)
-          const attempts = (retry?.id === key ? retry.attempts : 0) + 1
-          if (attempts < MAX_INGEST_ATTEMPTS) {
-            // Curseur laissé avant ce mail : retenté au tick suivant.
-            retry = { id: key, attempts, error }
+          if (suspect) {
+            // Le mail suivant échoue aussi : panne systémique probable. Rien
+            // n'est abandonné ; retour juste avant le suspect (les mails
+            // dépassés depuis — exclus ou déjà traités — n'ont rien écrit).
+            ({ at, done, retry } = suspect.rollback)
+            log?.error({
+              mailbox, internetMessageId: suspect.message.internetMessageId,
+              attempts: retry.attempts, since: retry.first_at, err: retry.error, next_err: error,
+            }, `${tag}: le mail suivant échoue aussi — panne probablement systémique, aucun abandon (boîte bloquée jusqu'au rétablissement)`)
+            suspect = null
             blocked = true
-            log?.warn({ mailbox, internetMessageId: m.internetMessageId, attempts, err: error },
+            break
+          }
+          const same = retry?.id === key
+          const attempts = (same ? retry.attempts : 0) + 1
+          const firstAt = (same && retry.first_at) || new Date(now()).toISOString()
+          const record = { id: key, attempts, error, first_at: firstAt }
+          if (attempts < MAX_INGEST_ATTEMPTS || now() - Date.parse(firstAt) < MIN_POISON_AGE_MS) {
+            // Curseur laissé avant ce mail : retenté au tick suivant.
+            retry = record
+            blocked = true
+            log?.warn({ mailbox, internetMessageId: m.internetMessageId, attempts, since: firstAt, err: error },
               `${tag}: échec de traitement, mail retenté au prochain tick`)
             break
           }
-          await abandon(db, log, { mailbox, message: m, key, dateField, attempts, error, tag })
+          // Candidat à l'abandon : dépassé provisoirement ; abandonné
+          // seulement si le mail suivant est traité sans erreur.
+          suspect = { message: m, key, rollback: { at, done: new Set(done), retry: record } }
+        } else if (suspect) {
+          // Le mail suivant passe : l'échec était propre au suspect.
+          const { attempts, error } = suspect.rollback.retry
+          await abandon(db, log, { mailbox, message: suspect.message, key: suspect.key, dateField, attempts, error, tag })
           abandoned++
+          suspect = null
         }
       }
       // Traité, volontairement exclu ou abandonné : le curseur avance jusqu'à lui.
@@ -185,6 +228,17 @@ export async function pollMailboxCursor(db, log, {
       nextLink = graphNext
     }
   } while (graphNext && pages < MAX_PAGES && skipPages < MAX_SKIP_PAGES && processed < PAGE_SIZE)
+
+  // Pas de mail suivant traité dans ce tick (fin de boîte, bornes du tick,
+  // listing en échec) : pas de verdict, le suspect n'est pas abandonné — il
+  // ne bloque de toute façon rien d'autre pour l'instant.
+  if (suspect) {
+    ({ at, done, retry } = suspect.rollback)
+    blocked = true
+    log?.warn({ mailbox, internetMessageId: suspect.message.internetMessageId, attempts: retry.attempts, since: retry.first_at, err: retry.error },
+      `${tag}: mail en échec prolongé, abandon en attente d'un mail suivant traité sans erreur`)
+    suspect = null
+  }
 
   // Dernier recours : MAX_SKIP_PAGES pages d'ex aequo déjà traités sans rien
   // de nouveau (plus de MAX_SKIP_PAGES × PAGE_SIZE mails dans la même

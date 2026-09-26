@@ -7,7 +7,7 @@
 //      b. pour chaque mail → processSentOne() : append au ticket SI threadé
 //      c. avance le curseur au sentDateTime du dernier mail parcouru —
 //         jamais au-delà d'un mail en échec, retenté au tick suivant puis
-//         abandonné après MAX_INGEST_ATTEMPTS échecs (cf. poll-cursor.js)
+//         abandonné s'il échoue durablement seul (cf. poll-cursor.js)
 //
 // Curseur : bootstrap = now() (pas de backfill auto — le rattrapage du passé
 // se fait via scripts/backfill-sent-mail.js). Avancement au dernier mail
@@ -54,9 +54,9 @@ function parseMailboxes(csv) {
   return out
 }
 
-// `injection` exposé pour les tests : remplace Graph sans monkey-patch.
+// `injection` exposé pour les tests : remplace Graph (et l'horloge : `now`) sans monkey-patch.
 export async function pollSentOnce(db, log, injection = {}) {
-  const { listSentMessagesSince: list = listSentMessagesSince } = injection
+  const { listSentMessagesSince: list = listSentMessagesSince, now } = injection
 
   const enabled = await getSetting(db, 'mail.sent_poll_enabled')
   if (enabled !== 'true') return { skipped: 'disabled' }
@@ -68,7 +68,7 @@ export async function pollSentOnce(db, log, injection = {}) {
     mailboxes: mailboxes.length,
     actions: { message_appended: 0, skipped_no_match: 0, skipped_duplicate: 0, already_ingested: 0, skipped_error: 0 },
     errors: 0,
-    abandoned: 0,   // mails abandonnés après MAX_INGEST_ATTEMPTS échecs
+    abandoned: 0,   // mails « poison » abandonnés (cf. poll-cursor.js)
   }
 
   for (const mailbox of mailboxes) {
@@ -119,7 +119,7 @@ export async function pollSentOnce(db, log, injection = {}) {
     const res = await pollMailboxCursor(db, log, {
       mailbox, cursor, cursorKey: key, stateKey: cursorStateKey(mailbox),
       dateField: 'sentDateTime', list, handle,
-      updatedBy: 'email-sent-worker', tag: 'sent-worker',
+      updatedBy: 'email-sent-worker', tag: 'sent-worker', now,
     })
     stats.errors += res.errors
     stats.abandoned += res.abandoned

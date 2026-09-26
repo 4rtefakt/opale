@@ -12,7 +12,9 @@
 //   - transaction en échec sur un mail → curseur arrêté avant lui, retenté
 //     au tick suivant sans retraiter les mails déjà ingérés
 //   - mail « poison » → abandonné (log + audit) après MAX_INGEST_ATTEMPTS
-//     échecs, la boîte n'est pas bloquée indéfiniment
+//     échecs ET MIN_POISON_AGE_MS, et seulement si le mail suivant passe :
+//     la boîte n'est pas bloquée indéfiniment, mais une panne systémique
+//     (le suivant échoue aussi) n'abandonne rien
 //
 // Les échecs de transaction sont provoqués par un trigger de test sur
 // email_thread_mapping (INSERT refusé pour les internet_message_id listés
@@ -25,7 +27,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { installFakeGraph, graphTime, fakeMail } from '../helpers/fake-graph-mail.js'
 import { pollOnce } from '../../modules/email-bridge/lib/poll-worker.js'
 import { _resetSystemFolderCache } from '../../modules/email-bridge/lib/graph-mail.js'
-import { MAX_INGEST_ATTEMPTS, MAX_SKIP_PAGES } from '../../modules/email-bridge/lib/poll-cursor.js'
+import { MAX_INGEST_ATTEMPTS, MAX_SKIP_PAGES, MIN_POISON_AGE_MS } from '../../modules/email-bridge/lib/poll-cursor.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip poll-worker suite'
 
@@ -95,6 +97,18 @@ async function cursorMs() {
 }
 
 const ids = mails => mails.map(m => m.internetMessageId)
+
+async function cursorState() {
+  const { rows } = await db.query(`SELECT value FROM settings WHERE key = $1`, [`mail.cursor_state.${MAILBOX}`])
+  return JSON.parse(rows[0].value)
+}
+
+// Horloge injectée (pollOnce(db, log, { now })) : l'âge d'un échec compte.
+const TICK_MS = 5 * 60_000
+function fakeClock(start = Date.parse('2026-05-10T10:00:00Z')) {
+  let t = start
+  return { now: () => t, advance: ms => { t += ms } }
+}
 
 async function failMappingInsertFor(mail) {
   await db.query(`INSERT INTO test_failing_mail VALUES ($1)`, [mail.internetMessageId])
@@ -295,43 +309,107 @@ test('pollOnce : transaction en échec sur un mail → curseur arrêté avant lu
       assert.equal(second.actions.already_ingested, 0, 'les mails déjà ingérés ne sont pas rejoués')
       assert.equal(await cursorMs(), Date.parse(at(3)))
       assert.equal((await abandonedAudits()).length, 0)
+      assert.equal((await cursorState()).retry, null, 'compteur d\'échecs effacé une fois le mail traité')
     } finally {
       graph.restore()
     }
   }
 )
 
-test('pollOnce : mail « poison » → abandonné (audit) après MAX_INGEST_ATTEMPTS échecs, la boîte repart',
+test('pollOnce : mail « poison » → abandonné après MAX_INGEST_ATTEMPTS échecs ET MIN_POISON_AGE_MS, le mail suivant passant',
   { skip: SKIP }, async () => {
     const poison = fakeMail({ receivedDateTime: at(1) })
     const next = fakeMail({ receivedDateTime: at(2) })
     useGraph({ inbox: [poison, next] })
     await failMappingInsertFor(poison)
+    const clock = fakeClock()
     try {
-      for (let attempt = 1; attempt < MAX_INGEST_ATTEMPTS; attempt++) {
-        await pollOnce(db, null)
-        assert.equal(await cursorMs(), Date.parse(T0),
-          `tentative ${attempt} : curseur pas avancé au-delà du mail en échec`)
+      // Un tick toutes les 5 min : MAX_INGEST_ATTEMPTS est atteint bien
+      // avant l'âge minimal — le nombre de tentatives seul ne suffit plus.
+      const ticksBeforeAge = MIN_POISON_AGE_MS / TICK_MS
+      assert.ok(ticksBeforeAge > MAX_INGEST_ATTEMPTS)
+      for (let tick = 1; tick <= ticksBeforeAge; tick++) {
+        await pollOnce(db, null, { now: clock.now })
+        clock.advance(TICK_MS)
+        assert.equal(await cursorMs(), Date.parse(T0), `tick ${tick} : curseur pas avancé au-delà du mail en échec`)
         assert.ok(!(await ingestedIds()).includes(poison.internetMessageId))
       }
-      assert.equal((await abandonedAudits()).length, 0, 'pas d\'abandon avant la dernière tentative')
+      assert.equal((await abandonedAudits()).length, 0, 'pas d\'abandon avant l\'âge minimal')
 
-      const stats = await pollOnce(db, null)
+      const stats = await pollOnce(db, null, { now: clock.now })
       assert.equal(stats.abandoned, 1)
       const audits = await abandonedAudits()
       assert.equal(audits.length, 1)
       assert.equal(audits[0].target, MAILBOX)
       assert.equal(audits[0].by_user, 'system')
       assert.equal(audits[0].details.internet_message_id, poison.internetMessageId)
-      assert.equal(audits[0].details.attempts, MAX_INGEST_ATTEMPTS)
+      assert.equal(audits[0].details.attempts, ticksBeforeAge + 1)
       assert.match(audits[0].details.error, /échec simulé/)
 
       assert.deepEqual(await ingestedIds(), ids([next]), 'la boîte n\'est plus bloquée')
       assert.equal(await cursorMs(), Date.parse(at(2)))
 
       // Abandon définitif : plus retenté ensuite.
-      await pollOnce(db, null)
+      await pollOnce(db, null, { now: clock.now })
       assert.equal((await abandonedAudits()).length, 1)
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollOnce : panne systémique (tous les mails échouent, settings OK) → aucun abandon, erreur à chaque tick, tout ingéré au rétablissement',
+  { skip: SKIP }, async () => {
+    // Pool saturé, statement_timeout, trigger ou contrainte cassés… : le
+    // mail suivant échoue aussi → la panne n'est pas propre au mail, on
+    // n'abandonne rien (avant : un mail abandonné toutes les ~2 min 30).
+    const mails = Array.from({ length: 6 }, (_, i) => fakeMail({ receivedDateTime: at(i + 1) }))
+    useGraph({ inbox: mails })
+    for (const m of mails) await failMappingInsertFor(m)
+    const clock = fakeClock()
+    const errors = []
+    const log = { info() {}, warn() {}, error: (_o, msg) => errors.push(msg) }
+    try {
+      const ticks = (3 * 3600_000) / TICK_MS   // 3 h de panne
+      let abandoned = 0
+      for (let tick = 0; tick < ticks; tick++) {
+        abandoned += (await pollOnce(db, log, { now: clock.now })).abandoned
+        clock.advance(TICK_MS)
+      }
+      assert.equal(abandoned, 0)
+      assert.equal((await abandonedAudits()).length, 0)
+      assert.equal(await cursorMs(), Date.parse(T0))
+      const systemic = errors.filter(m => /systémique/.test(m)).length
+      assert.equal(systemic, ticks - MIN_POISON_AGE_MS / TICK_MS, 'une erreur par tick une fois l\'âge minimal atteint')
+
+      await db.query(`TRUNCATE TABLE test_failing_mail`)
+      await pollOnce(db, log, { now: clock.now })
+      assert.deepEqual(await ingestedIds(), ids(mails), 'tout est ingéré au rétablissement')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollOnce : mail en échec sans mail suivant → pas abandonné (rien à débloquer), abandonné dès qu\'un mail suivant passe',
+  { skip: SKIP }, async () => {
+    const poison = fakeMail({ receivedDateTime: at(1) })
+    useGraph({ inbox: [poison] })
+    await failMappingInsertFor(poison)
+    const clock = fakeClock()
+    try {
+      for (let tick = 0; tick < (2 * 3600_000) / TICK_MS; tick++) {
+        await pollOnce(db, null, { now: clock.now })
+        clock.advance(TICK_MS)
+      }
+      assert.equal((await abandonedAudits()).length, 0)
+      assert.equal(await cursorMs(), Date.parse(T0))
+
+      const next = fakeMail({ receivedDateTime: at(2) })
+      graph.inbox.push(next)
+      await pollOnce(db, null, { now: clock.now })
+      assert.equal((await abandonedAudits()).length, 1)
+      assert.deepEqual(await ingestedIds(), ids([next]))
     } finally {
       graph.restore()
     }
