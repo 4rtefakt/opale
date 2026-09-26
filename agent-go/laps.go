@@ -254,9 +254,14 @@ func (r *lapsRotator) run(ctx context.Context, st *State) {
 	}
 
 	// 1. Stash legacy : mot de passe en place mais jamais escrowé.
+	force := false
 	if p := st.PendingAdminCred; p != nil && p.Phase == "" {
-		r.flushLegacyStash(ctx, st, now)
-		return // au plus une opération serveur de ce type par cycle
+		if !r.flushLegacyStash(ctx, st, now) {
+			return // au plus une opération serveur de ce type par cycle
+		}
+		// Stash abandonné alors que son mot de passe est en place : le
+		// serveur ne le connaîtra jamais → rotation complète immédiate.
+		force = true
 	}
 
 	// Hors Windows (accounts nil) : aucun compte local géré, donc jamais de
@@ -267,7 +272,7 @@ func (r *lapsRotator) run(ctx context.Context, st *State) {
 
 	// 2. Rotation interrompue ou échue ?
 	pending := st.PendingAdminCred
-	due := st.LastAdminRotation.IsZero() || now.Sub(st.LastAdminRotation) >= LAPSRotationInterval
+	due := force || st.LastAdminRotation.IsZero() || now.Sub(st.LastAdminRotation) >= LAPSRotationInterval
 	if pending == nil && !due {
 		return
 	}
@@ -288,8 +293,12 @@ func (r *lapsRotator) run(ctx context.Context, st *State) {
 	r.rotate(ctx, st, now)
 }
 
-// flushLegacyStash — renvoie (ou purge s'il est périmé) le stash d'un agent ≤ 2.14.
-func (r *lapsRotator) flushLegacyStash(ctx context.Context, st *State, now time.Time) {
+// flushLegacyStash — renvoie (ou purge s'il est périmé) le stash d'un
+// agent ≤ 2.14. Retourne true si le stash a été abandonné alors que son mot
+// de passe est probablement en place (illisible, ou refusé définitivement
+// par le serveur) : l'appelant enchaîne alors une rotation complète
+// (escrow d'abord) pour réaligner serveur et poste.
+func (r *lapsRotator) flushLegacyStash(ctx context.Context, st *State, now time.Time) bool {
 	p := st.PendingAdminCred
 	if !st.LastAdminRotation.IsZero() && st.LastAdminRotation.After(p.StashedAt) {
 		logInfo("laps-legacy-stash-stale", "stash antérieur à la dernière rotation escrowée, supprimé", LogFields{
@@ -298,20 +307,31 @@ func (r *lapsRotator) flushLegacyStash(ctx context.Context, st *State, now time.
 		})
 		st.PendingAdminCred = nil
 		_ = r.save()
-		return
+		return false
 	}
 	enc, err := base64.StdEncoding.DecodeString(p.EncB64)
 	if err != nil || p.Username == "" {
 		logError("laps-legacy-stash-invalid", err, LogFields{"user": p.Username})
 		st.PendingAdminCred = nil
 		_ = r.save()
-		return
+		return true
 	}
 	if err := r.escrow(ctx, p.Username, enc); err != nil {
+		if isPermanentEscrowRejection(err) {
+			// Refus définitif (4xx hors 401/408/429) : le renvoyer à chaque
+			// cycle bloquerait la LAPS indéfiniment.
+			logError("laps-legacy-stash-rejected", err, LogFields{
+				"user": p.Username,
+				"hint": "stash abandonné, nouvelle rotation",
+			})
+			st.PendingAdminCred = nil
+			_ = r.save()
+			return true
+		}
 		logError("laps-legacy-stash-post-fail", err, LogFields{"user": p.Username})
 		r.fail(st, now)
 		_ = r.save()
-		return
+		return false
 	}
 	st.CurrentAdminCred = &AdminCredRecord{Username: p.Username, EncB64: p.EncB64, At: now}
 	st.LastAdminRotation = now
@@ -321,6 +341,7 @@ func (r *lapsRotator) flushLegacyStash(ctx context.Context, st *State, now time.
 	logInfo("laps-legacy-stash-escrowed", "mot de passe appliqué par un agent précédent enfin escrowé", LogFields{
 		"user": p.Username,
 	})
+	return false
 }
 
 // restoreCurrentEscrow — ré-escrowe le dernier mot de passe connu comme
@@ -586,7 +607,28 @@ func postAdminCredential(ctx context.Context, cfg *Config, username string, encr
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return &escrowHTTPError{Status: resp.StatusCode}
 	}
 	return nil
+}
+
+// escrowHTTPError — réponse non-2xx de POST /api/agent/admin-credential.
+type escrowHTTPError struct{ Status int }
+
+func (e *escrowHTTPError) Error() string { return fmt.Sprintf("HTTP %d", e.Status) }
+
+// isPermanentEscrowRejection — le serveur refuse ce contenu et le refusera
+// toujours (400 ciphertext invalide, 403, 404…). 401 (token en cours de
+// rotation), 408 et 429 (rate limit) restent transitoires, comme les 5xx
+// et les erreurs réseau.
+func isPermanentEscrowRejection(err error) bool {
+	var he *escrowHTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	switch he.Status {
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	}
+	return he.Status >= 400 && he.Status < 500
 }

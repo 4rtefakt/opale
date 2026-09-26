@@ -108,7 +108,7 @@ const lapsApplyScript = "" +
 	"} elseif ($mode -eq 'update') {" +
 	" if (-not $existing) { [Console]::Error.WriteLine('compte disparu depuis le lookup'); exit 10 };" +
 	" if ([string]$existing.SID.Value -ne $expectedSid) { [Console]::Error.WriteLine('SID inattendu'); exit 10 };" +
-	" try { Set-LocalUser -Name $user -Password $secure; }" +
+	" try { Set-LocalUser -SID $expectedSid -Password $secure; }" +
 	" catch { [Console]::Error.WriteLine($_.Exception.Message); exit 11 };" +
 	"} else { [Console]::Error.WriteLine('mode inconnu'); exit 10 };" +
 	"try { [Console]::Out.WriteLine('SID=' + (Get-LocalUser -Name $user).SID.Value); } catch { };" +

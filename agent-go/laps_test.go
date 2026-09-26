@@ -470,7 +470,9 @@ func TestLAPSExitStatus(t *testing.T) {
 func TestLAPSApplyScript_SIDBeforePostSteps(t *testing.T) {
 	iSID := strings.Index(lapsApplyScript, "'SID='")
 	iEnable := strings.Index(lapsApplyScript, "Enable-LocalUser")
-	iSet := strings.Index(lapsApplyScript, "Set-LocalUser -Name $user -Password")
+	// Mode update : le mot de passe est changé sur le SID vérifié (pas sur
+	// le nom, qui pourrait avoir été réattribué entre le contrôle et l'action).
+	iSet := strings.Index(lapsApplyScript, "Set-LocalUser -SID $expectedSid -Password")
 	if iSID < 0 || iEnable < 0 || iSet < 0 || !(iSet < iSID && iSID < iEnable) {
 		t.Fatalf("ordre attendu Set-LocalUser < SID= < Enable-LocalUser (set=%d sid=%d enable=%d)", iSet, iSID, iEnable)
 	}
@@ -664,5 +666,70 @@ func TestParseLAPSLookup(t *testing.T) {
 	}
 	if _, err := parseLAPSLookup("DESC64=", lapsExitOK); err == nil {
 		t.Fatal("SID manquant doit être une erreur")
+	}
+}
+
+// Stash legacy refusé définitivement par le serveur (4xx hors 401/408/429) :
+// abandonné, puis rotation complète (escrow d'abord) dans le même cycle —
+// sinon la LAPS resterait bloquée indéfiniment.
+func TestLAPS_LegacyStashPermanentlyRejected_DroppedThenRotates(t *testing.T) {
+	st := &State{}
+	f := newLAPSFake(st)
+	st.LastAdminRotation = f.now.Add(-time.Hour) // pas échu : la rotation est forcée
+	st.PendingAdminCred = &PendingAdminCred{Username: "opale-recovery", EncB64: b64("enc(live)"), StashedAt: f.now.Add(-30 * time.Minute)}
+	f.escrowErr = []error{&escrowHTTPError{Status: 400}}
+	f.rotator().run(context.Background(), st)
+
+	want := []string{"opale-recovery:enc(live)", "opale-recovery:enc(pw1)"}
+	if strings.Join(f.escrowed, ",") != strings.Join(want, ",") {
+		t.Fatalf("escrows = %v, attendu %v", f.escrowed, want)
+	}
+	if len(f.applied) != 1 || st.PendingAdminCred != nil || st.CurrentAdminCred == nil || st.CurrentAdminCred.EncB64 != b64("enc(pw1)") {
+		t.Fatalf("rotation complète attendue : applied=%v pending=%+v cur=%+v", f.applied, st.PendingAdminCred, st.CurrentAdminCred)
+	}
+}
+
+// Refus transitoires (401 token en rotation, 429 rate limit, 5xx) : le
+// stash legacy est conservé et aucune rotation n'a lieu.
+func TestLAPS_LegacyStashTransientRejection_Kept(t *testing.T) {
+	for _, status := range []int{401, 408, 429, 500, 503} {
+		st := &State{}
+		f := newLAPSFake(st)
+		st.PendingAdminCred = &PendingAdminCred{Username: "opale-recovery", EncB64: b64("enc(live)"), StashedAt: f.now.Add(-time.Hour)}
+		f.escrowErr = []error{&escrowHTTPError{Status: status}}
+		f.rotator().run(context.Background(), st)
+		if st.PendingAdminCred == nil || len(f.applied) != 0 || len(f.escrowed) != 1 {
+			t.Errorf("HTTP %d : stash conservé sans rotation attendu (pending=%+v applied=%v)", status, st.PendingAdminCred, f.applied)
+		}
+	}
+}
+
+func TestIsPermanentEscrowRejection(t *testing.T) {
+	cases := map[error]bool{
+		&escrowHTTPError{Status: 400}:          true,
+		&escrowHTTPError{Status: 403}:          true,
+		&escrowHTTPError{Status: 404}:          true,
+		&escrowHTTPError{Status: 401}:          false,
+		&escrowHTTPError{Status: 408}:          false,
+		&escrowHTTPError{Status: 429}:          false,
+		&escrowHTTPError{Status: 500}:          false,
+		errors.New("HTTP : dial tcp: refused"): false,
+	}
+	for err, want := range cases {
+		if got := isPermanentEscrowRejection(err); got != want {
+			t.Errorf("%v : %v, attendu %v", err, got, want)
+		}
+	}
+}
+
+// postAdminCredential expose le statut HTTP (format du POST inchangé).
+func TestPostAdminCredential_ReturnsHTTPStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"taille du ciphertext suspecte"}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	err := postAdminCredential(context.Background(), &Config{Token: "t", URL: srv.URL}, "u", []byte("x"))
+	if !isPermanentEscrowRejection(err) || err.Error() != "HTTP 400" {
+		t.Fatalf("attendu un refus définitif « HTTP 400 », reçu %v", err)
 	}
 }
