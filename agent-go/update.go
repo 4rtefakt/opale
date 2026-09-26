@@ -32,10 +32,13 @@ func HandleAgentUpdate(ctx context.Context, cfg *Config, st *State, upd *AgentUp
 	if swappedVersion != "" {
 		// Binaire déjà permuté par ce process, redémarrage en attente : ne
 		// pas re-télécharger à chaque checkin (et la 2e permutation
-		// échouerait, l'image en cours d'exécution étant le .bak).
+		// échouerait, l'image en cours d'exécution étant le .bak). On
+		// redemande le redémarrage (Windows : la boucle de service revérifie
+		// les actions de récupération, cf. runServiceLoop).
 		logInfo("update-pending-restart", "binaire déjà remplacé, en attente de redémarrage", LogFields{
 			"version": swappedVersion,
 		})
+		requestServiceRestart()
 		return nil
 	}
 	if upd.LatestVersion == "" || upd.SHA256 == "" || upd.Signature == "" {

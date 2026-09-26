@@ -200,4 +200,9 @@ func TestHandleAgentUpdate_SkipsWhileRestartPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attendu nil (redémarrage en attente), reçu %v", err)
 	}
+	select {
+	case <-restartRequests: // redemandé pour que la boucle de service réessaie
+	default:
+		t.Fatal("redémarrage non redemandé")
+	}
 }
