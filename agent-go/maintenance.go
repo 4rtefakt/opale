@@ -11,7 +11,8 @@ import (
 )
 
 // MaintenanceWindow — fenêtre déclarée par le serveur durant laquelle
-// l'agent autorise les actions perturbantes (auto-update, deployments).
+// l'agent autorise les actions perturbantes (auto-update ; les
+// déploiements, eux, ne sont réservés par le serveur qu'en fenêtre).
 // Les commandes admin (script_executions) ne sont PAS bloquées : elles
 // sont initiées explicitement et nécessitent souvent une réponse rapide.
 //

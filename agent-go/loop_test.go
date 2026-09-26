@@ -24,6 +24,7 @@ type jobServer struct {
 	results   map[string]int
 	scriptsAt map[int][]Command // n° de checkin (à partir de 1) → scripts réservés
 	update    *AgentUpdate
+	window    *MaintenanceWindow
 	checkins  int
 }
 
@@ -55,7 +56,8 @@ func (s *jobServer) handler(t *testing.T) http.HandlerFunc {
 			}
 		}
 		n := min(s.batch, len(s.pending))
-		resp := CheckinResponse{OK: true, DeviceID: "dev-1", Commands: s.scriptsAt[s.checkins], AgentUpdate: s.update}
+		resp := CheckinResponse{OK: true, DeviceID: "dev-1", Commands: s.scriptsAt[s.checkins], AgentUpdate: s.update,
+			MaintenanceWindow: s.window}
 		for _, id := range s.pending[:n] {
 			s.running[id] = true
 			resp.Deployments = append(resp.Deployments, Deployment{
@@ -226,5 +228,31 @@ func TestRunCheckin_FollowUpsBoundedWithoutLosingClaimedJobs(t *testing.T) {
 	}
 	if saved := LoadState(); len(saved.PendingDeployments) != 10 {
 		t.Fatalf("dernier lot non persisté : %d résultats dans state.json", len(saved.PendingDeployments))
+	}
+}
+
+// La fenêtre de maintenance des déploiements est appliquée par le serveur,
+// qui ne les réserve qu'en fenêtre. L'agent ne la réévalue plus : un avis
+// divergent (fuseau invalide, « 2:5 », dérive d'horloge en bord de fenêtre)
+// laissait des déploiements déjà 'running' sans exécution, puis en échec
+// au timeout, à chaque cycle.
+func TestRunCheckin_DeploymentsRunEvenIfAgentThinksOutOfWindow(t *testing.T) {
+	f := installFakeJobs(t)
+	srv := newJobServer(3, 10)
+	// Fenêtre fermée aujourd'hui du point de vue de l'agent (tous les jours
+	// sauf aujourd'hui, UTC) : le serveur, lui, l'a jugée ouverte.
+	today := int(time.Now().UTC().Weekday())
+	var otherDays []int
+	for d := 0; d < 7; d++ {
+		if d != today {
+			otherDays = append(otherDays, d)
+		}
+	}
+	srv.window = &MaintenanceWindow{Weekdays: otherDays, Start: "00:00", End: "23:59", TZ: "UTC"}
+	st := runCheckinAgainst(t, srv)
+
+	assertEveryClaimedJobRanOnce(t, srv, f, st, 3)
+	if len(srv.results) != 3 {
+		t.Fatalf("résultats reçus %d / 3", len(srv.results))
 	}
 }

@@ -75,7 +75,9 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 	// L'auto-update passe après les travaux (déjà réservés côté serveur) :
 	// un binaire permuté redémarre le service, ce qui interromprait un
 	// script en cours ou abandonnerait les travaux restants. Dernière
-	// réponse reçue = dernier état du serveur.
+	// réponse reçue = dernier état du serveur. Fenêtre revérifiée ici (les
+	// travaux ont pu durer au-delà) : sans perte, la mise à jour est
+	// reproposée au checkin suivant.
 	if resp.AgentUpdate != nil {
 		if !resp.MaintenanceWindow.IsActive(time.Now()) {
 			logInfo("update-deferred", "hors fenêtre de maintenance", LogFields{
@@ -107,11 +109,6 @@ func recheckin(ctx context.Context, cfg *Config, st *State) (*CheckinResponse, e
 // d'une réponse de checkin et met leurs résultats en file (state persisté).
 // Retourne le nombre de résultats de déploiement produits.
 func processCheckinJobs(ctx context.Context, cfg *Config, st *State, resp *CheckinResponse) int {
-	// Fenêtre de maintenance : si déclarée et qu'on est en dehors, on
-	// défère les actions perturbantes (auto-update + deployments).
-	// Les commandes admin et la détection passent toujours.
-	inWindow := resp.MaintenanceWindow.IsActive(time.Now())
-
 	// Commandes — chaque résultat est POST individuellement. Pas filtrées
 	// par la maintenance window : ce sont des actions admin-initiated qui
 	// nécessitent souvent une réponse rapide (debug, fix).
@@ -120,20 +117,14 @@ func processCheckinJobs(ctx context.Context, cfg *Config, st *State, resp *Check
 	}
 
 	// Déploiements + détections post-install — résultats stash en state.
+	// Fenêtre de maintenance appliquée par le serveur, qui ne réserve les
+	// déploiements qu'en fenêtre : l'agent exécute ce qu'il a reçu. Les
+	// déférer ici (avis divergent : fuseau, format, horloge) les laissait
+	// 'running' sans exécution jusqu'au timeout (1 h), puis en échec.
 	var depResults []DeploymentResult
 	var detResults []DetectionResult
 	if len(resp.Deployments) > 0 {
-		if !inWindow {
-			logInfo("deployments-deferred", "hors fenêtre de maintenance", LogFields{
-				"deferred": len(resp.Deployments),
-			})
-			// On ne pull PAS les rows de la table deployments (elles restent
-			// 'running' côté DB sans timeout). À améliorer : remettre à 'pending'.
-			// Pour le moment l'API les passe à 'running' à chaque checkin ; donc
-			// on défère côté agent uniquement (pas d'effet de bord côté DB).
-		} else {
-			depResults, detResults = processDeploymentsFn(ctx, resp.Deployments)
-		}
+		depResults, detResults = processDeploymentsFn(ctx, resp.Deployments)
 	}
 	if len(resp.Detect) > 0 {
 		detResults = append(detResults, processDetectFn(ctx, resp.Detect)...)
