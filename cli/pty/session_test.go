@@ -451,3 +451,57 @@ func TestReadLoop_ConnectionLost(t *testing.T) {
 		}
 	}
 }
+
+// Câblage de runSession (ce que Connect fait tourner une fois le terminal en
+// raw) : la frappe part en frame input, la sortie arrive sur stdout, et la
+// fin décidée par la lecture remonte jusqu'à l'appelant.
+func TestRunSession_Wiring(t *testing.T) {
+	gotInput := make(chan string, 1)
+	conn := dialTestWS(t, func(c *websocket.Conn) {
+		_, raw, err := c.ReadMessage()
+		if err != nil {
+			return
+		}
+		var m struct{ Type, Data string }
+		_ = json.Unmarshal(raw, &m)
+		gotInput <- m.Type + ":" + m.Data
+		for _, f := range consoleFrames[:3] { // status, opened, data
+			_ = c.WriteMessage(websocket.TextMessage, []byte(f))
+		}
+		_ = c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "taken-over"))
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	// stdin : une frappe, puis bloqué comme un terminal où l'on ne tape plus.
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { pw.Close() })
+	stdin := io.MultiReader(strings.NewReader("dir\r"), pr)
+
+	var out, errOut bytes.Buffer
+	errc := make(chan error, 1)
+	go func() { errc <- runSession(conn, &wsWriter{conn: conn}, stdin, &out, &errOut) }()
+	var err error
+	select {
+	case err = <-errc:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runSession bloquée")
+	}
+
+	select {
+	case got := <-gotInput:
+		if got != "input:ZGlyDQ==" { // base64("dir\r")
+			t.Errorf("frame envoyée = %q, want input:ZGlyDQ==", got)
+		}
+	case <-time.After(time.Second):
+		t.Error("aucune frame input reçue : stdin non relayé")
+	}
+	if out.String() != "PS C:\\Windows\\system32> " {
+		t.Errorf("stdout = %q", out.String())
+	}
+	if err == nil || err.Error() != "déconnecté : taken-over" {
+		t.Errorf("err = %v, want « déconnecté : taken-over »", err)
+	}
+}

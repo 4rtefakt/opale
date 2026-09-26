@@ -45,31 +45,36 @@ func Connect(serverURL, wsPath string) error {
 
 	w := &wsWriter{conn: conn}
 
-	// Initial size
+	// Taille initiale
 	sendResize(w)
 
-	// Resize notifications (SIGWINCH on Unix; no-op on Windows — see session_*.go)
+	// Redimensionnements : SIGWINCH sous Unix, rien sous Windows (cf. resize_*.go)
 	resizeCh := newResizeChan()
 	defer stopResizeChan(resizeCh)
-
-	done := make(chan error, 1)
-
-	// server → stdout
-	go func() {
-		done <- readLoop(conn, os.Stdout, os.Stderr)
-	}()
-
-	// stdin → server
-	go func() {
-		pumpInput(os.Stdin, w)
-		done <- nil
-	}()
-
-	// resize
 	go func() {
 		for range resizeCh {
 			sendResize(w)
 		}
+	}()
+
+	return runSession(conn, w, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// runSession relie la connexion au terminal jusqu'à la fin de session :
+// frames serveur → stdout/stderr, stdin → frames input. Sans TTY, donc
+// testable : Connect n'y ajoute que le mode raw, la taille et SIGWINCH.
+func runSession(conn *websocket.Conn, w *wsWriter, stdin io.Reader, stdout, stderr io.Writer) error {
+	done := make(chan error, 1)
+
+	// serveur → stdout
+	go func() {
+		done <- readLoop(conn, stdout, stderr)
+	}()
+
+	// stdin → serveur
+	go func() {
+		pumpInput(stdin, w)
+		done <- nil
 	}()
 
 	return <-done
