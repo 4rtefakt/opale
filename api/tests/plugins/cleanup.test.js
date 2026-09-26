@@ -115,3 +115,30 @@ test('scripts agent réservés sans résultat depuis plus d’1 h : passés en e
   const { rows: [d] } = await db.query(`SELECT status FROM deployments WHERE id = $1`, [dep.id])
   assert.equal(d.status, 'failed', 'timeout des déploiements inchangé')
 })
+
+test('timeout des scripts : une sortie déjà pleine (10 000 caractères) ne bloque pas la mise à jour groupée', { skip: SKIP }, async (t) => {
+  // output est VARCHAR(10000) : sans troncature, « sortie || message »
+  // dépassait la colonne et faisait échouer l'UPDATE groupé (22001) à
+  // chaque passage, pour TOUTES les lignes concernées.
+  const { rows: [full] } = await db.query(`
+    INSERT INTO script_executions (device_id, mode, status, script_name, output, started_at)
+    VALUES ($1, 'agent', 'running', 'full', repeat('x', 10000), now() - interval '2 hours') RETURNING id`, [deviceId])
+  const { rows: [empty] } = await db.query(`
+    INSERT INTO script_executions (device_id, mode, status, script_name, started_at)
+    VALUES ($1, 'agent', 'running', 'empty', now() - interval '2 hours') RETURNING id`, [deviceId])
+
+  const app = Fastify({ logger: false })
+  app.decorate('db', db)
+  await app.register(cleanupPlugin)
+  await app.ready()
+  t.after(() => app.close())
+
+  const { rows } = await db.query(
+    `SELECT id, status, length(output) AS len, output LIKE '%[serveur] Timeout%' AS has_msg
+     FROM script_executions WHERE id = ANY($1::uuid[])`, [[full.id, empty.id]])
+  for (const r of rows) {
+    assert.equal(r.status, 'error', r.id)
+    assert.ok(r.has_msg, 'message de timeout présent')
+    assert.ok(r.len <= 10000)
+  }
+})

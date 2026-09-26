@@ -48,7 +48,9 @@ async function timeoutStuckScripts(fastify) {
       UPDATE script_executions
       SET status       = 'error',
           completed_at = now(),
-          output       = COALESCE(output, '') || E'\n[serveur] Timeout : aucun résultat reçu de l''agent après ${SCRIPT_RUNNING_TIMEOUT_MIN} min. Relancer le script si besoin.'
+          -- output est VARCHAR(10000) : on garde la place du message (sinon
+          -- 22001 sur une ligne ferait échouer tout l'UPDATE, à chaque passage).
+          output       = left(COALESCE(output, ''), 9800) || E'\n[serveur] Timeout : aucun résultat reçu de l''agent après ${SCRIPT_RUNNING_TIMEOUT_MIN} min. Relancer le script si besoin.'
       WHERE mode = 'agent'
         AND status = 'running'
         AND started_at < now() - INTERVAL '${SCRIPT_RUNNING_TIMEOUT_MIN} minutes'
