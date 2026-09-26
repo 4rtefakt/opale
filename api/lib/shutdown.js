@@ -11,6 +11,14 @@
 // Docker envoie SIGKILL 10 s après SIGTERM (stop_grace_period par défaut) :
 // au-delà de `timeoutMs`, on sort en code 1 plutôt que d'être tué sans
 // trace. Un second signal force la sortie immédiate.
+//
+// Connexions keep-alive (Caddy garde ses connexions amont ouvertes) : une
+// connexion dont la requête était en cours au signal reste ouverte après la
+// réponse, et server.close() l'attendrait jusqu'à keepAliveTimeout (72 s),
+// bien au-delà de la sortie forcée. Pendant la fermeture, les connexions
+// devenues inactives sont fermées toutes les 250 ms.
+const IDLE_SWEEP_MS = 250
+
 export function installShutdownHandlers(fastify, {
   signals = ['SIGTERM', 'SIGINT'],
   timeoutMs = 8000,
@@ -27,7 +35,11 @@ export function installShutdownHandlers(fastify, {
     }
     closing = true
     fastify.log.info({ signal }, 'arrêt : fermeture propre en cours')
+    // unref : le balayage seul ne doit jamais retenir le process.
+    const sweep = setInterval(() => fastify.server?.closeIdleConnections?.(), IDLE_SWEEP_MS)
+    sweep.unref?.()
     const timer = setTimeout(() => {
+      clearInterval(sweep)
       fastify.log.error({ timeoutMs }, 'arrêt : délai dépassé, sortie forcée')
       exit(1)
     }, timeoutMs)
@@ -40,6 +52,8 @@ export function installShutdownHandlers(fastify, {
       clearTimeout(timer)
       fastify.log.error({ err: err.message }, 'arrêt : erreur pendant la fermeture')
       exit(1)
+    } finally {
+      clearInterval(sweep)
     }
   }
 

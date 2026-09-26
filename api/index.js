@@ -13,7 +13,7 @@ import cleanupPlugin      from './plugins/cleanup.js'
 import errorHandlerPlugin from './plugins/error-handler.js'
 import healthPlugin       from './plugins/health.js'
 
-import { loadModules, startModuleWorkers, stopModuleWorkers } from './lib/module-loader.js'
+import { loadModules, startModuleWorkers, stopWorkersBeforeClose } from './lib/module-loader.js'
 import { installShutdownHandlers } from './lib/shutdown.js'
 import { parseTrustProxy, rateLimitOptions } from './lib/rate-limit.js'
 
@@ -80,10 +80,9 @@ await fastify.register(healthPlugin)   // GET /api/health (sans auth, cf. plugin
 // Chargement des modules activés (cf. modules.config.js).
 const modules = await loadModules(fastify)
 
-// À la fermeture, les workers s'arrêtent (tick en cours terminé) AVANT le
-// pool Postgres : les hooks onClose s'exécutent dans l'ordre inverse de leur
-// enregistrement, celui-ci passe donc avant celui du plugin db.
-fastify.addHook('onClose', () => stopModuleWorkers(modules, fastify))
+// À la fermeture, les workers s'arrêtent (tick en cours terminé) dès le début
+// de fastify.close(), donc avant le pool Postgres (cf. module-loader).
+stopWorkersBeforeClose(fastify, modules)
 
 fastify.setNotFoundHandler((req, reply) => {
   if (!req.url.startsWith('/api')) {
