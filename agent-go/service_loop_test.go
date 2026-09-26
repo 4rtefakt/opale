@@ -147,6 +147,48 @@ func TestRunServiceLoop_RestartOnlyWithRecoveryActions(t *testing.T) {
 	}
 }
 
+// Stop reçu pendant l'attente de fin du travail avant un redémarrage :
+// l'arrêt l'emporte (pas de sortie « en échec » qui ferait relancer le
+// service par le SCM), et Interrogate reste servi pendant l'attente.
+func TestRunServiceLoop_StopDuringRestartWaitWins(t *testing.T) {
+	requests := make(chan svcRequest)
+	restart := make(chan struct{}, 1)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	work := func(ctx context.Context) {
+		close(started)
+		<-ctx.Done()
+		<-release // checkin long qui finit après l'annulation
+	}
+	var stopPending atomic.Int32
+	result := make(chan serviceExit, 1)
+	go func() {
+		result <- runServiceLoop(requests, restart, work, func() { stopPending.Add(1) },
+			func() bool { return true }, 5*time.Second)
+	}()
+	<-started
+	restart <- struct{}{}
+	replied := make(chan struct{})
+	select {
+	case requests <- svcRequest{cmd: svcCmdInterrogate, reply: func() { close(replied) }}:
+	case <-time.After(time.Second):
+		t.Fatal("Interrogate non accepté pendant l'attente du redémarrage")
+	}
+	<-replied
+	select {
+	case requests <- svcRequest{cmd: svcCmdStop}:
+	case <-time.After(time.Second):
+		t.Fatal("Stop non accepté pendant l'attente du redémarrage")
+	}
+	close(release)
+	if r := <-result; r != serviceExitStopped {
+		t.Fatalf("sortie %v, attendu serviceExitStopped (Stop prioritaire)", r)
+	}
+	if stopPending.Load() != 1 {
+		t.Fatalf("StopPending envoyé %d fois", stopPending.Load())
+	}
+}
+
 func TestRunAgent_WaitsForWSOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wsDone atomic.Bool

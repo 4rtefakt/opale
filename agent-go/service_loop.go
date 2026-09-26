@@ -71,14 +71,36 @@ func runServiceLoop(requests <-chan svcRequest, restart <-chan struct{}, work fu
 		defer close(done)
 		work(ctx)
 	}()
-	stop := func() {
+	// stop annule le travail et attend sa fin (bornée par grace) en
+	// continuant à servir le SCM : Interrogate reçoit sa réponse, et un Stop
+	// reçu pendant l'attente d'un redémarrage l'emporte (sinon le SCM
+	// relancerait un service que l'admin vient d'arrêter).
+	stop := func(exit serviceExit) serviceExit {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(grace):
-			logWarn("service-stop-timeout", "travail en cours non terminé, arrêt forcé", LogFields{
-				"grace_s": int(grace.Seconds()),
-			})
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		for {
+			select {
+			case <-done:
+				return exit
+			case <-timer.C:
+				logWarn("service-stop-timeout", "travail en cours non terminé, arrêt forcé", LogFields{
+					"grace_s": int(grace.Seconds()),
+				})
+				return exit
+			case req := <-requests:
+				switch req.cmd {
+				case svcCmdInterrogate:
+					if req.reply != nil {
+						req.reply()
+					}
+				case svcCmdStop:
+					if exit != serviceExitStopped {
+						onStopPending()
+						exit = serviceExitStopped
+					}
+				}
+			}
 		}
 	}
 	for {
@@ -91,8 +113,7 @@ func runServiceLoop(requests <-chan svcRequest, restart <-chan struct{}, work fu
 				}
 			case svcCmdStop:
 				onStopPending()
-				stop()
-				return serviceExitStopped
+				return stop(serviceExitStopped)
 			}
 		case <-restart:
 			if !canRestart() {
@@ -101,8 +122,7 @@ func runServiceLoop(requests <-chan svcRequest, restart <-chan struct{}, work fu
 				})
 				continue
 			}
-			stop()
-			return serviceExitRestart
+			return stop(serviceExitRestart)
 		case <-done:
 			logWarn("service-worker-exit", "fin inattendue du travail de l'agent", nil)
 			return serviceExitRestart
