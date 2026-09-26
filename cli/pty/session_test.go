@@ -126,19 +126,18 @@ func TestHandleFrame_ConsoleTransport(t *testing.T) {
 		}
 	}
 
+	// error : fin de session en erreur (code de sortie non nul), message
+	// remonté tel quel pour être affiché une seule fois, par cobra.
 	for _, tc := range []struct{ frame, want string }{
-		{consoleAgentError, "[erreur] console non supportée sur cet OS (agent prod = Windows uniquement)"},
-		{consoleServerError, "[erreur] Nonce invalide ou déjà utilisé"},
+		{consoleAgentError, "console non supportée sur cet OS (agent prod = Windows uniquement)"},
+		{consoleServerError, "Nonce invalide ou déjà utilisé"},
 	} {
 		r = feed(tc.frame)
-		if !r.end || r.err != nil {
-			t.Errorf("%s : end=%v err=%v, want end=true err=nil", tc.frame, r.end, r.err)
+		if !r.end || r.err == nil || r.err.Error() != tc.want {
+			t.Errorf("%s : end=%v err=%v, want end=true err=%q", tc.frame, r.end, r.err, tc.want)
 		}
-		if !strings.Contains(r.stderr, tc.want) {
-			t.Errorf("%s : stderr = %q, doit contenir %q", tc.frame, r.stderr, tc.want)
-		}
-		if r.stdout != "" {
-			t.Errorf("%s : rien ne doit partir sur stdout, got %q", tc.frame, r.stdout)
+		if strings.Contains(r.stderr, tc.want) || r.stdout != "" {
+			t.Errorf("%s : message affiché en double (stdout=%q stderr=%q)", tc.frame, r.stdout, r.stderr)
 		}
 	}
 }
@@ -158,11 +157,12 @@ func TestHandleFrame_SSHTransport(t *testing.T) {
 	}
 
 	r = feed(sshError)
-	if !r.end || r.err != nil {
-		t.Errorf("erreur SSH : end=%v err=%v, want end=true err=nil", r.end, r.err)
+	want := "SSH : connect ECONNREFUSED 127.0.0.1:1"
+	if !r.end || r.err == nil || r.err.Error() != want {
+		t.Errorf("erreur SSH : end=%v err=%v, want end=true err=%q", r.end, r.err, want)
 	}
-	if want := "[erreur] SSH : connect ECONNREFUSED 127.0.0.1:1"; !strings.Contains(r.stderr, want) {
-		t.Errorf("stderr = %q, doit contenir %q", r.stderr, want)
+	if strings.Contains(r.stderr, want) {
+		t.Errorf("message affiché en double : stderr = %q", r.stderr)
 	}
 }
 
@@ -188,8 +188,11 @@ func TestHandleFrame_MalformedFramesSurfaceAnError(t *testing.T) {
 
 	// Erreur de forme inconnue : rendue brute plutôt qu'avalée.
 	r := feed(`{"type":"error","data":{"code":"E42"}}`)
-	if !r.end || !strings.Contains(r.stderr, `[erreur] {"code":"E42"}`) {
-		t.Errorf("erreur inconnue : end=%v stderr=%q", r.end, r.stderr)
+	if !r.end || r.err == nil || r.err.Error() != `{"code":"E42"}` {
+		t.Errorf("erreur inconnue : end=%v err=%v", r.end, r.err)
+	}
+	if r = feed(`{"type":"error"}`); r.err == nil || r.err.Error() != "erreur serveur sans détail" {
+		t.Errorf("erreur sans data : err=%v", r.err)
 	}
 
 	// Type inconnu (serveur plus récent) : ignoré, pas une erreur.
@@ -366,5 +369,35 @@ func TestReadLoop_CloseReasonIsReported(t *testing.T) {
 	// SSH : `socket.close()` sans motif (ssh.js) → fin normale.
 	if r = runReadLoop(t, sshFrames, []byte{}); r.err != nil {
 		t.Errorf("ssh close sans motif : err = %v", r.err)
+	}
+}
+
+// Frame error en cours de session (agent puis close 'agent-error', ou SSH) :
+// code de sortie non nul, message affiché une seule fois (par cobra), et
+// retour à la ligne pour que « Error: » ne tombe pas au milieu de l'invite.
+func TestReadLoop_ErrorFrameExitsNonZero(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		frames []string
+		close  []byte
+		want   string
+	}{
+		{"console", []string{consoleFrames[0], consoleFrames[2], consoleAgentError},
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "agent-error"),
+			"console non supportée sur cet OS (agent prod = Windows uniquement)"},
+		{"ssh", []string{sshFrames[0], `{"type":"data","data":"UFM+IA=="}`, sshError}, // "PS> "
+			[]byte{}, "SSH : connect ECONNREFUSED 127.0.0.1:1"},
+	} {
+		var term bytes.Buffer
+		err := runReadLoopTo(t, tc.frames, tc.close, &term, &term)
+		if err == nil || err.Error() != tc.want {
+			t.Errorf("%s : err = %v, want %q", tc.name, err, tc.want)
+		}
+		if strings.Contains(term.String(), tc.want) {
+			t.Errorf("%s : message affiché en double : %q", tc.name, term.String())
+		}
+		if !strings.HasSuffix(term.String(), "> \r\n") {
+			t.Errorf("%s : terminal = %q, doit finir par un retour à la ligne", tc.name, term.String())
+		}
 	}
 }

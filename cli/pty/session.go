@@ -152,9 +152,10 @@ func readLoop(conn *websocket.Conn, stdout, stderr io.Writer) (err error) {
 //	opened   —          { pid }
 //	exit     —          { reason }
 //
-// end : la session est terminée. err : frame illisible — on coupe la session
-// plutôt que de laisser l'admin taper à l'aveugle dans un shell SYSTEM dont
-// la sortie serait perdue.
+// end : la session est terminée. err : frame error (message du serveur ou de
+// l'agent), ou frame illisible — on coupe alors la session plutôt que de
+// laisser l'admin taper à l'aveugle dans un shell SYSTEM dont la sortie
+// serait perdue.
 func handleFrame(raw []byte, stdout, stderr io.Writer) (end bool, err error) {
 	var msg struct {
 		Type string          `json:"type"`
@@ -181,8 +182,13 @@ func handleFrame(raw []byte, stdout, stderr io.Writer) (end bool, err error) {
 			fmt.Fprint(stderr, "\r\n[Console ouverte]\r\n")
 		}
 	case "error":
-		fmt.Fprintf(stderr, "\r\n[erreur] %s\r\n", frameText(msg.Data))
-		return true, nil
+		// Pas d'affichage ici : le message remonte en erreur, affiché une
+		// seule fois par cobra, avec un code de sortie non nul.
+		text := frameText(msg.Data)
+		if text == "" {
+			text = "erreur serveur sans détail"
+		}
+		return true, errors.New(text)
 	case "exit":
 		// Dernière frame de la session : l'agent l'émet après sa dernière
 		// sortie et routes/agent.js ferme le socket juste derrière (avec le
