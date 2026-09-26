@@ -42,11 +42,14 @@
 //   - au moins MAX_INGEST_ATTEMPTS échecs ET MIN_POISON_AGE_MS depuis le
 //     premier : un échec propre au mail mais passager (verrou sur son
 //     ticket, statement_timeout…) a le temps de se résorber ;
-//   - le mail SUIVANT de la boîte est traité sans erreur. S'il échoue lui
-//     aussi, la panne n'est pas propre au mail (pool saturé, trigger ou
-//     contrainte cassés, droits retirés…) : rien n'est abandonné, erreur
-//     journalisée à chaque tick, tout repart au rétablissement. Sans mail
-//     suivant, rien à débloquer : on attend.
+//   - un mail SUIVANT de la boîte est traité avec une écriture commitée
+//     (ceux qui n'écrivent rien — déjà ingérés, non rattachés, doublons —
+//     ne prouvent rien et sont passés). Si le premier suivant qui tente
+//     d'écrire échoue lui aussi, la panne n'est pas propre au mail (pool
+//     saturé, trigger ou contrainte cassés, droits retirés…) : rien n'est
+//     abandonné, erreur journalisée à chaque tick, tout repart au
+//     rétablissement. Sans verdict dans le tick (pas de mail suivant qui
+//     écrit), on attend : le suspect ne bloque alors rien qui écrive.
 //     Limite assumée : deux mails poison consécutifs sont indiscernables
 //     d'une panne systémique — boîte bloquée, erreur à chaque tick, jusqu'à
 //     intervention (cause corrigée, ou curseur avancé à la main en SQL
@@ -116,7 +119,8 @@ async function abandon(db, log, { mailbox, message, key, dateField, attempts, er
 //     (`value` = mails à traiter, `scanned` = tous les mails de la page) ;
 //   handle(message, { memo }) → traite un mail de `value` ; { retry: true,
 //     error, memo? } si l'échec est transitoire (rien d'écrit, à retenter) —
-//     `memo` est rendu au handle à la reprise suivante du même mail ;
+//     `memo` est rendu au handle à la reprise suivante du même mail — sinon
+//     { wrote } (true si une écriture a été commitée) ;
 //   now() → horloge (injectable pour les tests).
 // Retourne { errors, abandoned } (échecs de listing / mails abandonnés,
 // déjà loggés).
@@ -163,8 +167,12 @@ export async function pollMailboxCursor(db, log, {
       skipOnly = false
 
       if (toProcess.has(m)) {
-        processed++
         const r = await handle(m, { memo: retry?.id === key ? retry.memo : undefined })
+        // Pendant l'attente d'un verdict, un mail qui n'écrit rien ne
+        // consomme pas le budget du tick (seules les MAX_PAGES bornent) :
+        // sinon une suite de mails non rattachés (Éléments envoyés) après
+        // le suspect empêcherait pour toujours d'atteindre le verdict.
+        if (!(suspect && !r?.retry && !r?.wrote)) processed++
         if (r?.retry) {
           const error = String(r.error || 'erreur inconnue').slice(0, 500)
           if (suspect) {
@@ -195,8 +203,11 @@ export async function pollMailboxCursor(db, log, {
           // Candidat à l'abandon : dépassé provisoirement ; abandonné
           // seulement si le mail suivant est traité sans erreur.
           suspect = { message: m, key, rollback: { at, done: new Set(done), retry: record } }
-        } else if (suspect) {
-          // Le mail suivant passe : l'échec était propre au suspect.
+        } else if (suspect && r?.wrote) {
+          // Un mail suivant a ÉCRIT (commit) : la chaîne d'écriture marche,
+          // l'échec était propre au suspect. Un mail qui n'écrit rien
+          // (déjà ingéré, non rattaché, doublon) ne prouve rien : le suspect
+          // reste en attente et on continue.
           const { attempts, error } = suspect.rollback.retry
           await abandon(db, log, { mailbox, message: suspect.message, key: suspect.key, dateField, attempts, error, tag })
           abandoned++

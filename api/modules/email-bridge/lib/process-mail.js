@@ -138,7 +138,7 @@ async function appendReplyToProposal(client, { proposalId, graphMessage, sender,
 // mapping, retourne immédiatement {skipped: 'already-ingested'} sans rien
 // modifier.
 //
-// Retour : {action, ticket_id?, proposal_id?, intent?, error?, retryable?}
+// Retour : {action, ticket_id?, proposal_id?, intent?, error?, retryable?, committed?}
 //   action : 'message_appended' | 'reply_appended_to_proposal' |
 //            'pending_review' | 'already_ingested' | 'skipped_error'
 //   retryable : true si la transaction a échoué (rien d'écrit, à retenter) ;
@@ -289,7 +289,9 @@ export async function processOne(db, log, { graphMessage, mailbox, classifierFn,
     `, [ticketId, proposalId, action, errorMessage, mappingId])
 
     await client.query('COMMIT')
-    return { action, ticket_id: ticketId, proposal_id: proposalId, intent, error: errorMessage }
+    // `committed` : une écriture a réellement abouti (preuve, pour le
+    // worker, que la chaîne d'écriture fonctionne — cf. poll-cursor).
+    return { action, ticket_id: ticketId, proposal_id: proposalId, intent, error: errorMessage, committed: true }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     log?.warn({ err: err.message, mailbox, internetMessageId }, 'email-bridge: tx process échouée')

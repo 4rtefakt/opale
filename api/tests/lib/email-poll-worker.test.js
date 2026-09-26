@@ -71,7 +71,7 @@ beforeEach(async () => {
   _resetSystemFolderCache()
   await db.query(`TRUNCATE TABLE email_thread_mapping CASCADE`)
   await db.query(`TRUNCATE TABLE test_failing_mail`)
-  await db.query(`DELETE FROM audit_logs WHERE action = 'mail_ingest_abandoned'`)
+  await db.query(`DELETE FROM audit_logs WHERE action LIKE 'mail_ingest%'`)
   await db.query(`DELETE FROM settings WHERE key LIKE 'mail.cursor%'`)
   await db.query(
     `INSERT INTO settings (key, value) VALUES ($1, $2)`,
@@ -418,6 +418,41 @@ test('pollOnce : panne systémique (tous les mails échouent, settings OK) → a
       await db.query(`TRUNCATE TABLE test_failing_mail`)
       await pollOnce(db, log, { now: clock.now })
       assert.deepEqual(await ingestedIds(), ids(mails), 'tout est ingéré au rétablissement')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollOnce : panne systémique, mail suivant déjà ingéré (rien d\'écrit) → pas de verdict, aucun abandon',
+  { skip: SKIP }, async () => {
+    // Copie d'un mail déjà ingéré (règle « copier vers un dossier ») :
+    // already_ingested n'écrit rien et ne prouve pas que l'écriture marche.
+    await db.query(`
+      INSERT INTO email_thread_mapping (internet_message_id, mailbox, direction, received_at)
+      VALUES ('<deja-ingere@example.com>', $1, 'inbound', now())
+    `, [MAILBOX])
+    const suspect = fakeMail({ receivedDateTime: at(1) })
+    const copy = fakeMail({ receivedDateTime: at(2), internetMessageId: '<deja-ingere@example.com>' })
+    const next = fakeMail({ receivedDateTime: at(3) })
+    useGraph({ inbox: [suspect, copy, next] })
+    await failMappingInsertFor(suspect)
+    await failMappingInsertFor(next)
+    const clock = fakeClock()
+    try {
+      let abandoned = 0
+      for (let tick = 0; tick < 12; tick++) {   // 1 h
+        abandoned += (await pollOnce(db, null, { now: clock.now })).abandoned
+        clock.advance(TICK_MS)
+      }
+      assert.equal(abandoned, 0)
+      assert.equal((await abandonedAudits()).length, 0)
+
+      await db.query(`TRUNCATE TABLE test_failing_mail`)
+      await pollOnce(db, null, { now: clock.now })
+      for (const m of [suspect, next]) {
+        assert.ok((await ingestedIds()).includes(m.internetMessageId), 'rattrapé au rétablissement')
+      }
     } finally {
       graph.restore()
     }

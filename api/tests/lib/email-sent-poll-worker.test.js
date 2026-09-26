@@ -8,6 +8,8 @@
 //     elle, retentée au tick suivant, aucune réponse ajoutée en double
 //   - réponse visible plus tard au même sentDateTime que le curseur →
 //     ajoutée ; la précédente n'est pas retraitée (pas de getMessage rejoué)
+//   - panne systémique d'écriture, réponses threadées entrecoupées de mails
+//     non rattachés (skipped_no_match : rien d'écrit) → aucun abandon
 //
 // Échec de transaction : trigger de test sur email_thread_mapping (INSERT
 // refusé pour les internet_message_id listés dans test_failing_mail).
@@ -60,6 +62,7 @@ beforeEach(async () => {
   if (SKIP) return
   await db.query(`TRUNCATE TABLE email_thread_mapping, ticket_messages, tickets CASCADE`)
   await db.query(`TRUNCATE TABLE test_failing_mail`)
+  await db.query(`DELETE FROM audit_logs WHERE action LIKE 'mail_ingest%'`)
   await db.query(`DELETE FROM settings WHERE key LIKE 'mail.sent_cursor%'`)
   await db.query(`INSERT INTO settings (key, value) VALUES ($1, $2)`, [`mail.sent_cursor.${MAILBOX}`, T0])
 
@@ -132,6 +135,74 @@ test('pollSentOnce : réponse visible plus tard au même sentDateTime que le cur
 
       const fetchedFirst = graph.calls.filter(u => u.includes(`/messages/${encodeURIComponent(first.id)}`))
       assert.equal(fetchedFirst.length, 1, 'le corps de la première réponse n\'est pas re-téléchargé')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollSentOnce : réponse poison suivie de 60 mails non rattachés puis d\'une réponse → verdict atteint, poison abandonnée',
+  { skip: SKIP }, async () => {
+    // Pendant qu'un suspect attend son verdict, les mails qui n'écrivent
+    // rien ne consomment pas le budget de PAGE_SIZE mails du tick : sinon
+    // 50 mails perso d'affilée empêcheraient pour toujours d'atteindre la
+    // réponse suivante (boîte bloquée).
+    const poison = sentReply(1, 'Réponse poison')
+    const perso = Array.from({ length: 60 }, (_, i) => fakeMail({
+      sentDateTime: at(2 + i), conversationId: `perso-${i}`, subject: `Perso ${i}`,
+      from: { emailAddress: { address: MAILBOX } },
+    }))
+    const good = sentReply(100, 'Réponse suivante')
+    graph = installFakeGraph({ sent: [poison, ...perso, good] })
+    await db.query(`INSERT INTO test_failing_mail VALUES ($1)`, [poison.internetMessageId])
+    let t = Date.parse('2026-05-10T10:00:00Z')
+    const now = () => t
+    try {
+      let abandoned = 0
+      for (let tick = 0; tick < 8; tick++) {   // 40 min
+        abandoned += (await pollSentOnce(db, null, { now })).abandoned
+        t += 5 * 60_000
+      }
+      assert.equal(abandoned, 1, 'poison abandonnée une fois le verdict atteint')
+      assert.deepEqual(await ticketContents(), ['Réponse suivante'])
+      assert.equal(await cursorMs(), Date.parse(at(100)))
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollSentOnce : panne systémique d\'écriture, réponses entrecoupées de mails non rattachés → aucun abandon, tout rattrapé',
+  { skip: SKIP }, async () => {
+    // Un mail non rattaché (skipped_no_match) n'écrit rien : il ne prouve
+    // pas que l'écriture fonctionne et ne doit pas servir de verdict.
+    const replies = []
+    const mails = []
+    for (let i = 0; i < 6; i++) {
+      const reply = sentReply(2 * i + 1, `Réponse ${i}`)
+      replies.push(reply)
+      mails.push(reply, fakeMail({
+        sentDateTime: at(2 * i + 2), conversationId: `perso-${i}`, subject: `Perso ${i}`,
+        from: { emailAddress: { address: MAILBOX } },
+      }))
+    }
+    graph = installFakeGraph({ sent: mails })
+    for (const r of replies) await db.query(`INSERT INTO test_failing_mail VALUES ($1)`, [r.internetMessageId])
+    let t = Date.parse('2026-05-10T10:00:00Z')
+    const now = () => t
+    try {
+      let abandoned = 0
+      for (let tick = 0; tick < 36; tick++) {   // 3 h, un tick toutes les 5 min
+        abandoned += (await pollSentOnce(db, null, { now })).abandoned
+        t += 5 * 60_000
+      }
+      assert.equal(abandoned, 0)
+      const { rows } = await db.query(`SELECT count(*)::int AS n FROM audit_logs WHERE action = 'mail_ingest_abandoned'`)
+      assert.equal(rows[0].n, 0)
+
+      await db.query(`TRUNCATE TABLE test_failing_mail`)
+      await pollSentOnce(db, null, { now })
+      assert.deepEqual(await ticketContents(), replies.map((_, i) => `Réponse ${i}`), 'toutes les réponses rattrapées')
     } finally {
       graph.restore()
     }

@@ -70,7 +70,7 @@ async function appendSentMessageToTicket(client, { ticketId, authorName, content
 // (match, dédup, garde anti-doublon) mais N'ÉCRIT RIEN et retourne l'action
 // qui SERAIT prise — pas de divergence de logique avec le vrai traitement.
 //
-// Retour : { action, ticket_id?, error?, retryable? }
+// Retour : { action, ticket_id?, error?, retryable?, committed? }
 //   action : 'message_appended' | 'skipped_no_match' | 'skipped_duplicate'
 //            | 'already_ingested' | 'skipped_error'
 //   retryable : true si la transaction a échoué (rien d'écrit, à retenter) ;
@@ -178,7 +178,8 @@ export async function processSentOne(db, log, { graphMessage, mailbox, getMessag
     })
 
     await client.query('COMMIT')
-    return { action: 'message_appended', ticket_id: threadMatch.ticket_id }
+    // `committed` : une écriture a réellement abouti (cf. poll-cursor).
+    return { action: 'message_appended', ticket_id: threadMatch.ticket_id, committed: true }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     log?.warn({ err: err.message, mailbox, internetMessageId }, 'sent: tx process échouée')

@@ -108,6 +108,9 @@ export async function pollSentOnce(db, log, injection = {}) {
         }
         // Transaction annulée : rien d'écrit → retenté (curseur non avancé).
         if (out?.retryable) return { retry: true, error: out.error }
+        // `wrote` : écriture commitée (pas skipped_no_match / duplicate /
+        // already_ingested, qui n'écrivent rien) — verdict poll-cursor.
+        return { wrote: out?.committed === true }
       } catch (err) {
         stats.errors++
         log?.warn({ err: err.message, mailbox, internetMessageId: m.internetMessageId },

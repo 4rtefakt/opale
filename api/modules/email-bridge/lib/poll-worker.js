@@ -128,6 +128,9 @@ export async function pollOnce(db, log, injection = {}) {
         if (out?.retryable) {
           return { retry: true, error: out.error, memo: out.classifier ? { classifier: out.classifier } : undefined }
         }
+        // `wrote` : écriture commitée (pas already_ingested / skip) — seule
+        // preuve que la chaîne d'écriture fonctionne (verdict poll-cursor).
+        return { wrote: out?.committed === true }
       } catch (err) {
         stats.errors++
         log?.warn({ err: err.message, mailbox, internetMessageId: m.internetMessageId },
