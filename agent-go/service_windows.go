@@ -5,12 +5,19 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
 
 	"github.com/4rtefakt/opale/agent-go/branding"
 )
+
+// serviceRestartExitCode — code de sortie quand l'agent quitte pour être
+// relancé par le SCM (après permutation du binaire). Toute sortie du
+// process sans avoir signalé SERVICE_STOPPED est un « échec » pour le SCM,
+// qui applique alors les actions de récupération (restart).
+const serviceRestartExitCode = 1
 
 // agentService implémente svc.Handler.
 type agentService struct{}
@@ -28,6 +35,12 @@ func (s *agentService) Execute(args []string, r <-chan svc.ChangeRequest, status
 
 	st := LoadState()
 	CheckBinaryIntegrity(st)
+
+	// Les installs existantes récupèrent ainsi les actions de récupération
+	// dont dépend le redémarrage après auto-update.
+	if err := ensureServiceRecoveryActions(); err != nil {
+		logError("service-recovery-actions", err, nil)
+	}
 
 	status <- svc.Status{State: svc.Running, Accepts: accepted}
 	logInfo("service-start", "", LogFields{"interval": CheckinInterval.String()})
@@ -73,8 +86,28 @@ func (s *agentService) Execute(args []string, r <-chan svc.ChangeRequest, status
 		logInfo("service-stop", "demandé par SCM", nil)
 		status <- svc.Status{State: svc.StopPending, WaitHint: uint32((serviceStopGrace + 5*time.Second) / time.Millisecond)}
 	}
+	canRestart := func() bool {
+		if err := ensureServiceRecoveryActions(); err != nil {
+			logError("service-recovery-actions", err, nil)
+			return false
+		}
+		return true
+	}
 
-	runServiceLoop(requests, work, onStopPending, serviceStopGrace)
+	switch runServiceLoop(requests, restartRequests, work, onStopPending, canRestart, serviceStopGrace) {
+	case serviceExitRestart:
+		// Sortie SANS signaler SERVICE_STOPPED : le SCM la traite comme un
+		// échec et relance le service (nouveau binaire) après le délai des
+		// actions de récupération. Remplace l'ancien helper
+		// « cmd /c timeout … && sc stop && sc start » : timeout.exe refuse
+		// une entrée redirigée (stdin = NUL), la chaîne s'arrêtait là et le
+		// service n'était jamais relancé.
+		logInfo("service-exit-for-restart", "sortie pour relance par le SCM", LogFields{
+			"exit_code": serviceRestartExitCode,
+		})
+		closeLog()
+		os.Exit(serviceRestartExitCode)
+	}
 	return false, 0
 }
 

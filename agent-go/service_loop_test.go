@@ -22,10 +22,10 @@ func TestRunServiceLoop_StopAnsweredDuringLongCheckin(t *testing.T) {
 		}, func(ctx context.Context) { <-ctx.Done() })
 	}
 	stopPendingAt := make(chan time.Time, 1)
-	result := make(chan struct{})
+	result := make(chan serviceExit, 1)
 	go func() {
-		runServiceLoop(requests, work, func() { stopPendingAt <- time.Now() }, 5*time.Second)
-		close(result)
+		result <- runServiceLoop(requests, make(chan struct{}), work,
+			func() { stopPendingAt <- time.Now() }, func() bool { return true }, 5*time.Second)
 	}()
 
 	<-checkinStarted
@@ -44,7 +44,10 @@ func TestRunServiceLoop_StopAnsweredDuringLongCheckin(t *testing.T) {
 		t.Fatal("StopPending jamais envoyé")
 	}
 	select {
-	case <-result:
+	case r := <-result:
+		if r != serviceExitStopped {
+			t.Fatalf("sortie %v, attendu serviceExitStopped", r)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("la boucle ne s'est pas arrêtée")
 	}
@@ -60,10 +63,9 @@ func TestRunServiceLoop_InterrogateDuringCheckin(t *testing.T) {
 		close(busy)
 		<-ctx.Done()
 	}
-	result := make(chan struct{})
+	result := make(chan serviceExit, 1)
 	go func() {
-		runServiceLoop(requests, work, func() {}, time.Second)
-		close(result)
+		result <- runServiceLoop(requests, make(chan struct{}), work, func() {}, func() bool { return true }, time.Second)
 	}()
 	<-busy
 	replied := make(chan struct{})
@@ -91,10 +93,9 @@ func TestRunServiceLoop_StopBoundedWhenWorkHangs(t *testing.T) {
 		close(started)
 		<-block
 	}
-	result := make(chan struct{})
+	result := make(chan serviceExit, 1)
 	go func() {
-		runServiceLoop(requests, work, func() {}, 100*time.Millisecond)
-		close(result)
+		result <- runServiceLoop(requests, make(chan struct{}), work, func() {}, func() bool { return true }, 100*time.Millisecond)
 	}()
 	<-started
 	requests <- svcRequest{cmd: svcCmdStop}
@@ -102,6 +103,47 @@ func TestRunServiceLoop_StopBoundedWhenWorkHangs(t *testing.T) {
 	case <-result:
 	case <-time.After(2 * time.Second):
 		t.Fatal("arrêt non borné")
+	}
+}
+
+// Redémarrage demandé : n'a lieu que si le SCM relancera le service.
+func TestRunServiceLoop_RestartOnlyWithRecoveryActions(t *testing.T) {
+	for _, can := range []bool{false, true} {
+		requests := make(chan svcRequest)
+		restart := make(chan struct{}, 1)
+		var canCalls atomic.Int32
+		work := func(ctx context.Context) { <-ctx.Done() }
+		result := make(chan serviceExit, 1)
+		go func() {
+			result <- runServiceLoop(requests, restart, work, func() {},
+				func() bool { canCalls.Add(1); return can }, time.Second)
+		}()
+		restart <- struct{}{}
+		if can {
+			select {
+			case r := <-result:
+				if r != serviceExitRestart {
+					t.Fatalf("sortie %v, attendu serviceExitRestart", r)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("redémarrage non effectué")
+			}
+			continue
+		}
+		// Sans actions de récupération : la demande est ignorée, le service continue.
+		deadline := time.Now().Add(time.Second)
+		for canCalls.Load() == 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		select {
+		case r := <-result:
+			t.Fatalf("sortie %v alors que le SCM ne relancerait pas le service", r)
+		case <-time.After(100 * time.Millisecond):
+		}
+		requests <- svcRequest{cmd: svcCmdStop}
+		if r := <-result; r != serviceExitStopped {
+			t.Fatalf("sortie %v après Stop", r)
+		}
 	}
 }
 
@@ -123,5 +165,39 @@ func TestRunAgent_WaitsForWSOnCancel(t *testing.T) {
 	<-returned
 	if !wsDone.Load() {
 		t.Fatal("runAgent a rendu la main avant la fin de la goroutine WS")
+	}
+}
+
+func TestRecoveryRestartsAlways(t *testing.T) {
+	r := func(d time.Duration) svcRecoveryAction { return svcRecoveryAction{Restart: true, Delay: d} }
+	cases := []struct {
+		name string
+		in   []svcRecoveryAction
+		want bool
+	}{
+		{"aucune action", nil, false},
+		{"installeurs", wantedRecoveryActions, true},
+		{"restart puis rien", []svcRecoveryAction{r(5 * time.Second), {}}, false},
+		{"restart unique (répété)", []svcRecoveryAction{r(time.Minute)}, true},
+		{"délai excessif", []svcRecoveryAction{r(time.Hour)}, false},
+	}
+	for _, c := range cases {
+		if got := recoveryRestartsAlways(c.in); got != c.want {
+			t.Errorf("%s : %v, attendu %v", c.name, got, c.want)
+		}
+	}
+}
+
+// Après une permutation réussie, ne pas re-télécharger à chaque checkin
+// tant que le redémarrage n'a pas eu lieu.
+func TestHandleAgentUpdate_SkipsWhileRestartPending(t *testing.T) {
+	swappedVersion = "9.9.9"
+	defer func() { swappedVersion = "" }()
+	cfg := &Config{Token: "t", URL: "http://127.0.0.1:1"} // injoignable : tout téléchargement échouerait
+	err := HandleAgentUpdate(context.Background(), cfg, &State{}, &AgentUpdate{
+		LatestVersion: "9.9.9", SHA256: "00", Signature: "AA==",
+	})
+	if err != nil {
+		t.Fatalf("attendu nil (redémarrage en attente), reçu %v", err)
 	}
 }

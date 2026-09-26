@@ -22,10 +22,20 @@ const MaxFailedSinceUpdate = 2
 // proposée par le serveur. Toute erreur de vérification (sha256 ou ed25519)
 // est fatale pour cette tentative — on n'écrase jamais le binaire actuel.
 //
-// Si l'update aboutit, la fonction redémarre le service et n'est jamais
-// supposée retourner (os.Exit). Sinon, retourne nil ou une erreur.
+// Si l'update aboutit, la fonction demande le redémarrage du service
+// (restartService) et retourne ; sous Windows la boucle de service quitte
+// ensuite pour être relancée par le SCM. Sinon, retourne nil ou une erreur.
 func HandleAgentUpdate(ctx context.Context, cfg *Config, st *State, upd *AgentUpdate) error {
 	if upd == nil {
+		return nil
+	}
+	if swappedVersion != "" {
+		// Binaire déjà permuté par ce process, redémarrage en attente : ne
+		// pas re-télécharger à chaque checkin (et la 2e permutation
+		// échouerait, l'image en cours d'exécution étant le .bak).
+		logInfo("update-pending-restart", "binaire déjà remplacé, en attente de redémarrage", LogFields{
+			"version": swappedVersion,
+		})
 		return nil
 	}
 	if upd.LatestVersion == "" || upd.SHA256 == "" || upd.Signature == "" {
@@ -91,12 +101,18 @@ func HandleAgentUpdate(ctx context.Context, cfg *Config, st *State, upd *AgentUp
 	st.BinaryUpdatedAt = st.LastUpdateAt
 	st.Save()
 
+	swappedVersion = upd.LatestVersion
 	logInfo("update-applied", "binaire remplacé, redémarrage du service", LogFields{
 		"version": upd.LatestVersion,
 	})
-	// 7. Redémarrer le service — n'est pas supposé retourner.
+	// 7. Redémarrer le service.
 	return restartService()
 }
+
+// swappedVersion — version du binaire permuté sur disque par ce process
+// (vide tant qu'aucune mise à jour n'a été appliquée). Le process courant
+// exécute toujours l'ancienne image jusqu'au redémarrage.
+var swappedVersion string
 
 // atomicReplace : binary.exe → backup ; new.exe → binary.exe.
 // Sur Windows, on peut renommer un .exe en cours d'exécution (mais pas

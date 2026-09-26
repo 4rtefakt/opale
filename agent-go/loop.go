@@ -112,9 +112,21 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 }
 
 // runDebugLoop — mode interactif (non-service). Utilisé via --debug.
-// WS persistant en parallèle du polling (cf. runAgent).
+// WS persistant en parallèle du polling (cf. runAgent). Si un
+// redémarrage est demandé (binaire permuté par l'auto-update sous
+// Windows), la boucle s'arrête : l'opérateur relance l'agent.
 func runDebugLoop(ctx context.Context, cfg *Config, st *State) error {
 	logf("mode --debug : checkin immédiat puis interval %s", CheckinInterval)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-restartRequests:
+			logf("redémarrage demandé (nouveau binaire) : arrêt du mode --debug, relancer l'agent")
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	runAgent(ctx, CheckinInterval,
 		func(ctx context.Context) { runCheckin(ctx, cfg, st) },
 		func(ctx context.Context) { RunWSClient(ctx, cfg) })

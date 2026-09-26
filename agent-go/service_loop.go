@@ -15,7 +15,7 @@ import (
 // Shutdown / Interrogate.
 
 // serviceStopGrace — attente maximale de la fin du travail en cours après
-// un Stop. Les checkins en cours reçoivent
+// un Stop ou avant un redémarrage. Les checkins en cours reçoivent
 // l'annulation (scripts tués via leur contexte) ; au-delà, on sort quand
 // même.
 const serviceStopGrace = 10 * time.Second
@@ -33,14 +33,37 @@ type svcRequest struct {
 	reply func() // Interrogate : renvoie l'état courant au SCM
 }
 
+// serviceExit — raison de sortie de runServiceLoop.
+type serviceExit int
+
+const (
+	serviceExitStopped serviceExit = iota // arrêt demandé par le SCM
+	serviceExitRestart                    // redémarrage demandé (update / rollback)
+)
+
+// restartRequests — l'auto-update et le rollback (Windows) demandent le
+// redémarrage du service une fois le binaire permuté (cf. restart_windows.go).
+var restartRequests = make(chan struct{}, 1)
+
+func requestServiceRestart() {
+	select {
+	case restartRequests <- struct{}{}:
+	default: // déjà demandé
+	}
+}
+
 // runServiceLoop lance work dans une goroutine et traite les requêtes du
 // SCM sans jamais attendre un checkin :
 //   - Interrogate : réponse immédiate ;
 //   - Stop : onStopPending (StopPending au SCM), annulation du travail,
-//     attente bornée par grace, puis retour ;
-//   - fin inattendue du travail : retour.
-func runServiceLoop(requests <-chan svcRequest, work func(ctx context.Context),
-	onStopPending func(), grace time.Duration) {
+//     attente bornée par grace, retour serviceExitStopped ;
+//   - redémarrage demandé : si canRestart() confirme que le SCM relancera
+//     le service, annulation + attente bornée puis serviceExitRestart ;
+//     sinon la demande est ignorée (le nouveau binaire démarrera au
+//     prochain boot, comme avant) ;
+//   - fin inattendue du travail : serviceExitRestart.
+func runServiceLoop(requests <-chan svcRequest, restart <-chan struct{}, work func(ctx context.Context),
+	onStopPending func(), canRestart func() bool, grace time.Duration) serviceExit {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
@@ -69,11 +92,20 @@ func runServiceLoop(requests <-chan svcRequest, work func(ctx context.Context),
 			case svcCmdStop:
 				onStopPending()
 				stop()
-				return
+				return serviceExitStopped
 			}
+		case <-restart:
+			if !canRestart() {
+				logError("service-restart-unavailable", nil, LogFields{
+					"hint": "actions de récupération du service absentes : nouveau binaire actif au prochain redémarrage du poste",
+				})
+				continue
+			}
+			stop()
+			return serviceExitRestart
 		case <-done:
 			logWarn("service-worker-exit", "fin inattendue du travail de l'agent", nil)
-			return
+			return serviceExitRestart
 		}
 	}
 }
@@ -101,4 +133,36 @@ func runAgent(ctx context.Context, interval time.Duration, checkin func(ctx cont
 			checkin(ctx)
 		}
 	}
+}
+
+// svcRecoveryAction — action de récupération SCM, vue neutre.
+type svcRecoveryAction struct {
+	Restart bool
+	Delay   time.Duration
+}
+
+// Actions de récupération posées par les installeurs (sc.exe failure …
+// reset= 86400 actions= restart/5000/restart/5000/restart/30000) et
+// réappliquées par l'agent au démarrage du service.
+var wantedRecoveryActions = []svcRecoveryAction{
+	{Restart: true, Delay: 5 * time.Second},
+	{Restart: true, Delay: 5 * time.Second},
+	{Restart: true, Delay: 30 * time.Second},
+}
+
+const wantedRecoveryResetSeconds = 86400
+
+// recoveryRestartsAlways — true si le SCM relancera le service quel que
+// soit le nombre d'échecs récents : au moins une action, toutes « restart »
+// (la dernière est répétée au-delà), avec un délai raisonnable.
+func recoveryRestartsAlways(actions []svcRecoveryAction) bool {
+	if len(actions) == 0 {
+		return false
+	}
+	for _, a := range actions {
+		if !a.Restart || a.Delay > 5*time.Minute {
+			return false
+		}
+	}
+	return true
 }
