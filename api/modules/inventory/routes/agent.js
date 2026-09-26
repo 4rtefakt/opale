@@ -155,12 +155,20 @@ function maintenanceWindowProblem(w) {
   return null
 }
 
-// Un avertissement par valeur invalide distincte et par process (valeurs
-// issues de la table settings : ensemble borné en pratique).
-const warnedInvalidWindows = new Set()
-function warnInvalidWindowOnce(fastify, raw, problem) {
-  if (warnedInvalidWindows.has(raw)) return
-  warnedInvalidWindows.add(raw)
+// Avertissement par valeur invalide distincte, répété au plus une fois par
+// heure : une configuration fautive persistante reste visible dans les
+// logs sans en inonder un par checkin. Mémo borné (plus ancienne entrée
+// évincée).
+const WINDOW_WARN_EVERY_MS = 60 * 60 * 1000
+const WINDOW_WARN_MEMO_MAX = 100
+const windowWarnedAt = new Map()
+function warnInvalidWindow(fastify, raw, problem) {
+  const now = Date.now()
+  const last = windowWarnedAt.get(raw)
+  if (last !== undefined && now - last < WINDOW_WARN_EVERY_MS) return
+  windowWarnedAt.delete(raw)
+  if (windowWarnedAt.size >= WINDOW_WARN_MEMO_MAX) windowWarnedAt.delete(windowWarnedAt.keys().next().value)
+  windowWarnedAt.set(raw, now)
   fastify.log.warn(
     { maintenance_window_default: clipStr(raw, 500), problem },
     'fenêtre de maintenance invalide : aucun déploiement distribué tant qu\'elle n\'est pas corrigée'
@@ -730,7 +738,7 @@ export default async function agentRoute(fastify) {
       } catch (err) {
         windowProblem = `JSON illisible (${err.message})`
       }
-      if (windowProblem) warnInvalidWindowOnce(fastify, settingMap.maintenance_window_default, windowProblem)
+      if (windowProblem) warnInvalidWindow(fastify, settingMap.maintenance_window_default, windowProblem)
     }
     const inMaintWindow = isMaintenanceWindowActive(maintenanceWindow, new Date())
     // Déploiements (installations en SYSTEM, winget…) : seulement dans une

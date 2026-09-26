@@ -194,6 +194,54 @@ test('POST /checkin — fenêtre configurée mais invalide : aucun déploiement 
   assert.equal(windowWarns.length, invalid.length, 'un avertissement par valeur invalide distincte')
 })
 
+test('POST /checkin — fenêtre invalide persistante : avertissement répété au plus une fois par heure', { skip: SKIP }, async () => {
+  await setWindow('{"start":"2:5","end":"06:00"}')
+  const warns = []
+  const origWarn = fastify.log.warn
+  const realNow = Date.now
+  let offset = 0
+  fastify.log.warn = (...args) => { if (/fenêtre de maintenance invalide/.test(String(args[1]))) warns.push(args) }
+  Date.now = () => realNow() + offset
+  try {
+    await checkinWithJobs()
+    offset = 59 * 60 * 1000
+    await checkinWithJobs()
+    assert.equal(warns.length, 1, 'pas de nouvel avertissement avant une heure')
+    offset = 61 * 60 * 1000
+    await checkinWithJobs()
+    assert.equal(warns.length, 2, 'configuration toujours fautive après une heure : nouvel avertissement')
+    await checkinWithJobs()
+    assert.equal(warns.length, 2)
+  } finally {
+    fastify.log.warn = origWarn
+    Date.now = realNow
+  }
+})
+
+test('POST /checkin — mémo des avertissements borné (100 valeurs, la plus ancienne évincée)', { skip: SKIP }, async () => {
+  const warns = []
+  const origWarn = fastify.log.warn
+  fastify.log.warn = (...args) => {
+    if (/fenêtre de maintenance invalide/.test(String(args[1]))) warns.push(args[0].maintenance_window_default)
+  }
+  const value = i => `{"start":"99:${String(i).padStart(2, '0')}","end":"04:00"}`
+  try {
+    for (let i = 0; i <= 100; i++) {
+      await setWindow(value(i))
+      await checkinResponse()
+    }
+    assert.equal(warns.length, 101)
+    await setWindow(value(100)) // encore mémorisée : silence
+    await checkinResponse()
+    assert.equal(warns.length, 101)
+    await setWindow(value(0)) // évincée par la 101e : nouvel avertissement
+    await checkinResponse()
+    assert.equal(warns.length, 102)
+  } finally {
+    fastify.log.warn = origWarn
+  }
+})
+
 test('POST /checkin — pas de fenêtre ou fenêtre valide ouverte : déploiement réservé (inchangé)', { skip: SKIP }, async () => {
   for (const raw of [null, '{}', 'null', '{"start":"00:00","end":"00:00","tz":"Europe/Paris"}', '{"weekdays":[0,1,2,3,4,5,6]}']) {
     if (raw === null) await db.query(`DELETE FROM settings WHERE key = 'maintenance_window_default'`)
