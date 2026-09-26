@@ -1364,6 +1364,16 @@ export default async function agentRoute(fastify) {
     }
     const hostname = devRows[0].hostname
 
+    // Socket fermée pendant les await d'authentification : son event
+    // 'close' est déjà passé, sans listener. L'enregistrer créerait une
+    // connexion fantôme (agent affiché en ligne, heartbeat jamais arrêté).
+    // Rien n'est encore mis en place à ce stade (ni registry, ni audit, ni
+    // timer), et plus aucun await jusqu'au socket.on('close') ci-dessous.
+    if (socket.readyState !== 1) {
+      fastify.log.info({ device_id: token.device_id }, 'agent ws fermée pendant l\'authentification')
+      return
+    }
+
     const conn = makeAgentConn(socket, {
       deviceId: token.device_id,
       tokenId:  token.id,

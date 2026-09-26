@@ -546,6 +546,50 @@ test('heartbeat : poste supprimé hors de ce process (tokens en cascade) → WS 
   assert.equal(info.reason, 'device-deleted')
 })
 
+test('socket fermée pendant l\'authentification → rien d\'enregistré, aucun heartbeat, aucun audit de connexion', { skip: SKIP }, async (t) => {
+  const device = await seedDevice(db, { hostname: 'PC-WS-AUTH-DROP' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-auth-drop' })
+
+  // Timers créés par le handler (heartbeat) : relevés, et détruits en fin
+  // de test pour que le process sorte même si le correctif régresse.
+  const intervals = []
+  const realSetInterval = globalThis.setInterval
+  globalThis.setInterval = function (...args) {
+    const h = realSetInterval.apply(this, args)
+    intervals.push(h)
+    return h
+  }
+  t.after(() => {
+    globalThis.setInterval = realSetInterval
+    for (const h of intervals) clearInterval(h)
+  })
+
+  // Requête hostname du handler retenue jusqu'à la coupure du client.
+  let release, reached
+  const gate = new Promise((r) => { release = r })
+  const atHostname = new Promise((r) => { reached = r })
+  interceptQuery = (sql, params, next) => {
+    if (!/SELECT hostname FROM devices WHERE id = \$1/.test(sql)) return next()
+    interceptQuery = null
+    reached()
+    return gate.then(() => next())
+  }
+
+  const known = new Set(fastify.websocketServer.clients)
+  const agent = await openWs('/api/agent/ws', { authorization: `Bearer ${tok.secret}` })
+  await within(atHostname, 2000, 'handler en attente de la requête hostname')
+  const serverSocket = [...fastify.websocketServer.clients].find((s) => !known.has(s))
+  const serverClosed = new Promise((r) => serverSocket.once('close', r))
+  agent.ws.terminate()
+  await within(serverClosed, 2000, 'close côté serveur pendant l\'authentification')
+
+  release()
+  await settleDb()
+  assert.equal(fastify.agentWs.get(device.id), null, 'connexion morte non enregistrée')
+  assert.equal(intervals.length, 0, 'aucun heartbeat démarré')
+  assert.deepEqual(await auditRows('agent_ws_connect', device.id), [], 'aucun audit de connexion')
+})
+
 test('révocation entre l\'authentification et l\'enregistrement de la WS → fermée sans attendre le heartbeat', { skip: SKIP }, async (t) => {
   // Aucun tick : seul un contrôle fait à l'enregistrement peut fermer.
   t.mock.timers.enable({ apis: ['setInterval'] })
