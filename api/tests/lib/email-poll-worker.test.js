@@ -27,7 +27,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { installFakeGraph, graphTime, fakeMail } from '../helpers/fake-graph-mail.js'
 import { pollOnce } from '../../modules/email-bridge/lib/poll-worker.js'
 import { _resetSystemFolderCache, listMessagesSince as realListMessagesSince } from '../../modules/email-bridge/lib/graph-mail.js'
-import { MAX_INGEST_ATTEMPTS, MAX_SKIP_PAGES, MIN_POISON_AGE_MS } from '../../modules/email-bridge/lib/poll-cursor.js'
+import { MAX_INGEST_ATTEMPTS, MAX_SKIP_PAGES, MIN_POISON_AGE_MS, SUSPECT_ALERT_MS } from '../../modules/email-bridge/lib/poll-cursor.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip poll-worker suite'
 
@@ -673,6 +673,35 @@ test('pollOnce : panne systémique, mail suivant déjà ingéré (rien d\'écrit
       for (const m of [suspect, next]) {
         assert.ok((await ingestedIds()).includes(m.internetMessageId), 'rattrapé au rétablissement')
       }
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
+test('pollOnce : alerte « sans verdict » puis panne systémique sur le même mail → deux alertes distinctes',
+  { skip: SKIP }, async () => {
+    // Une alerte 'waiting' ne doit pas masquer l'alerte 'systemic' qui suit.
+    const poison = fakeMail({ receivedDateTime: at(1) })
+    useGraph({ inbox: [poison] })
+    await failMappingInsertFor(poison)
+    const clock = fakeClock()
+    try {
+      const ticks = (MIN_POISON_AGE_MS + SUSPECT_ALERT_MS) / TICK_MS + 2
+      for (let tick = 0; tick < ticks; tick++) {
+        await pollOnce(db, null, { now: clock.now })
+        clock.advance(TICK_MS)
+      }
+      assert.deepEqual((await blockedAudits()).map(a => a.details.reason), ['waiting'])
+
+      const next = fakeMail({ receivedDateTime: at(2) })
+      graph.inbox.push(next)
+      await failMappingInsertFor(next)
+      for (let tick = 0; tick < 3; tick++) {
+        await pollOnce(db, null, { now: clock.now })
+        clock.advance(TICK_MS)
+      }
+      assert.deepEqual((await blockedAudits()).map(a => a.details.reason), ['waiting', 'systemic'])
     } finally {
       graph.restore()
     }

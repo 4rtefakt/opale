@@ -17,8 +17,8 @@
 //             alerted } du mail en échec qui bloque la boîte. Clé = id
 //             Graph : il change si le mail est déplacé de dossier pendant
 //             les reprises, le compteur repart alors de zéro (retarde
-//             l'abandon, ne perd rien — acceptable). `alerted` : blocage
-//             déjà signalé à l'audit ;
+//             l'abandon, ne perd rien — acceptable). `alerted` : motifs de
+//             blocage déjà signalés à l'audit ({ waiting?, systemic? }) ;
 //   - scan  : { id, at, done, since } position où la recherche de verdict
 //             pour ce mail s'est arrêtée (cf. plus bas) — le curseur, lui,
 //             reste avant le mail en échec.
@@ -307,11 +307,11 @@ export async function pollMailboxCursor(db, log, {
               mailbox, internetMessageId: retry.internet_message_id,
               attempts: retry.attempts, since: retry.first_at, err: retry.error, next_err: error,
             }, `${tag}: le mail suivant échoue aussi — panne probablement systémique, aucun abandon (boîte bloquée jusqu'au rétablissement)`)
-            // Une seule ligne d'audit par blocage (`alerted` gardé dans
-            // l'état, effacé avec `retry` quand la boîte repart).
-            if (!retry.alerted) {
+            // Une seule ligne d'audit par blocage et par motif (`alerted`
+            // gardé dans l'état, effacé avec `retry` quand la boîte repart).
+            if (!retry.alerted?.systemic) {
               await alertBlocked(db, log, { mailbox, cursorKey, message: suspect.message, dateField, record: retry, nextError: error, reason: 'systemic', tag })
-              retry.alerted = true
+              retry.alerted = { ...retry.alerted, systemic: true }
             }
             suspect = null
             blocked = true
@@ -430,9 +430,9 @@ export async function pollMailboxCursor(db, log, {
     blocked = true
     log?.warn({ mailbox, internetMessageId: retry.internet_message_id, attempts: retry.attempts, since: retry.first_at, err: retry.error },
       `${tag}: mail en échec prolongé, abandon en attente d'un mail suivant qui écrive`)
-    if (!retry.alerted && now() - Date.parse(suspect.since) >= SUSPECT_ALERT_MS) {
+    if (!retry.alerted?.waiting && now() - Date.parse(suspect.since) >= SUSPECT_ALERT_MS) {
       await alertBlocked(db, log, { mailbox, cursorKey, message: suspect.message, dateField, record: retry, reason: 'waiting', tag })
-      retry.alerted = true
+      retry.alerted = { ...retry.alerted, waiting: true }
     }
     suspect = null
   }
