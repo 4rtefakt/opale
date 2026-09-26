@@ -103,7 +103,9 @@ services:
   #   UPDATE settings SET value='true'                WHERE key='mail.classifier.enabled';
   #
   # ollama:
-  #   image: ollama/ollama:latest
+  #   # Version épinglée (pas :latest) : monter de version explicitement,
+  #   # ici et dans ollama-init.
+  #   image: ollama/ollama:0.34.4
   #   container_name: opale-ollama
   #   restart: unless-stopped
   #   profiles: ["email-bridge"]
@@ -116,7 +118,7 @@ services:
   #   # One-shot : pull du modèle au premier démarrage. Exit après pull,
   #   # ne redémarre pas. Re-runner manuellement pour changer de modèle :
   #   #   docker compose run --rm ollama-init
-  #   image: ollama/ollama:latest
+  #   image: ollama/ollama:0.34.4
   #   profiles: ["email-bridge"]
   #   depends_on:
   #     ollama:

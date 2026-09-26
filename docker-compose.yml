@@ -49,7 +49,10 @@ services:
   # tient en RAM CPU (~3 GB). Volume persistant pour ne pas re-pull à chaque
   # déploiement. Pas de port exposé : seule l'API y accède via DNS interne.
   ollama:
-    image: ollama/ollama:latest
+    # Version épinglée (pas :latest) : une mise à jour d'Ollama est un
+    # changement explicite, relu et testé. Pour monter de version, changer
+    # le tag ici ET dans ollama-init (même image), puis `docker compose pull`.
+    image: ollama/ollama:0.34.4
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
@@ -59,7 +62,7 @@ services:
   #   1. OLLAMA_PULL_MODEL=<nouveau> docker compose run --rm ollama-init
   #   2. UPDATE settings SET value='<nouveau>' WHERE key='mail.classifier.model';
   ollama-init:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.34.4
     depends_on:
       ollama:
         condition: service_started
