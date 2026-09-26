@@ -353,7 +353,7 @@ function renderDetail(panel) {
         const hasName = u.display_name || u.email
         return `
         <tr style="cursor:${hasName ? 'pointer' : 'default'}"
-            ${hasName ? `onclick="navigateTo('/users/${esc(u.user_id)}')"` : ''}>
+            ${hasName ? `onclick="navigateTo(${jsArg('/users/' + u.user_id)})"` : ''}>
           <td style="padding:6px 8px"><i class="ti ti-user" style="color:var(--text-tertiary)"></i></td>
           <td style="padding:6px 8px">
             ${hasName
