@@ -78,6 +78,44 @@ export class AgentWSRegistry {
     this._emit('disconnect', deviceId, conn)
   }
 
+  // Évince une connexion dont le credential n'est plus valide (token
+  // révoqué / expiré, poste supprimé). La WS n'est authentifiée qu'à
+  // l'upgrade : sans ça, le tube survit à la révocation.
+  // Retrait immédiat du registry (plus de grant console possible) et
+  // disconnect émis tout de suite (fermeture des sessions console + audit),
+  // sans attendre le handshake de close du peer. `revokedReason` fait
+  // ignorer par le dispatcher les frames encore reçues pendant le close.
+  evict(conn, reason) {
+    if (conn.revokedReason) return false
+    conn.revokedReason = reason
+    if (this.conns.get(conn.deviceId) === conn) {
+      this.conns.delete(conn.deviceId)
+      conn.auditDisconnectEmitted = true
+      this._emit('disconnect', conn.deviceId, conn, { reason, code: WS_CLOSE.AUTH_FAIL })
+    }
+    conn.close(WS_CLOSE.AUTH_FAIL, reason)
+    return true
+  }
+
+  // Évince les connexions authentifiées par l'un de ces tokens. Filtre sur
+  // le tokenId stocké : une connexion de remplacement du même poste,
+  // ouverte avec un autre token, n'est pas touchée.
+  evictTokens(tokenIds, reason = 'token-revoked') {
+    const ids = new Set(tokenIds)
+    let n = 0
+    for (const conn of [...this.conns.values()]) {
+      if (ids.has(conn.tokenId) && this.evict(conn, reason)) n++
+    }
+    return n
+  }
+
+  // Poste supprimé : tous ses tokens partent en cascade, toute connexion
+  // du poste est caduque.
+  evictDevice(deviceId, reason = 'device-deleted') {
+    const conn = this.conns.get(deviceId)
+    return conn ? this.evict(conn, reason) : false
+  }
+
   get(deviceId)      { return this.conns.get(deviceId) || null }
   isOnline(deviceId) { return this.conns.has(deviceId) }
   count()            { return this.conns.size }
@@ -97,6 +135,7 @@ export function makeAgentConn(socket, meta) {
     agentVersion: null,
     os:           null,
     arch:         null,
+    revokedReason: null,  // posé par AgentWSRegistry.evict
 
     // Envoie une frame JSON. `id` est null hors flux multiplexés (console
     // sessions en PR 2). Retourne false si le socket n'est plus ouvert.

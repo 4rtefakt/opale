@@ -38,8 +38,11 @@ export class ConsoleSessionsRegistry {
 
     // Si l'agent perd sa WS, toutes ses sessions sont caduques (le ConPTY
     // est dead côté Windows une fois le tube tombé — cf. agent-go/ws.go).
-    agentWs.on('disconnect', (deviceId) => {
-      this._closeByDevice(deviceId, 'agent-disconnected')
+    // Fermeture décidée côté serveur (supersede, token révoqué / expiré,
+    // poste supprimé) : sa raison est reportée sur la session (end_reason,
+    // audit agent_console_close).
+    agentWs.on('disconnect', (deviceId, conn, info) => {
+      this._closeByDevice(deviceId, info?.reason || 'agent-disconnected')
     })
   }
 

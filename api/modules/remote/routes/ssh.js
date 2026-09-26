@@ -5,6 +5,7 @@ import { parseReason, formatReasonLine } from '../lib/remote-reason.js'
 import { attachSystemEventToOpenTicketsOfDevice } from '../../tickets/lib/ticket-events.js'
 import { logAudit } from '../../core/lib/audit.js'
 import { createGrantStore } from '../lib/one-shot-grant.js'
+import { hostKeyGuard } from '../lib/ssh-host-key.js'
 
 function sshKey() {
   const b64 = process.env.SSH_PRIVATE_KEY_B64
@@ -119,11 +120,26 @@ export default async function sshRoute(fastify) {
     send('status', `Connexion à ${device.hostname} (${device.ip_netbird})...`)
 
     const conn = new Client()
+    // Vérifie la clé d'hôte AVANT authentification (cf. lib/ssh-host-key.js) :
+    // sinon le contenu du terminal partirait chez qui répond à l'IP.
+    let hostKeyRejected = false
+    let sshFailed = false
+    let shellOpened = false
+    const guard = hostKeyGuard(
+      { db: fastify.db, log: fastify.log }, device,
+      { onReject: (msg) => { hostKeyRejected = true; send('error', msg) } }
+    )
 
-    conn.on('ready', () => {
+    // Pas de gestionnaire async sur 'ready' : si l'hôte raccroche pendant
+    // confirm(), conn.shell() lève « Not connected », et l'exception
+    // deviendrait un rejet non géré qui arrête l'API.
+    conn.on('ready', () => guard.confirm().then((confirmed) => {
+      // Premier contact : mémorise la clé avant d'ouvrir le shell.
+      if (!confirmed) { conn.end(); return }
       send('status', 'Connecté')
       conn.shell({ term: 'xterm-256color', cols: 220, rows: 50 }, (err, stream) => {
         if (err) { send('error', err.message); conn.end(); return }
+        shellOpened = true
 
         // Données terminal → client
         stream.on('data', (data) => {
@@ -160,11 +176,24 @@ export default async function sshRoute(fastify) {
 
         stream.on('close', () => conn.end())
       })
+    }).catch((err) => {
+      if (!sshFailed) send('error', `SSH : ${err.message}`)
+      conn.end()
+    }))
+
+    // Clé d'hôte refusée : le message explicite est déjà parti, on n'y
+    // ajoute pas l'erreur générique de ssh2.
+    conn.on('error', (err) => {
+      if (!hostKeyRejected && !sshFailed) send('error', `SSH : ${err.message}`)
+      sshFailed = true
     })
 
-    conn.on('error', (err) => send('error', `SSH : ${err.message}`))
-
     conn.on('close', () => {
+      // Poste qui raccroche avant l'ouverture du shell sans erreur ssh2 : le
+      // socket WS est fermé juste après, donc on le dit maintenant.
+      if (!shellOpened && !hostKeyRejected && !sshFailed) {
+        send('error', 'SSH : connexion fermée par le poste avant l\'ouverture du terminal')
+      }
       const durationSeconds = Math.round((Date.now() - startedAt) / 1000)
       // Flush du buffer AVANT l'UPDATE ended_at : le log est visible dès
       // que la session est marquée fermée. Échec non bloquant.
@@ -193,6 +222,7 @@ export default async function sshRoute(fastify) {
       port:       parseInt(process.env.SSH_PORT || '22', 10),
       username:   process.env.SSH_USER || 'opale',
       privateKey: sshKey(),
+      ...guard.sshOptions,
       readyTimeout: 10_000
     })
   })

@@ -238,6 +238,11 @@ export default async function packagesRoute(fastify) {
     if (winget_id && winget_id !== existing.winget_id && !isValidWingetId(winget_id)) {
       return reply.code(400).send({ error: 'winget_id invalide (format attendu : Editeur.Produit)' })
     }
+    // Passage d'un package script à winget : l'identifiant qui sera utilisé
+    // (nouveau ou hérité) doit être valide, même s'il n'est pas modifié.
+    if (type === 'winget' && existing.type !== 'winget' && !isValidWingetId(winget_id || existing.winget_id)) {
+      return reply.code(400).send({ error: 'winget_id invalide ou manquant pour un package winget' })
+    }
 
     // Toute modification d'un package approuvé le repasse en draft
     const newStatus = existing.status === 'approved' ? 'draft' : existing.status
@@ -281,6 +286,13 @@ export default async function packagesRoute(fastify) {
     const { rows: [pkg] } = await fastify.db.query(`SELECT * FROM packages WHERE id = $1`, [req.params.id])
     if (!pkg) return reply.code(404).send({ error: 'Package introuvable' })
     if (pkg.status === 'approved') return reply.code(409).send({ error: 'Package déjà approuvé' })
+    // Toute modification repasse le package en draft : l'approbation est le
+    // point de passage unique avant distribution. On y revérifie
+    // l'identifiant winget, pour qu'une valeur enregistrée avant la
+    // validation (ou absente) ne parte jamais vers les postes.
+    if (pkg.type === 'winget' && !isValidWingetId(pkg.winget_id)) {
+      return reply.code(409).send({ error: 'winget_id invalide ou manquant : corrigez-le avant d\'approuver' })
+    }
 
     const { entraId } = fastify.getUserIdentity(req)
     // Approbation + rafraîchissement des snapshots des déploiements encore

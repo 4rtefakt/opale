@@ -2,6 +2,7 @@ import { isIP } from 'node:net'
 import { syncIntuneDevice } from '../../core/lib/graph.js'
 import { fetchBandwidth }   from '../../monitoring/lib/bandwidth.js'
 import { logAudit } from '../../core/lib/audit.js'
+import { hostKeyGuard, hostKeyPolicy } from '../../remote/lib/ssh-host-key.js'
 
 async function getThresholds(fastify) {
   const res = await fastify.db.query(
@@ -186,6 +187,8 @@ export default async function devicesRoute(fastify) {
 
     return {
       ...formatDevice(d, thr),
+      // tofu | strict : adapte le texte de l'action de réinitialisation SSH.
+      ssh_host_key_policy: hostKeyPolicy(process.env, fastify.log),
       health_signals: d.health_signals || null,
       system_info,
       disks: disks.rows,
@@ -230,10 +233,14 @@ export default async function devicesRoute(fastify) {
   // DELETE /:id — suppression d'un device (admin uniquement)
   fastify.delete('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows } = await fastify.db.query(
-      `DELETE FROM devices WHERE id = $1 RETURNING hostname`,
+      `DELETE FROM devices WHERE id = $1 RETURNING id, hostname`,
       [req.params.id]
     )
     if (!rows.length) return reply.code(404).send({ error: 'Poste introuvable' })
+    // Tokens du poste supprimés en cascade : la WS agent encore ouverte
+    // (authentifiée à l'upgrade seulement) est fermée. Id canonique renvoyé
+    // par Postgres, pas le paramètre brut (UUID en majuscules accepté).
+    fastify.agentWs?.evictDevice(rows[0].id, 'device-deleted')
     const { displayName } = fastify.getUserIdentity(req)
     await logAudit(fastify.db, fastify.log, { action: 'device_deleted', byUser: displayName, target: rows[0].hostname })
     reply.code(204).send()
@@ -319,10 +326,21 @@ export default async function devicesRoute(fastify) {
 
       const conn = new Client()
       let done = false
+      let hostKeyRejected = false
       const finish = () => { if (done) return; done = true; conn.end(); resolve() }
       const timeout = setTimeout(() => { errors.push(`[${d.hostname}] timeout`); conn.destroy(); finish() }, 15000)
+      // Clé d'hôte vérifiée avant authentification, mémorisée sur 'ready' au
+      // premier contact (cf. remote/lib/ssh-host-key.js).
+      const guard = hostKeyGuard(
+        { db: fastify.db, log: fastify.log }, d,
+        { onReject: (msg) => { hostKeyRejected = true; errors.push(`[${d.hostname}] ${msg}`) } }
+      )
 
-      conn.on('ready', () => {
+      // Pas de gestionnaire async sur 'ready' : si l'hôte raccroche pendant
+      // confirm(), conn.exec() lève « Not connected », et l'exception
+      // deviendrait un rejet non géré qui arrête l'API.
+      conn.on('ready', () => guard.confirm().then((confirmed) => {
+        if (!confirmed) { clearTimeout(timeout); return finish() }
         conn.exec(psCmd, (err, stream) => {
           if (err) {
             clearTimeout(timeout)
@@ -345,9 +363,14 @@ export default async function devicesRoute(fastify) {
             finish()
           })
         })
-      }).on('error', err => {
+      }).catch((err) => {
         clearTimeout(timeout)
-        errors.push(`[${d.hostname}] ${err.message}`)
+        if (!done) errors.push(`[${d.hostname}] ${err.message}`)
+        finish()
+      })).on('error', err => {
+        clearTimeout(timeout)
+        // Clé d'hôte refusée : le message explicite est déjà dans `errors`.
+        if (!hostKeyRejected) errors.push(`[${d.hostname}] ${err.message}`)
         fastify.log.warn({ err: err.message, hostname: d.hostname }, 'force-checkin SSH échoué')
         finish()
       }).connect({
@@ -355,6 +378,7 @@ export default async function devicesRoute(fastify) {
         port:       parseInt(process.env.SSH_PORT || '22', 10),
         username:   (process.env.SSH_USER || '').split('@')[0],
         privateKey: sshKey,
+        ...guard.sshOptions,
         readyTimeout: 8000,
       })
     })))
@@ -366,6 +390,37 @@ export default async function devicesRoute(fastify) {
     }
 
     reply.send({ ok, skipped, errors })
+  })
+
+  // DELETE /api/devices/:id/ssh-host-key — oublie l'empreinte d'hôte SSH
+  // mémorisée, pour qu'elle soit réapprise au prochain contact.
+  //
+  // Chemin de récupération légitime après une réinstallation du poste ou une
+  // régénération des clés sshd : sans lui, un poste réinstallé resterait
+  // injoignable en SSH. Réservé aux admins et audité : c'est la seule action
+  // qui rouvre volontairement une fenêtre TOFU.
+  fastify.delete('/:id/ssh-host-key', {
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
+  }, async (req, reply) => {
+    // Un seul ordre : l'empreinte auditée est exactement celle effacée, même
+    // si une connexion en apprend une au même moment.
+    const { rows: [before] } = await fastify.db.query(
+      `UPDATE devices d SET ssh_host_key_fp = NULL, ssh_host_key_learned_at = NULL
+         FROM (SELECT id, ssh_host_key_fp FROM devices WHERE id = $1 FOR UPDATE) old
+        WHERE d.id = old.id
+       RETURNING d.hostname, old.ssh_host_key_fp AS previous_fingerprint`,
+      [req.params.id]
+    )
+    if (!before) return reply.code(404).send({ error: 'Poste introuvable' })
+
+    const { entraId, displayName } = fastify.getUserIdentity(req)
+    await logAudit(fastify.db, fastify.log, {
+      action:  'ssh_host_key_reset',
+      byUser:  displayName || entraId,
+      target:  req.params.id,
+      details: { level: 'warn', hostname: before.hostname, previous_fingerprint: before.previous_fingerprint },
+    })
+    reply.code(204).send()
   })
 }
 
@@ -383,6 +438,11 @@ function formatDevice(r, thr = { warn: 80, critical: 90 }) {
     disk_used_pct: r.disk_used_pct,
     disk_total_gb: r.disk_total_gb,
     ip_netbird: r.ip_netbird,
+    // Empreinte d'hôte SSH apprise au premier contact (TOFU) : affichée sur la
+    // fiche avec l'action de réinitialisation. Absente de la liste (colonnes
+    // explicites), présente sur la fiche (d.*).
+    ssh_host_key_fp:         r.ssh_host_key_fp,
+    ssh_host_key_learned_at: r.ssh_host_key_learned_at,
     agent_version: r.agent_version,
     last_seen: r.last_seen,
     // last_seen_ws : dernier connect/disconnect du tube agent persistant

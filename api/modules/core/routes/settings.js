@@ -234,9 +234,14 @@ export default async function settingsRoute(fastify) {
     const { displayName } = fastify.getUserIdentity(req)
     const { rows } = await fastify.db.query(`
       UPDATE agent_tokens SET revoked_at = now()
-      WHERE id = $1 AND revoked_at IS NULL RETURNING label
+      WHERE id = $1 AND revoked_at IS NULL RETURNING id, label
     `, [req.params.id])
     if (!rows.length) return reply.code(404).send({ error: 'Token introuvable ou déjà révoqué' })
+
+    // La WS agent n'est authentifiée qu'à l'upgrade : on ferme celle
+    // ouverte avec ce token (et ses sessions console). agentWs absent si
+    // le module inventory est désactivé.
+    fastify.agentWs?.evictTokens([rows[0].id], 'token-revoked')
 
     await logAudit(fastify.db, fastify.log, { action: 'token_revoked', byUser: displayName, target: rows[0].label })
     reply.code(204).send()
