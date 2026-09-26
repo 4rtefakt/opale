@@ -9,7 +9,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 
-import { graphFetch, graphFetchDefaults, retryAfterMs } from '../../modules/core/lib/graph-fetch.js'
+import { graphFetch, graphFetchDefaults, retryAfterMs, GRAPH_RETRY_ABORTED } from '../../modules/core/lib/graph-fetch.js'
 import { getAllAADUsers, getUserPhoto, getGroupDeviceHostnames } from '../../modules/core/lib/graph.js'
 import { sendMail } from '../../modules/email-bridge/lib/graph-send.js'
 import { markMessageAsRead } from '../../modules/email-bridge/lib/graph-mail.js'
@@ -78,6 +78,18 @@ test('503 : pas de reprise (un POST aurait pu être traité)', async () => {
   const res = await graphFetch(`${base}/v1.0/users/x/sendMail`, { method: 'POST', body: '{}' }, noSleep)
   assert.equal(res.status, 503)
   assert.equal(hits.length, 1)
+})
+
+test('arrêt pendant l’attente d’une 429 (stopSignal) : attente interrompue, pas de nouvelle requête', { timeout: 4000 }, async () => {
+  reset((req, res) => { res.writeHead(429, { 'Retry-After': '5' }); res.end() })
+  const stop = new AbortController()
+  setTimeout(() => stop.abort(), 50)
+  const t0 = Date.now()
+  await assert.rejects(
+    graphFetch(`${base}/v1.0/users/x/sendMail`, { method: 'POST', body: '{}' }, { stopSignal: stop.signal }),
+    (err) => err.code === GRAPH_RETRY_ABORTED)
+  assert.ok(Date.now() - t0 < 1000, 'attente de Retry-After interrompue')
+  assert.equal(hits.length, 1, 'la requête refusée (429) n’est pas rejouée')
 })
 
 test('retryAfterMs : secondes, date HTTP, défaut exponentiel', () => {

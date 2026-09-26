@@ -16,7 +16,8 @@ import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
-import { flushOutbox } from '../../modules/email-bridge/lib/outbound-worker.js'
+import { flushOutbox, startMailOutboundWorker, stopMailOutboundWorker } from '../../modules/email-bridge/lib/outbound-worker.js'
+import { sendReply } from '../../modules/email-bridge/lib/graph-send.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini — skip outbound-worker suite'
 
@@ -332,4 +333,57 @@ test('flushOutbox : échec puis tick suivant → message repris et envoyé (retr
   assert.ok(rows[0].email_sent_at)
   assert.equal(rows[0].outbound_attempts, 1)
   assert.equal(rows[0].outbound_failed_at, null)
+})
+
+// ── Arrêt de l'API pendant un envoi en attente de reprise (429) ─────────────
+// Le message est réclamé (email_sent_at posé) avant l'envoi. Si l'API
+// s'arrête pendant l'attente d'une 429 (jusqu'à 3 × 30 s), la sortie forcée
+// laissait le message marqué « envoyé » alors que Graph ne l'avait jamais
+// accepté : perdu. L'attente est interrompue et la réclamation relâchée.
+
+test('flushOutbox : arrêt pendant l’attente d’une 429 → message remis en file, aucune tentative comptée', { skip: SKIP, timeout: 5000 }, async () => {
+  const tid = await seedTicket()
+  await seedInboundMapping(tid)
+  const msgId = await seedMessage(tid, { content: 'Throttlé' })
+
+  const calls = []
+  const fetch429 = async (url) => {
+    calls.push(url)
+    return { ok: false, status: 429, headers: new Headers({ 'Retry-After': '5' }), text: async () => '' }
+  }
+  const stop = new AbortController()
+  setTimeout(() => stop.abort(), 50)
+  const stats = await flushOutbox(db, null, {
+    stopSignal: stop.signal,
+    sendReplyImpl: (args) => sendReply({ ...args, fetchImpl: fetch429, getToken: async () => 'fake' }),
+    sendImpl: async () => { throw new Error('fallback inattendu') },
+  })
+  assert.equal(stats.sent, 0)
+  assert.equal(calls.length, 1, 'pas de reprise après l’arrêt')
+  const { rows: [r] } = await db.query(
+    `SELECT email_sent_at, outbound_attempts, outbound_failed_at FROM ticket_messages WHERE id = $1`, [msgId])
+  assert.equal(r.email_sent_at, null, 'réclamation relâchée : le message repartira')
+  assert.equal(r.outbound_attempts, 0, 'interruption par l’arrêt : pas une tentative échouée')
+  assert.equal(r.outbound_failed_at, null)
+})
+
+test('stopMailOutboundWorker : déclenche l’interruption et attend la remise en file', { skip: SKIP, timeout: 5000 }, async () => {
+  const tid = await seedTicket()
+  await seedInboundMapping(tid)
+  const msgId = await seedMessage(tid, { content: 'En cours à l’arrêt' })
+
+  let started
+  const inSend = new Promise((r) => { started = r })
+  // Envoi qui reste en attente (comme une 429) jusqu'à l'arrêt du worker.
+  const sendReplyImpl = ({ stopSignal }) => new Promise((resolve, reject) => {
+    started()
+    stopSignal?.addEventListener('abort', () => {
+      const err = new Error('reprise interrompue'); err.code = 'GRAPH_RETRY_ABORTED'; reject(err)
+    })
+  })
+  startMailOutboundWorker(db, null, 5, { sendReplyImpl })
+  await inSend
+  await stopMailOutboundWorker()
+  const { rows: [r] } = await db.query(`SELECT email_sent_at FROM ticket_messages WHERE id = $1`, [msgId])
+  assert.equal(r.email_sent_at, null)
 })

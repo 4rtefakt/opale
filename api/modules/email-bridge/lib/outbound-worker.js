@@ -27,6 +27,7 @@
 import { sendMail, sendReply } from './graph-send.js'
 import { buildSubject } from './thread-headers.js'
 import { nonOverlapping } from '../../../lib/non-overlapping.js'
+import { GRAPH_RETRY_ABORTED } from '../../core/lib/graph-fetch.js'
 
 const DEFAULT_INTERVAL_MS = 10_000
 const MAX_BATCH = 20  // bound le travail par tick pour ne pas bloquer
@@ -34,6 +35,7 @@ const MAX_ATTEMPTS = 5 // au-delà → dead-letter (≈ 50s de retries à 10s/ti
 let _timer = null
 let _kickoff = null
 let _run = null
+let _stop = null   // AbortController déclenché par stopMailOutboundWorker
 
 async function getSetting(db, key) {
   const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [key])
@@ -142,6 +144,17 @@ async function claimForSend(db, messageId, sentAt) {
   return rows.length ? rows[0].outbound_attempts : null
 }
 
+// Relâche la réclamation d'un message dont l'envoi a été interrompu AVANT
+// que Graph ne l'accepte (arrêt de l'API pendant l'attente d'une 429) : il
+// repartira au prochain démarrage. Pas une tentative échouée : compteur et
+// dead-letter inchangés.
+async function releaseClaim(db, messageId) {
+  await db.query(
+    `UPDATE ticket_messages SET email_sent_at = NULL WHERE id = $1 AND outbound_failed_at IS NULL`,
+    [messageId]
+  )
+}
+
 // Gère un échec d'envoi : incrémente le compteur, annule la marque d'envoi,
 // et passe en dead-letter (outbound_failed_at) si on a épuisé les tentatives.
 // Retourne true si dead-letter (abandon), false si on retentera.
@@ -162,11 +175,12 @@ async function markFailure(db, messageId, attemptsBefore, errMsg) {
 // Process un message : envoie via Graph (réponse threadée si possible,
 // sinon mail simple), marque la row. Retourne 'sent' |
 // 'skipped_no_recipient' | 'skipped_claimed' (pris par un autre tick) |
+// 'aborted' (arrêt de l'API avant acceptation par Graph, remis en file) |
 // 'dead_letter' | 'error'.
 //
 // sendReplyImpl / sendImpl injectables pour les tests.
 export async function sendOne(db, log, {
-  message, sender, sendImpl = sendMail, sendReplyImpl = sendReply,
+  message, sender, sendImpl = sendMail, sendReplyImpl = sendReply, stopSignal,
 }) {
   const mappings = await loadTicketMappings(db, message.ticket_id)
   if (!mappings.length) {
@@ -194,7 +208,7 @@ export async function sendOne(db, log, {
   // "pas de cible" ET par le fallback 404 ci-dessous.
   const sendNew = () => {
     const subject = buildSubject(pickSubject(mappings, message.ticket_title), message.ticket_id)
-    return sendImpl({ sender, to: recipient, subject, bodyText: message.content })
+    return sendImpl({ sender, to: recipient, subject, bodyText: message.content, stopSignal })
   }
 
   try {
@@ -206,6 +220,7 @@ export async function sendOne(db, log, {
           mailbox: replyTarget.mailbox,
           graphMessageId: replyTarget.graphMessageId,
           bodyText: message.content,
+          stopSignal,
         })
         mode = 'reply'
       } catch (err) {
@@ -232,6 +247,14 @@ export async function sendOne(db, log, {
     }, 'outbound: mail envoyé')
     return 'sent'
   } catch (err) {
+    // Arrêt de l'API pendant l'attente d'une reprise (429) : Graph n'a pas
+    // accepté l'envoi → réclamation relâchée, le message repartira.
+    if (err.code === GRAPH_RETRY_ABORTED) {
+      await releaseClaim(db, message.message_id)
+      log?.info({ messageId: message.message_id },
+        'outbound: envoi interrompu par l\'arrêt (429 en attente), message remis en file')
+      return 'aborted'
+    }
     // Échec → compteur + éventuel dead-letter. markFailure annule la marque
     // d'envoi (retry possible) tant qu'on n'a pas atteint MAX_ATTEMPTS ;
     // au-delà, le message est mis de côté (outbound_failed_at) et n'est plus
@@ -247,22 +270,25 @@ export async function sendOne(db, log, {
   }
 }
 
-// Un tick de l'outbox.
-export async function flushOutbox(db, log, { sendImpl, sendReplyImpl } = {}) {
+// Un tick de l'outbox. `stopSignal` : arrêt de l'API (plus de nouvel envoi,
+// attente de reprise interrompue).
+export async function flushOutbox(db, log, { sendImpl, sendReplyImpl, stopSignal } = {}) {
   const cfg = await getConfig(db)
   if (!cfg.enabled) return { skipped: 'disabled' }
   if (!cfg.sender)  return { skipped: 'no-sender-configured' }
 
   const pending = await pickPending(db, MAX_BATCH)
-  if (!pending.length) return { sent: 0, skipped_no_recipient: 0, skipped_claimed: 0, errors: 0, dead_letter: 0 }
+  if (!pending.length) return { sent: 0, skipped_no_recipient: 0, skipped_claimed: 0, aborted: 0, errors: 0, dead_letter: 0 }
 
-  const stats = { sent: 0, skipped_no_recipient: 0, skipped_claimed: 0, errors: 0, dead_letter: 0 }
+  const stats = { sent: 0, skipped_no_recipient: 0, skipped_claimed: 0, aborted: 0, errors: 0, dead_letter: 0 }
   for (const message of pending) {
+    if (stopSignal?.aborted) break   // arrêt : pas de nouvel envoi
     try {
-      const r = await sendOne(db, log, { message, sender: cfg.sender, sendImpl, sendReplyImpl })
+      const r = await sendOne(db, log, { message, sender: cfg.sender, sendImpl, sendReplyImpl, stopSignal })
       if      (r === 'sent')                  stats.sent++
       else if (r === 'skipped_no_recipient')  stats.skipped_no_recipient++
       else if (r === 'skipped_claimed')       stats.skipped_claimed++
+      else if (r === 'aborted')               stats.aborted++
       else if (r === 'dead_letter')           stats.dead_letter++
       else                                    stats.errors++
     } catch (err) {
@@ -273,12 +299,15 @@ export async function flushOutbox(db, log, { sendImpl, sendReplyImpl } = {}) {
   return stats
 }
 
-export function startMailOutboundWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
+// `inject` (tests uniquement) : { sendImpl, sendReplyImpl }.
+export function startMailOutboundWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS, inject = {}) {
   if (_timer) return
   // Un seul tick à la fois : si Graph est lent, le tick suivant ne relit pas
   // les mêmes messages en parallèle (la réclamation atomique de sendOne
   // protège en plus contre une 2e instance de l'API).
-  _run = nonOverlapping(() => flushOutbox(db, log), {
+  _stop = new AbortController()
+  const stopSignal = _stop.signal
+  _run = nonOverlapping(() => flushOutbox(db, log, { ...inject, stopSignal }), {
     onError: err => log?.warn({ err: err.message }, 'outbound: tick a planté'),
   })
   _kickoff = setTimeout(_run, 7_000)  // décalé du polling inbound (5s) pour étaler la charge
@@ -288,7 +317,10 @@ export function startMailOutboundWorker(db, log, intervalMs = DEFAULT_INTERVAL_M
 
 // Arrête le worker et attend la fin du tick en cours (pas d'arrêt entre la
 // réclamation d'un message et l'enregistrement du résultat de l'envoi).
+// Une attente de reprise après 429 (jusqu'à 3 × 30 s, au-delà de la sortie
+// forcée de l'arrêt) est interrompue : le message est remis en file.
 export async function stopMailOutboundWorker() {
+  if (_stop) { _stop.abort(); _stop = null }
   if (_timer) { clearInterval(_timer); _timer = null }
   if (_kickoff) { clearTimeout(_kickoff); _kickoff = null }
   if (_run) { const run = _run; _run = null; await run.idle() }

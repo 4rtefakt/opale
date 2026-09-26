@@ -48,9 +48,11 @@ function textToHtml(text) {
 //
 // `headers` = { inReplyTo, references } — strings prêtes pour les headers
 // RFC, peuvent être null.
+// `stopSignal` (optionnel) : arrêt de l'API, interrompt l'attente d'une
+// reprise après 429 (cf. graphFetch, erreur GRAPH_RETRY_ABORTED).
 export async function sendMail({
   sender, to, subject, bodyText,
-  fetchImpl = fetch,
+  fetchImpl = fetch, stopSignal,
 } = {}) {
   if (!sender) throw new Error('sendMail: sender manquant')
   if (!to)     throw new Error('sendMail: to manquant')
@@ -73,7 +75,7 @@ export async function sendMail({
     // saveToSentItems=true : la boîte expéditrice voit le mail dans ses
     // "Éléments envoyés". Important côté maintainer pour audit/recouvrement.
     body: JSON.stringify({ message, saveToSentItems: true }),
-  }, { fetchImpl })
+  }, { fetchImpl, stopSignal })
 
   if (!res.ok) {
     const body = await res.text().catch(() => '')
@@ -104,7 +106,7 @@ export async function sendMail({
 // "RE: …" tout seul. Le PATCH remplace le corps du draft par notre texte
 // (on n'inclut pas la citation de l'original — réponse de support concise).
 export async function sendReply({
-  mailbox, graphMessageId, bodyText, fetchImpl = fetch, getToken = getAppToken,
+  mailbox, graphMessageId, bodyText, fetchImpl = fetch, getToken = getAppToken, stopSignal,
 } = {}) {
   if (!mailbox)        throw new Error('sendReply: mailbox manquant')
   if (!graphMessageId) throw new Error('sendReply: graphMessageId manquant')
@@ -127,7 +129,7 @@ export async function sendReply({
   const createRes = await graphFetch(
     `${base}/messages/${encodeURIComponent(graphMessageId)}/createReply`,
     { method: 'POST', headers: authJson, body: '{}' },
-    { fetchImpl }
+    { fetchImpl, stopSignal }
   )
   if (!createRes.ok) return fail(createRes, 'createReply')
   const draft = await createRes.json()
@@ -146,7 +148,7 @@ export async function sendReply({
       method: 'PATCH', headers: authJson,
       body: JSON.stringify({ body: { contentType: 'HTML', content } }),
     },
-    { fetchImpl }
+    { fetchImpl, stopSignal }
   )
   if (!patchRes.ok) return fail(patchRes, 'patch')
 
@@ -154,7 +156,7 @@ export async function sendReply({
   const sendRes = await graphFetch(
     `${base}/messages/${encodeURIComponent(draft.id)}/send`,
     { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
-    { fetchImpl }
+    { fetchImpl, stopSignal }
   )
   if (!sendRes.ok) return fail(sendRes, 'send')
 

@@ -15,14 +15,31 @@
 // chaque appelant garde sa gestion d'erreur. Un timeout lève une Error
 // « Graph : pas de réponse en N ms ».
 //
+// opts.stopSignal (arrêt de l'API) interrompt l'attente ENTRE deux
+// tentatives, jamais une requête en cours : la tentative précédente a reçu
+// une 429, donc Graph ne l'a pas traitée. Erreur de code
+// GRAPH_RETRY_ABORTED : l'appelant sait que rien n'est parti (ex. l'outbox
+// remet le message en file au lieu de le laisser marqué « envoyé »).
+//
 // fetch est résolu à l'appel (globalThis.fetch, ou opts.fetchImpl) : les
 // tests qui remplacent globalThis.fetch continuent de fonctionner.
+
+import { setTimeout as sleepFor } from 'node:timers/promises'
+
+export const GRAPH_RETRY_ABORTED = 'GRAPH_RETRY_ABORTED'
 
 export const graphFetchDefaults = {
   timeoutMs: 30_000,
   maxRetries: 3,             // au plus 3 reprises (4 tentatives)
   maxRetryAfterMs: 30_000,
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep: (ms, signal) => sleepFor(ms, undefined, { signal }),
+}
+
+function retryAborted(cause) {
+  const err = new Error('Graph : reprise après 429 interrompue (arrêt en cours), requête non traitée par Graph',
+    cause ? { cause } : undefined)
+  err.code = GRAPH_RETRY_ABORTED
+  return err
 }
 
 // Délai d'attente avant la reprise n° attempt (0-based).
@@ -39,6 +56,7 @@ export function retryAfterMs(header, attempt, now = Date.now()) {
 export async function graphFetch(url, init = {}, opts = {}) {
   const { timeoutMs, maxRetries, maxRetryAfterMs, sleep } = { ...graphFetchDefaults, ...opts }
   const fetchImpl = opts.fetchImpl || globalThis.fetch
+  const stopSignal = opts.stopSignal
 
   for (let attempt = 0; ; attempt++) {
     const timeout = AbortSignal.timeout(timeoutMs)
@@ -56,8 +74,15 @@ export async function graphFetch(url, init = {}, opts = {}) {
 
     const waitMs = retryAfterMs(res.headers?.get?.('retry-after'), attempt)
     if (waitMs > maxRetryAfterMs) return res
+    if (stopSignal?.aborted) throw retryAborted()
     // Libère la connexion de la réponse abandonnée avant d'attendre.
     try { await res.body?.cancel?.() } catch { /* corps déjà consommé */ }
-    await sleep(waitMs)
+    try {
+      await sleep(waitMs, stopSignal)
+    } catch (err) {
+      if (stopSignal?.aborted) throw retryAborted(err)
+      throw err
+    }
+    if (stopSignal?.aborted) throw retryAborted()
   }
 }
