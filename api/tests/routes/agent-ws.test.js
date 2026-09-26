@@ -262,9 +262,10 @@ test('révocation admin du token → WS agent fermée, session console terminée
     const r = await remoteSession(browser.sessionId)
     return r?.ended_at ? r : null
   }, 'remote_sessions.ended_at')
-  assert.equal(row.end_reason, 'agent-disconnected')
+  assert.equal(row.end_reason, 'token-revoked', 'cause réelle de la fin de session')
   const closeAudit = await waitFor(() => lastAudit('agent_console_close', device.id), 'audit agent_console_close')
   assert.equal(closeAudit.session_id, browser.sessionId)
+  assert.equal(closeAudit.reason, 'token-revoked')
   assert.equal(typeof closeAudit.duration_seconds, 'number')
 
   const wsAudit = await waitFor(() => lastAudit('agent_ws_disconnect', device.id), 'audit agent_ws_disconnect')
