@@ -133,7 +133,7 @@ test('POST /api/packages — admin crée un package en draft', { skip: SKIP }, a
 
 test('POST /api/packages — winget_id au format invalide → 400 (injection d\'arguments winget)', { skip: SKIP }, async () => {
   const token = await adminToken('oid-pkg-badwinget-admin')
-  for (const winget_id of ['--source=evil', '-h', 'My.App --override "x"', 'A'.repeat(129), ' My.App', 'My/App', ['My.App'], { id: 'x' }]) {
+  for (const winget_id of ['--source=evil', '-h', 'My.App --override "x"', 'A'.repeat(129), ' My.App', 'My/App', '@file', 'My.App\n--source=evil', 'My\tApp', '\u00a0-h', ['My.App'], { id: 'x' }]) {
     const res = await fastify.inject({
       method: 'POST', url: '/api/packages',
       headers: { authorization: `Bearer ${token}` },
@@ -148,7 +148,11 @@ test('POST /api/packages — winget_id au format invalide → 400 (injection d\'
 
 test('POST /api/packages — winget_id aux formats réels acceptés', { skip: SKIP }, async () => {
   const token = await adminToken('oid-pkg-goodwinget-admin')
-  for (const winget_id of ['Microsoft.PowerShell', 'Notepad++.Notepad++', '9NBLGGH4NNS1', 'Mozilla.Firefox.ESR', 'Git_Git-2']) {
+  // Identifiants réels de l'index winget officiel, dont ceux avec & , ! @
+  // ou des lettres accentuées.
+  for (const winget_id of ['Microsoft.PowerShell', 'Notepad++.Notepad++', '9NBLGGH4NNS1', 'XP89DCGQ3K6VLD',
+    'Mozilla.Firefox.ESR', 'Rohde&Schwarz.SDC.IETDViewAutark', 'IDMComputerSolutions,Inc.UltraEdit',
+    'NHNCorporation.Dooray!Messenger', 'ClémentGrennerat.ThreeFingerDrag', 'nitichote@dev.thaikeyfix']) {
     const res = await fastify.inject({
       method: 'POST', url: '/api/packages',
       headers: { authorization: `Bearer ${token}` },
@@ -173,6 +177,23 @@ test('PATCH /api/packages/:id — winget_id au format invalide → 400, package 
   const { rows: [row] } = await db.query(`SELECT winget_id, status FROM packages WHERE id = $1`, [pkg.id])
   assert.equal(row.winget_id, 'Test.Package')
   assert.equal(row.status, 'approved')
+})
+
+test('PATCH /api/packages/:id — winget_id existant renvoyé tel quel par le formulaire → édition acceptée', { skip: SKIP }, async () => {
+  // Les formulaires renvoient toujours le winget_id courant : un package
+  // enregistré avant la validation, même avec une valeur hors format, doit
+  // rester modifiable tant que le winget_id n'est pas changé.
+  const token = await adminToken('oid-pkg-patch-legacywinget-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Legacy Winget' })
+  await db.query(`UPDATE packages SET winget_id = 'Legacy Id avec espaces' WHERE id = $1`, [pkg.id])
+
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/packages/${pkg.id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { winget_id: 'Legacy Id avec espaces', description: 'maj description' },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().description, 'maj description')
 })
 
 test('PATCH /api/packages/:id — non-admin → 403, scripts inchangés', { skip: SKIP }, async () => {

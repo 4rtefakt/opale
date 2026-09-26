@@ -4,12 +4,17 @@ import { SNAPSHOT_COLUMNS, SNAPSHOT_UPSERT, snapshotSelect } from '../lib/deploy
 
 // Gestion des packages déployables (winget ou script PowerShell)
 
-// Format d'un identifiant winget (ex. « Microsoft.PowerShell »,
-// « Notepad++.Notepad++ », ID Microsoft Store « 9NBLGGH4NNS1 »). L'agent
-// lance `winget install --id <valeur>` : une valeur commençant par `-`
-// serait lue comme une option de winget (injection d'arguments). Premier
-// caractère alphanumérique, charset des IDs du dépôt winget-pkgs, 128 max.
-const WINGET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,127}$/
+// Format d'un identifiant winget. L'agent lance `winget install --id
+// <valeur>` en passant la valeur comme un seul argument, sans shell, et
+// winget prend le jeton qui suit --id comme valeur même s'il commence par
+// `-` : pas d'injection exploitable aujourd'hui, c'est une défense en
+// profondeur (nouvel agent, autre outil qui réutiliserait la valeur).
+// Premier caractère lettre ou chiffre (donc jamais `-` ni `@`), puis aucun
+// blanc, caractère de contrôle ou caractère de chemin, 128 au plus. Les
+// vrais identifiants contiennent aussi & , ! @ ou des lettres accentuées
+// (« Rohde&Schwarz.SDC.IETDViewAutark », « ClémentGrennerat.ThreeFingerDrag ») :
+// ce motif accepte les 15 154 identifiants de l'index winget officiel.
+const WINGET_ID_RE = /^[\p{L}\p{N}][^\s\\/:*?"<>|\p{Cc}]{0,127}$/u
 
 function isValidWingetId(v) {
   return typeof v === 'string' && WINGET_ID_RE.test(v)
@@ -225,7 +230,10 @@ export default async function packagesRoute(fastify) {
     if (!existing) return reply.code(404).send({ error: 'Package introuvable' })
 
     const { name, description, type, winget_id, install_script, post_install_script, detection_script, version } = req.body || {}
-    if (winget_id && !isValidWingetId(winget_id)) {
+    // Les formulaires renvoient toujours le winget_id courant : on ne valide
+    // qu'une valeur modifiée, pour ne jamais bloquer l'édition d'un package
+    // existant.
+    if (winget_id && winget_id !== existing.winget_id && !isValidWingetId(winget_id)) {
       return reply.code(400).send({ error: 'winget_id invalide (format attendu : Editeur.Produit)' })
     }
 
