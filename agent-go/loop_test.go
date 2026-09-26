@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -85,6 +86,8 @@ type fakeJobs struct {
 	order []string
 	// beforeDeployment — appelé avant l'exécution de chaque déploiement.
 	beforeDeployment func(id string)
+	// outputFor — sortie du déploiement (défaut « ok »).
+	outputFor func(id string) string
 }
 
 func (f *fakeJobs) record(s string) {
@@ -134,7 +137,11 @@ func installFakeJobs(t *testing.T) *fakeJobs {
 				sink.deployment(deploymentResult(d, 1, "[interrompu : arrêt de l'agent]"))
 			} else {
 				f.record("dep:" + d.DeploymentID)
-				sink.deployment(deploymentResult(d, 0, "ok"))
+				out := "ok"
+				if f.outputFor != nil {
+					out = f.outputFor(d.DeploymentID)
+				}
+				sink.deployment(deploymentResult(d, 0, out))
 			}
 			if det, ok := postInstallDetection(ctx, d, func(ctx context.Context, _ string) (int, string) {
 				if ctx.Err() != nil {
@@ -437,4 +444,38 @@ func TestRunCheckin_StopMidBatchReportsNoFalseResults(t *testing.T) {
 	if saved := LoadState(); !sameIDs(depIDs(saved.PendingDeployments), []string{"dep-01", "dep-02"}) || len(saved.PendingDetections) != 1 {
 		t.Fatalf("state.json : %+v / %+v", saved.PendingDeployments, saved.PendingDetections)
 	}
+}
+
+// La sortie est tronquée dès la mise en file : state.json, réécrit en
+// entier à chaque Save (deux fois par déploiement), ne stocke jamais la
+// sortie brute d'un installeur bavard.
+func TestRunCheckin_OutputTruncatedWhenQueued(t *testing.T) {
+	f := installFakeJobs(t)
+	srv := newJobServer(2, 10)
+	f.outputFor = func(id string) string {
+		return "début " + strings.Repeat("x", 4*1024*1024) + " fin"
+	}
+	var problems []string
+	f.beforeDeployment = func(id string) {
+		if id != "dep-02" {
+			return
+		}
+		raw, err := os.ReadFile(statePath())
+		saved := LoadState()
+		if err != nil || len(saved.PendingDeployments) != 1 {
+			problems = append(problems, fmt.Sprintf("résultat de dep-01 absent de state.json (%v)", err))
+			return
+		}
+		if out := saved.PendingDeployments[0].Output; len(out) > maxResultOutputBytes || !strings.HasSuffix(out, " fin") {
+			problems = append(problems, fmt.Sprintf("sortie en file : %d octets (max %d)", len(out), maxResultOutputBytes))
+		}
+		if len(raw) > 2*maxResultOutputBytes {
+			problems = append(problems, fmt.Sprintf("state.json : %d octets", len(raw)))
+		}
+	}
+	st := runCheckinAgainst(t, srv)
+	if len(problems) > 0 {
+		t.Fatal(strings.Join(problems, "\n"))
+	}
+	assertEveryClaimedJobRanOnce(t, srv, f, st, 2)
 }

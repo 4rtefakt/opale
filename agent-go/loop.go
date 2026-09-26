@@ -146,6 +146,10 @@ func processCheckinJobs(ctx context.Context, cfg *Config, st *State, resp *Check
 	if len(resp.Deployments) > 0 {
 		processDeploymentsFn(ctx, resp.Deployments, resultSink{
 			deployment: func(r DeploymentResult) {
+				// Tronquée dès la mise en file : state.json est réécrit en
+				// entier à chaque Save (cf. aussi pendingDeploymentBatch pour
+				// un state.json d'avant 2.15.1).
+				r.Output = truncateMiddle(r.Output, maxResultOutputBytes)
 				st.PendingDeployments = append(st.PendingDeployments, r)
 				st.Save()
 				deployed++
