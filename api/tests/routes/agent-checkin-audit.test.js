@@ -3,17 +3,23 @@
 // événements significatifs : enrôlement, changement de nom, série
 // différente, version d'agent changée, ip_netbird refusée. Les
 // rattachements / refus de token ont leurs propres actions (inchangées).
+// Et : le nettoyage des séries temporelles au checkin suit lib/retention.js.
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { buildApp } from '../helpers/build-app.js'
 import { seedAgentToken } from '../fixtures/agent-tokens.js'
+import { retentionDays } from '../../lib/retention.js'
 
 import agentRoute from '../../modules/inventory/routes/agent.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 let db, release, fastify
 
@@ -118,4 +124,46 @@ test('série différente de celle du poste (retrouvé par son nom) : une ligne d
   assert.equal(audits[0].level, 'warn')
   assert.equal(audits[0].serial, 'SN-AUD-B')
   assert.equal(audits[0].device_serial, 'SN-AUD-A')
+})
+
+// ── Rétention des séries au checkin ──────────────────────────────────────────
+
+test('checkin : séries du poste purgées au-delà de la durée de lib/retention.js', { skip: SKIP }, async () => {
+  const d = await device({ hostname: 'PC-AUD-RET', serial: 'SN-AUD-RET', agentVersion: '2.14.0' })
+  const cases = [
+    ['bandwidth_stats', `INSERT INTO bandwidth_stats (device_id, adapter, sampled_at) VALUES ($1, 'eth0', now() - make_interval(days => $2))`],
+    ['ping_stats', `INSERT INTO ping_stats (device_id, host, sampled_at) VALUES ($1, '1.1.1.1', now() - make_interval(days => $2))`],
+    ['system_perf_stats', `INSERT INTO system_perf_stats (device_id, sampled_at) VALUES ($1, now() - make_interval(days => $2))`],
+  ]
+  for (const [table, sql] of cases) {
+    await db.query(sql, [d.id, retentionDays(table) + 1])
+    await db.query(sql, [d.id, retentionDays(table) - 1])
+  }
+  const res = await checkin(d.secret, {
+    hostname: 'PC-AUD-RET', serial: 'SN-AUD-RET', agent_version: '2.14.0',
+    bandwidth: [{ adapter: 'eth0', bytes_sent: 1, bytes_recv: 1 }],
+    ping: [{ host: '1.1.1.1', latency_ms: 3, packet_loss_pct: 0 }],
+    system_perf: { ram_used_pct: 50 },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  // Nettoyages non bloquants (fire-and-forget) : on attend leur effet.
+  const counts = (table) => db.query(`
+    SELECT count(*) FILTER (WHERE sampled_at < now() - make_interval(days => $2))::int AS old,
+           count(*) FILTER (WHERE sampled_at >= now() - make_interval(days => $2))::int AS kept
+    FROM ${table} WHERE device_id = $1`, [d.id, retentionDays(table)]).then(r => r.rows[0])
+  for (const [table] of cases) {
+    let c = await counts(table)
+    for (let i = 0; i < 30 && c.old > 0; i++) {
+      await new Promise((r) => setTimeout(r, 100))
+      c = await counts(table)
+    }
+    assert.equal(c.old, 0, `${table} : échantillon trop ancien purgé`)
+    assert.equal(c.kept, 2, `${table} : échantillon récent + nouveau conservés`)
+  }
+})
+
+test('agent.js : aucune durée de rétention en dur pour les séries (lib/retention.js fait foi)', async () => {
+  const src = await fs.readFile(path.resolve(__dirname, '../../modules/inventory/routes/agent.js'), 'utf8')
+  const hardcoded = src.match(/DELETE FROM (bandwidth_stats|ping_stats|system_perf_stats)[^`]*interval '\d+ days'/g) || []
+  assert.deepEqual(hardcoded, [])
 })

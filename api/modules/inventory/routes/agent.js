@@ -10,6 +10,7 @@ import { SNAPSHOT_COLUMNS, snapshotSelect } from '../lib/deployment-snapshots.js
 import { checkDeviceClaim, CLAIM_REFUSAL_MESSAGES } from '../lib/device-claim.js'
 import { isNetbirdIp, normalizeIfaceType, clipStr, truncateMiddle } from '../lib/checkin-validation.js'
 import { ipOnlyKey } from '../../../lib/rate-limit.js'
+import { retentionDays } from '../../../lib/retention.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -915,8 +916,8 @@ export default async function agentRoute(fastify) {
           VALUES ($1, $2, $3, $4)
         `, [deviceId, bw.adapter, bw.bytes_sent ?? null, bw.bytes_recv ?? null])
       }
-      // Nettoyage des samples > 7 jours (non-bloquant)
-      fastify.db.query(`DELETE FROM bandwidth_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
+      // Nettoyage des samples hors rétention (non-bloquant, durée : lib/retention.js)
+      fastify.db.query(`DELETE FROM bandwidth_stats WHERE device_id = $1 AND sampled_at < now() - make_interval(days => $2)`, [deviceId, retentionDays('bandwidth_stats')]).catch(() => {})
 
       // ── Ping stats ──────────────────────────────────────────────────────────
       const pings = Array.isArray(ping) ? ping : (ping ? [ping] : [])
@@ -928,7 +929,7 @@ export default async function agentRoute(fastify) {
         `, [deviceId, p.host, p.latency_ms ?? null, p.packet_loss_pct ?? null])
       }
       if (pings.length) {
-        fastify.db.query(`DELETE FROM ping_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`, [deviceId]).catch(() => {})
+        fastify.db.query(`DELETE FROM ping_stats WHERE device_id = $1 AND sampled_at < now() - make_interval(days => $2)`, [deviceId, retentionDays('ping_stats')]).catch(() => {})
       }
 
       // ── System perf (RAM/CPU/uptime/batterie) ──────────────────────────────
@@ -953,8 +954,8 @@ export default async function agentRoute(fastify) {
         ])
         // Cleanup non-bloquant
         fastify.db.query(
-          `DELETE FROM system_perf_stats WHERE device_id = $1 AND sampled_at < now() - interval '7 days'`,
-          [deviceId]
+          `DELETE FROM system_perf_stats WHERE device_id = $1 AND sampled_at < now() - make_interval(days => $2)`,
+          [deviceId, retentionDays('system_perf_stats')]
         ).catch(() => {})
       }
       await inv.query('COMMIT')
