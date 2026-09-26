@@ -451,6 +451,33 @@ test('heartbeat : token révoqué hors de ce process (autre instance, SQL direct
   assert.equal(g.json().code, 'AGENT_OFFLINE')
 })
 
+test('heartbeat : erreur DB à la revalidation → connexion conservée, nouvel essai au tick suivant', { skip: SKIP }, async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const device = await seedDevice(db, { hostname: 'PC-WS-RECHECK-DBERR' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-recheck-dberr' })
+  const agent = await connectAgent(tok.secret, device.id)
+  await settleDb()
+
+  let failures = 0
+  interceptQuery = (sql, params, next) => {
+    if (!isTokenRecheck(sql)) return next()
+    failures++
+    return Promise.reject(new Error('base indisponible (test)'))
+  }
+  t.mock.timers.tick(30_000)
+  await settleDb()
+  assert.equal(failures, 1, 'revalidation tentée au tick')
+  assert.equal(agent.conn.revokedReason, null, 'erreur DB : connexion conservée')
+  assert.equal(fastify.agentWs.get(device.id), agent.conn)
+
+  // Base rétablie : le tick suivant revalide normalement.
+  interceptQuery = null
+  await db.query(`UPDATE agent_tokens SET revoked_at = now() WHERE id = $1`, [tok.id])
+  t.mock.timers.tick(30_000)
+  const info = await within(agent.closed, 2000, 'fermeture au tick suivant')
+  assert.equal(info.reason, 'token-revoked')
+})
+
 // ─── Frames console.* liées à la connexion émettrice ────────────────────────
 
 const b64 = (s) => Buffer.from(s).toString('base64')
