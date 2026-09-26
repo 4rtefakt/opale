@@ -13,8 +13,7 @@ test('parseTrustProxy — désactivé par défaut', () => {
   }
 })
 
-test('parseTrustProxy — booléen, liste d\'IP/CIDR', () => {
-  assert.equal(parseTrustProxy('true'), true)
+test('parseTrustProxy — liste d\'IP/CIDR', () => {
   assert.deepEqual(parseTrustProxy('127.0.0.1'), ['127.0.0.1'])
   assert.deepEqual(parseTrustProxy(' 172.16.0.0/12 , 10.0.0.1,::1 '), ['172.16.0.0/12', '10.0.0.1', '::1'])
   assert.deepEqual(parseTrustProxy('loopback,uniquelocal'), ['loopback', 'uniquelocal'])
@@ -27,6 +26,12 @@ test('parseTrustProxy — nombre de sauts refusé au boot (ne vérifie pas le pa
   // silencieusement inopérant, et avant 5.12 il permettait de forger l'IP.
   for (const v of ['1', '2', '10']) {
     assert.throws(() => parseTrustProxy(v), /nombre de proxies n'est pas sûr/, v)
+  }
+})
+
+test('parseTrustProxy — true refusé au boot (tout client choisirait son IP)', () => {
+  for (const v of ['true', 'TRUE', 'yes', 'on']) {
+    assert.throws(() => parseTrustProxy(v), /faire confiance à tout pair/, v)
   }
 })
 

@@ -31,7 +31,7 @@ consumer; the frontend gets a curated subset via `GET /env.js`.
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `TRUST_PROXY` | **yes in production behind a reverse proxy** | off | Proxies trusted to set `X-Forwarded-For`, so the API sees the real client IP (used by rate limiting). Comma-separated proxy IPs/CIDRs (recommended, e.g. `172.16.0.0/12` for a Docker bridge network), or `true` (trust any `X-Forwarded-For` — avoid). A hop count (`1`) is refused: it cannot validate the TCP peer, so a direct client could spoof its IP (GHSA-3m5p-2c4r-xxw2), and Fastify ≥ 5.12 ignores it anyway. Invalid values stop the API at boot |
+| `TRUST_PROXY` | **yes in production behind a reverse proxy** | off | Proxies trusted to set `X-Forwarded-For`, so the API sees the real client IP (used by rate limiting). Comma-separated proxy IPs/CIDRs, as narrow as possible (e.g. the Docker bridge gateway `172.18.0.1`, or the compose network's subnet). `true` and hop counts (`1`) are refused: they don't validate the TCP peer, so a client could pick its own IP (GHSA-3m5p-2c4r-xxw2; Fastify ≥ 5.12 ignores hop counts anyway). Invalid values stop the API at boot |
 
 **Effectively required in production behind Caddy/nginx.** Without it, every
 request carries the proxy's IP, so all clients share the same rate-limit
@@ -48,8 +48,11 @@ drop the `ports:` entry (proxy in the same compose network), or firewall
 
 Which value: with the API in Docker behind a host-level proxy, the peer
 address the API sees is the Docker bridge gateway (e.g. `172.18.0.1`), not
-`127.0.0.1` — trust the bridge CIDR (e.g. `172.16.0.0/12`). With Caddy in the
-same compose network (`reverse_proxy api:3010`), trust that network's CIDR.
+`127.0.0.1` — trust exactly that address (check it with
+`docker network inspect`). With Caddy in the same compose network
+(`reverse_proxy api:3010`), trust that network's subnet. Avoid a broad range
+such as `172.16.0.0/12`: behind nginx (`$proxy_add_x_forwarded_for`), a client
+whose own address falls in it could inject its IP.
 
 ### 1.2 Database
 

@@ -24,25 +24,31 @@ function isIpOrCidr(entry) {
 
 // Valeur de TRUST_PROXY → option `trustProxy` de Fastify :
 //   absent / '' / false / 0 / no / off  → false (défaut : pas de proxy de confiance)
-//   true / yes / on                     → true (fait confiance à tout X-Forwarded-For : à éviter)
-//   liste 'ip,cidr,…'                   → adresses de proxy de confiance (recommandé)
-// Un nombre de sauts (« 1 ») est refusé : il ne vérifie pas le pair TCP, donc
-// un client qui joint le port en direct peut forger X-Forwarded-For
-// (GHSA-3m5p-2c4r-xxw2) ; Fastify ≥ 5.12 le traite d'ailleurs comme « aucun
-// proxy de confiance », ce qui rendrait le réglage silencieusement inopérant.
+//   liste 'ip,cidr,…'                   → adresses du reverse proxy (seule forme acceptée)
+// Refusés :
+//   - true / yes / on : ferait confiance à n'importe quel pair, donc tout
+//     client choisirait son req.ip via X-Forwarded-For (et une clé de
+//     rate-limit neuve à chaque requête) ;
+//   - un nombre de sauts (« 1 ») : ne vérifie pas le pair TCP, donc un client
+//     qui joint le port en direct peut forger X-Forwarded-For
+//     (GHSA-3m5p-2c4r-xxw2) ; Fastify ≥ 5.12 le traite d'ailleurs comme
+//     « aucun proxy de confiance », réglage silencieusement inopérant.
+// Les mots-clés loopback / linklocal / uniquelocal restent acceptés.
 // Toute autre valeur lève : on refuse de démarrer sur une config ambiguë.
 export function parseTrustProxy(raw) {
   const v = String(raw ?? '').trim()
   const lower = v.toLowerCase()
   if (!v || ['false', '0', 'no', 'off'].includes(lower)) return false
-  if (['true', 'yes', 'on'].includes(lower)) return true
+  if (['true', 'yes', 'on'].includes(lower)) {
+    throw new Error(`TRUST_PROXY invalide (${v}) — faire confiance à tout pair permet à n'importe quel client de choisir son IP : indiquer l'IP ou le CIDR du reverse proxy`)
+  }
   if (/^\d+$/.test(v)) {
     throw new Error(`TRUST_PROXY invalide (${v}) — un nombre de proxies n'est pas sûr : indiquer l'IP ou le CIDR du reverse proxy`)
   }
   const entries = v.split(',').map(s => s.trim()).filter(Boolean)
   const invalid = entries.filter(e => !isIpOrCidr(e))
   if (!entries.length || invalid.length) {
-    throw new Error(`TRUST_PROXY invalide (${invalid.join(', ') || v}) — attendu : une liste d'IP/CIDR du reverse proxy (ou true, déconseillé)`)
+    throw new Error(`TRUST_PROXY invalide (${invalid.join(', ') || v}) — attendu : une liste d'IP/CIDR du reverse proxy`)
   }
   return entries
 }
