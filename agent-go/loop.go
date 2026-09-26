@@ -112,20 +112,11 @@ func runCheckin(ctx context.Context, cfg *Config, st *State) {
 }
 
 // runDebugLoop — mode interactif (non-service). Utilisé via --debug.
+// WS persistant en parallèle du polling (cf. runAgent).
 func runDebugLoop(ctx context.Context, cfg *Config, st *State) error {
 	logf("mode --debug : checkin immédiat puis interval %s", CheckinInterval)
-	// WS persistant en parallèle du polling. Indépendant : si le tube WS
-	// tombe, le polling continue ; si le polling échoue, le WS continue.
-	go RunWSClient(ctx, cfg)
-	runCheckin(ctx, cfg, st)
-	tick := time.NewTicker(CheckinInterval)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-tick.C:
-			runCheckin(ctx, cfg, st)
-		}
-	}
+	runAgent(ctx, CheckinInterval,
+		func(ctx context.Context) { runCheckin(ctx, cfg, st) },
+		func(ctx context.Context) { RunWSClient(ctx, cfg) })
+	return nil
 }

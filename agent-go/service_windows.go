@@ -29,40 +29,53 @@ func (s *agentService) Execute(args []string, r <-chan svc.ChangeRequest, status
 	st := LoadState()
 	CheckBinaryIntegrity(st)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	status <- svc.Status{State: svc.Running, Accepts: accepted}
 	logInfo("service-start", "", LogFields{"interval": CheckinInterval.String()})
 
-	// WS persistant en parallèle du polling. Cycle de vie attaché au même
-	// ctx que le service : le SCM Stop annule les deux ensemble.
-	go RunWSClient(ctx, cfg)
-
-	// Premier checkin immédiat
-	runCheckin(ctx, cfg, st)
-
-	tick := time.NewTicker(CheckinInterval)
-	defer tick.Stop()
-
-	for {
-		select {
-		case c := <-r:
-			switch c.Cmd {
-			case svc.Interrogate:
-				status <- c.CurrentStatus
-			case svc.Stop, svc.Shutdown:
-				logInfo("service-stop", "demandé par SCM", nil)
-				status <- svc.Status{State: svc.StopPending}
-				cancel()
-				return false, 0
-			default:
-				logf("svc cmd inattendue : %v", c.Cmd)
+	// Traduction des requêtes SCM → requêtes neutres. S'arrête avec la boucle.
+	requests := make(chan svcRequest)
+	loopDone := make(chan struct{})
+	defer close(loopDone)
+	go func() {
+		for {
+			select {
+			case c := <-r:
+				var req svcRequest
+				switch c.Cmd {
+				case svc.Interrogate:
+					cur := c.CurrentStatus
+					req = svcRequest{cmd: svcCmdInterrogate, reply: func() { status <- cur }}
+				case svc.Stop, svc.Shutdown:
+					req = svcRequest{cmd: svcCmdStop}
+				default:
+					logf("svc cmd inattendue : %v", c.Cmd)
+					continue
+				}
+				select {
+				case requests <- req:
+				case <-loopDone:
+					return
+				}
+			case <-loopDone:
+				return
 			}
-		case <-tick.C:
-			runCheckin(ctx, cfg, st)
 		}
+	}()
+
+	// WS persistant + checkins, dans une goroutine : la boucle de contrôle
+	// reste disponible pendant un checkin long.
+	work := func(ctx context.Context) {
+		runAgent(ctx, CheckinInterval,
+			func(ctx context.Context) { runCheckin(ctx, cfg, st) },
+			func(ctx context.Context) { RunWSClient(ctx, cfg) })
 	}
+	onStopPending := func() {
+		logInfo("service-stop", "demandé par SCM", nil)
+		status <- svc.Status{State: svc.StopPending, WaitHint: uint32((serviceStopGrace + 5*time.Second) / time.Millisecond)}
+	}
+
+	runServiceLoop(requests, work, onStopPending, serviceStopGrace)
+	return false, 0
 }
 
 // RunService — appelé par main quand on est lancé par le SCM.
