@@ -88,43 +88,79 @@ function Get-EntryAttributes([string]$Path) {
 }
 
 # Élément de confiance : ni jonction / lien, propriétaire SYSTEM ou
-# Administrateurs.
+# Administrateurs, et aucune autorisation accordée à un autre compte. Un
+# dossier où un utilisateur a pu écrire peut contenir des liens durs vers
+# des fichiers système (même propriétaire, invisibles autrement) ; un lien
+# dur partage l'ACL de sa cible, qui accorde presque toujours la lecture à
+# d'autres comptes, et est donc écarté par ce contrôle.
 function Test-TrustedItem([string]$Path) {
     $attrs = Get-EntryAttributes $Path
     if ($null -eq $attrs) { return $false }
     if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) { return $false }
-    $owner = (Get-Acl -LiteralPath $Path).GetOwner([System.Security.Principal.SecurityIdentifier])
-    return ($owner -eq $systemSid -or $owner -eq $adminSid)
+    $acl = Get-Acl -LiteralPath $Path
+    $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+    if (-not ($owner -eq $systemSid -or $owner -eq $adminSid)) { return $false }
+    foreach ($rule in @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        if (-not ($rule.IdentityReference -eq $systemSid -or $rule.IdentityReference -eq $adminSid)) { return $false }
+    }
+    return $true
+}
+
+# Dossier de données de confiance : dossier réel, lui et chacun de ses
+# éléments directs de confiance (cf. Test-TrustedItem).
+function Test-DataDirTrusted {
+    try {
+        $attrs = Get-EntryAttributes $DataDir
+        if ($null -eq $attrs) { return $false }
+        if (-not ($attrs -band [System.IO.FileAttributes]::Directory)) { return $false }
+        if (-not (Test-TrustedItem $DataDir)) { return $false }
+        foreach ($child in @(Get-ChildItem -LiteralPath $DataDir -Force)) {
+            if (-not (Test-TrustedItem $child.FullName)) { return $false }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# Création avec l'ACL SYSTEM-only dès l'origine : pas de fenêtre où le
+# dossier hérite de l'ACL de %ProgramData% (qui laisse les utilisateurs y
+# créer des fichiers). Repli New-Item si l'API .NET Framework manque
+# (PowerShell 7) ; Initialize-DataDir revérifie ensuite le dossier.
+function New-SystemOnlyDirectory([string]$Path) {
+    try {
+        $sec = New-Object System.Security.AccessControl.DirectorySecurity
+        $sec.SetAccessRuleProtection($true, $false)
+        $sec.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $systemSid, 'FullControl', @('ContainerInherit','ObjectInherit'), 'None', 'Allow')))
+        $sec.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $adminSid, 'FullControl', @('ContainerInherit','ObjectInherit'), 'None', 'Allow')))
+        [void][System.IO.Directory]::CreateDirectory($Path, $sec)
+    } catch {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
 }
 
 # Un utilisateur standard peut créer un sous-dossier de %ProgramData% (il
 # en devient propriétaire, donc peut toujours en réécrire l'ACL) ou y
-# déposer fichiers et jonctions avant l'installation. Si le dossier, ou
-# l'un de ses éléments directs, n'est pas de confiance, il est écarté par
-# un simple renommage (jamais Remove-Item -Recurse, qui suit les jonctions
-# sous Windows PowerShell 5.1) puis recréé vide.
+# déposer fichiers, liens et jonctions avant l'installation. Un dossier
+# qui n'est pas de confiance est écarté par un simple renommage (jamais
+# Remove-Item -Recurse, qui suit les jonctions sous Windows PowerShell 5.1)
+# puis recréé ; le résultat est revérifié (course pendant la création).
 function Initialize-DataDir {
-    $attrs = Get-EntryAttributes $DataDir
-    if ($null -ne $attrs) {
-        $trusted = $false
-        try {
-            if (($attrs -band [System.IO.FileAttributes]::Directory) -and (Test-TrustedItem $DataDir)) {
-                $trusted = $true
-                foreach ($child in @(Get-ChildItem -LiteralPath $DataDir -Force)) {
-                    if (-not (Test-TrustedItem $child.FullName)) { $trusted = $false; break }
-                }
-            }
-        } catch { $trusted = $false }
-        if (-not $trusted) {
-            $aside = "$DataDir.untrusted-" + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-            [System.IO.Directory]::Move($DataDir, $aside)
-            Write-Output "ATTENTION : $DataDir n'appartient pas à SYSTEM/Administrateurs (ou contient des liens) : déplacé vers $aside"
-        }
+    if (($null -ne (Get-EntryAttributes $DataDir)) -and -not (Test-DataDirTrusted)) {
+        $aside = "$DataDir.untrusted-" + (Get-Date -Format 'yyyyMMddHHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        [System.IO.Directory]::Move($DataDir, $aside)
+        Write-Output "ATTENTION : $DataDir n'est pas de confiance (propriétaire, ACL ou liens) : déplacé vers $aside"
     }
     if ($null -eq (Get-EntryAttributes $DataDir)) {
-        New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+        New-SystemOnlyDirectory $DataDir
     }
     Set-SystemOnlyAcl $DataDir $true
+    if (-not (Test-DataDirTrusted)) {
+        throw "$DataDir modifié pendant sa création : installation interrompue"
+    }
 }
 
 # --- 1. Arrêt du service existant (libère l'exe et les fichiers du dossier) ---
@@ -151,7 +187,9 @@ try {
 
     # --- 4. Configuration ---
     $config = @{ token = $Token; url = $Url } | ConvertTo-Json -Compress
-    [System.IO.File]::WriteAllText($ConfigPath, $config, [System.Text.UTF8Encoding]::new($false))
+    $tmpCfg = Join-Path $DataDir ('config-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    [System.IO.File]::WriteAllText($tmpCfg, $config, [System.Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $tmpCfg -Destination $ConfigPath -Force
     Write-Output "Config écrite : $ConfigPath"
 } catch {
     Write-Output "ERREUR installation : $_"

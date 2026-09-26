@@ -66,6 +66,31 @@ func TestInstallers_BinaryStagedInTrustedDataDir(t *testing.T) {
 	}
 }
 
+// Confiance du DataDir : l'ACL compte (un dossier où un utilisateur a pu
+// écrire peut contenir des liens durs), la création est faite avec l'ACL
+// SYSTEM-only puis revérifiée, et config.json n'est jamais réécrit en
+// place (un lien dur planté serait suivi).
+func TestInstallers_DataDirAclAndConfigWrite(t *testing.T) {
+	for _, f := range installerFiles {
+		code := codeOnly(readInstaller(t, f))
+		if !strings.Contains(code, "$acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])") {
+			t.Errorf("%s : Test-TrustedItem ne vérifie pas l'ACL", f)
+		}
+		if !strings.Contains(code, "[System.IO.Directory]::CreateDirectory($Path, $sec)") {
+			t.Errorf("%s : DataDir non créé directement avec l'ACL SYSTEM-only", f)
+		}
+		if !regexp.MustCompile(`Set-SystemOnlyAcl \$DataDir \$true\s+if \(-not \(Test-DataDirTrusted\)\) \{\s+throw`).MatchString(code) {
+			t.Errorf("%s : DataDir non revérifié après création", f)
+		}
+		if strings.Contains(code, "WriteAllText($ConfigPath") {
+			t.Errorf("%s : config.json réécrit en place", f)
+		}
+		if !strings.Contains(code, "Move-Item -LiteralPath $tmpCfg -Destination $ConfigPath -Force") {
+			t.Errorf("%s : config.json non écrit via un temporaire + déplacement", f)
+		}
+	}
+}
+
 // build.js remplace la PREMIÈRE occurrence de chaque marker entre quotes :
 // elle doit rester l'affectation de la variable correspondante.
 func TestInstallPS1_MarkersFirstOccurrenceIsAssignment(t *testing.T) {
