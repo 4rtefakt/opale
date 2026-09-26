@@ -354,6 +354,22 @@ test('suppression du poste → WS agent fermée', { skip: SKIP }, async () => {
   assert.equal(fastify.agentWs.get(device.id), null)
 })
 
+test('suppression du poste par un UUID non canonique (majuscules) → WS agent fermée', { skip: SKIP }, async () => {
+  // Postgres accepte l'UUID en majuscules : le poste est supprimé, la
+  // connexion doit l'être aussi (registry indexé par l'id canonique).
+  const device = await seedDevice(db, { hostname: 'PC-WS-DELETED-UPPER' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-deleted-upper' })
+  const agent = await connectAgent(tok.secret, device.id)
+
+  const res = await fastify.inject({
+    method: 'DELETE', url: `/api/devices/${device.id.toUpperCase()}`, headers: adminAuth,
+  })
+  assert.equal(res.statusCode, 204)
+  assert.equal(fastify.agentWs.get(device.id), null, 'connexion retirée dès la réponse')
+  const info = await within(agent.closed, 2000, 'fermeture de la WS après suppression du poste')
+  assert.equal(info.reason, 'device-deleted')
+})
+
 test('exchange-token : un token jamais utilisé révoqué à la ré-installation → sa WS est fermée', { skip: SKIP }, async () => {
   // La WS ne pose pas last_used_at : un agent dont le premier checkin n'a
   // pas encore abouti peut avoir un tube ouvert avec un token « jamais

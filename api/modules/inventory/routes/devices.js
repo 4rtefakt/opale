@@ -230,13 +230,14 @@ export default async function devicesRoute(fastify) {
   // DELETE /:id — suppression d'un device (admin uniquement)
   fastify.delete('/:id', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { rows } = await fastify.db.query(
-      `DELETE FROM devices WHERE id = $1 RETURNING hostname`,
+      `DELETE FROM devices WHERE id = $1 RETURNING id, hostname`,
       [req.params.id]
     )
     if (!rows.length) return reply.code(404).send({ error: 'Poste introuvable' })
     // Tokens du poste supprimés en cascade : la WS agent encore ouverte
-    // (authentifiée à l'upgrade seulement) est fermée.
-    fastify.agentWs?.evictDevice(req.params.id, 'device-deleted')
+    // (authentifiée à l'upgrade seulement) est fermée. Id canonique renvoyé
+    // par Postgres, pas le paramètre brut (UUID en majuscules accepté).
+    fastify.agentWs?.evictDevice(rows[0].id, 'device-deleted')
     const { displayName } = fastify.getUserIdentity(req)
     await logAudit(fastify.db, fastify.log, { action: 'device_deleted', byUser: displayName, target: rows[0].hostname })
     reply.code(204).send()
