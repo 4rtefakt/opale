@@ -292,3 +292,58 @@ test('checkin d\'un token non lié : les tokens jamais utilisés révoqués au r
   assert.equal(info.code, WS_CLOSE.AUTH_FAIL)
   assert.equal(info.reason, 'token-revoked')
 })
+
+// ─── Revalidation du token au heartbeat ─────────────────────────────────────
+//
+// Expiration (fin de la grace de rotation) et invalidations qui ne passent
+// pas par le registry de ce process (autre instance, SQL direct) : c'est le
+// tick du heartbeat qui revalide le token. setInterval simulé (le heartbeat
+// réel tourne à 30 s) ; setTimeout reste réel pour les attentes.
+
+test('heartbeat : token dans sa grace de rotation → connexion conservée ; grace écoulée → WS fermée', { skip: SKIP }, async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const device = await seedDevice(db, { hostname: 'PC-WS-EXPIRY' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-expiry' })
+  const agent = await connectAgent(tok.secret, device.id)
+
+  // Rotation : l'ancien token reste valide 24 h (checkins en vol).
+  const rot = await fastify.inject({
+    method: 'POST', url: '/api/agent/rotate-token',
+    headers: { authorization: `Bearer ${tok.secret}` },
+  })
+  assert.equal(rot.statusCode, 200)
+  t.mock.timers.tick(30_000)
+  await waitFor(() => agent.frames.some(f => f.type === 'ping'), 'ping du heartbeat')
+  await sleep(200)
+  assert.equal(agent.closeInfo, null, 'token encore valide : connexion conservée')
+  assert.equal(fastify.agentWs.get(device.id), agent.conn)
+
+  // Grace écoulée.
+  await db.query(`UPDATE agent_tokens SET expires_at = now() - interval '1 second' WHERE id = $1`, [tok.id])
+  t.mock.timers.tick(30_000)
+  const info = await within(agent.closed, 2000, 'fermeture après expiration')
+  assert.equal(info.code, WS_CLOSE.AUTH_FAIL)
+  assert.equal(info.reason, 'token-expired')
+  assert.equal(fastify.agentWs.get(device.id), null)
+
+  // L'agent se reconnecte avec le token issu de la rotation.
+  const again = await connectAgent(rot.json().token, device.id)
+  assert.equal(fastify.agentWs.get(device.id), again.conn)
+})
+
+test('heartbeat : token révoqué hors de ce process (autre instance, SQL direct) → WS fermée au tick suivant', { skip: SKIP }, async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const device = await seedDevice(db, { hostname: 'PC-WS-REMOTE-REVOKE' })
+  const tok = await seedAgentToken(db, { deviceId: device.id, label: 'ws-remote-revoke' })
+  const agent = await connectAgent(tok.secret, device.id)
+
+  await db.query(`UPDATE agent_tokens SET revoked_at = now() WHERE id = $1`, [tok.id])
+  t.mock.timers.tick(30_000)
+
+  const info = await within(agent.closed, 2000, 'fermeture au tick du heartbeat')
+  assert.equal(info.code, WS_CLOSE.AUTH_FAIL)
+  assert.equal(info.reason, 'token-revoked')
+  const g = await grantConsole(device.id)
+  assert.equal(g.statusCode, 409)
+  assert.equal(g.json().code, 'AGENT_OFFLINE')
+})

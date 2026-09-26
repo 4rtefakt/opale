@@ -1389,6 +1389,34 @@ export default async function agentRoute(fastify) {
       heartbeat_timeout_s: HEARTBEAT_TIMEOUT_MS / 1000,
     })
 
+    // Revalidation du token à chaque heartbeat : la WS n'est authentifiée
+    // qu'à l'upgrade. Couvre l'expiration (fin de la grace de rotation) et
+    // les invalidations qui ne passent pas par le registry de ce process
+    // (autre instance, SQL direct, révocation entre l'auth et le register).
+    // Erreur DB : connexion conservée, nouvel essai au tick suivant.
+    let tokenCheckPending = false
+    const recheckToken = async () => {
+      if (tokenCheckPending || conn.revokedReason) return
+      tokenCheckPending = true
+      try {
+        const { rows: [t] } = await fastify.db.query(
+          `SELECT revoked_at IS NOT NULL AS revoked, expires_at <= now() AS expired
+             FROM agent_tokens WHERE id = $1 AND device_id = $2`,
+          [token.id, token.device_id]
+        )
+        // Ligne absente : poste supprimé (tokens en cascade).
+        const reason = !t || t.revoked ? 'token-revoked' : (t.expired ? 'token-expired' : null)
+        if (reason && socket.readyState === 1) {
+          fastify.log.info({ device_id: token.device_id, token_id: token.id, reason }, 'agent ws : token invalide, fermeture')
+          fastify.agentWs.evict(conn, reason)
+        }
+      } catch (err) {
+        fastify.log.warn({ err: err.message, device_id: token.device_id }, 'agent ws : revalidation du token impossible')
+      } finally {
+        tokenCheckPending = false
+      }
+    }
+
     // Heartbeat : ping périodique + close si pong manquant. Le timer est
     // détruit dans le handler onClose.
     const heartbeat = setInterval(() => {
@@ -1399,6 +1427,7 @@ export default async function agentRoute(fastify) {
         return
       }
       conn.send('ping', { ts: Date.now() })
+      recheckToken()
     }, HEARTBEAT_INTERVAL_MS)
 
     socket.on('message', (raw) => {
