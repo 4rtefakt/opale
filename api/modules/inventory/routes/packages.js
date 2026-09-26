@@ -10,11 +10,13 @@ import { SNAPSHOT_COLUMNS, SNAPSHOT_UPSERT, snapshotSelect } from '../lib/deploy
 // `-` : pas d'injection exploitable aujourd'hui, c'est une défense en
 // profondeur (nouvel agent, autre outil qui réutiliserait la valeur).
 // Premier caractère lettre ou chiffre (donc jamais `-` ni `@`), puis aucun
-// blanc, caractère de contrôle ou caractère de chemin, 128 au plus. Les
+// blanc, caractère de contrôle, caractère de formatage invisible (espace
+// sans largeur, inversion droite-gauche : l'identifiant s'afficherait
+// autrement qu'il n'est) ou caractère de chemin, 128 au plus. Les
 // vrais identifiants contiennent aussi & , ! @ ou des lettres accentuées
 // (« Rohde&Schwarz.SDC.IETDViewAutark », « ClémentGrennerat.ThreeFingerDrag ») :
 // ce motif accepte les 15 154 identifiants de l'index winget officiel.
-const WINGET_ID_RE = /^[\p{L}\p{N}][^\s\\/:*?"<>|\p{Cc}]{0,127}$/u
+const WINGET_ID_RE = /^[\p{L}\p{N}][^\s\\/:*?"<>|\p{Cc}\p{Cf}]{0,127}$/u
 
 function isValidWingetId(v) {
   return typeof v === 'string' && WINGET_ID_RE.test(v)

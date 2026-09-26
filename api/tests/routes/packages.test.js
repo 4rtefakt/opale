@@ -133,7 +133,7 @@ test('POST /api/packages — admin crée un package en draft', { skip: SKIP }, a
 
 test('POST /api/packages — winget_id au format invalide → 400 (injection d\'arguments winget)', { skip: SKIP }, async () => {
   const token = await adminToken('oid-pkg-badwinget-admin')
-  for (const winget_id of ['--source=evil', '-h', 'My.App --override "x"', 'A'.repeat(129), ' My.App', 'My/App', '@file', 'My.App\n--source=evil', 'My\tApp', '\u00a0-h', ['My.App'], { id: 'x' }]) {
+  for (const winget_id of ['--source=evil', '-h', 'My.App --override "x"', 'A'.repeat(129), ' My.App', 'My/App', '@file', 'My.App\n--source=evil', 'My\tApp', '\u00a0-h', 'Good\u202eId', 'Zero\u200bWidth', ['My.App'], { id: 'x' }]) {
     const res = await fastify.inject({
       method: 'POST', url: '/api/packages',
       headers: { authorization: `Bearer ${token}` },
@@ -151,7 +151,7 @@ test('POST /api/packages — winget_id aux formats réels acceptés', { skip: SK
   // Identifiants réels de l'index winget officiel, dont ceux avec & , ! @
   // ou des lettres accentuées.
   for (const winget_id of ['Microsoft.PowerShell', 'Notepad++.Notepad++', '9NBLGGH4NNS1', 'XP89DCGQ3K6VLD',
-    'Mozilla.Firefox.ESR', 'Rohde&Schwarz.SDC.IETDViewAutark', 'IDMComputerSolutions,Inc.UltraEdit',
+    'Mozilla.Firefox.ESR', 'Git_Git-2', 'Rohde&Schwarz.SDC.IETDViewAutark', 'IDMComputerSolutions,Inc.UltraEdit',
     'NHNCorporation.Dooray!Messenger', 'ClémentGrennerat.ThreeFingerDrag', 'nitichote@dev.thaikeyfix']) {
     const res = await fastify.inject({
       method: 'POST', url: '/api/packages',
