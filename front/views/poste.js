@@ -56,6 +56,7 @@ export async function renderPosteDetail(container, id) {
   window.openRunScriptModal      = openRunScriptModal
   window.runScript               = runScript
   window.deleteDevice            = deleteDevice
+  window.resetSshHostKey         = resetSshHostKey
   window.lapsViewPassword        = lapsViewPassword
   window.lapsRequestRotation     = lapsRequestRotation
   window.forceCheckin            = forceCheckin
@@ -63,13 +64,20 @@ export async function renderPosteDetail(container, id) {
 
   try {
     _device = await window.api.getDevice(id)
-    renderBody()
-    loadExecHistory()
-    loadDeviceCompliance(id)
-    if (window.appState?.user?.isAdmin && window.OPALE.moduleEnabled('remote')) loadRemoteSessionsHistory()
+    renderBodyAndPanels()
   } catch {
     showToast(t('error.generic'), 'error')
   }
+}
+
+// renderBody() remet les panneaux asynchrones (historique d'exécution,
+// conformité, sessions distantes) à l'état « chargement » : tout re-rendu de
+// la fiche doit les recharger.
+function renderBodyAndPanels() {
+  renderBody()
+  loadExecHistory()
+  loadDeviceCompliance(_device.id)
+  if (window.appState?.user?.isAdmin && window.OPALE.moduleEnabled('remote')) loadRemoteSessionsHistory()
 }
 
 function renderBody() {
@@ -106,6 +114,14 @@ function renderBody() {
             ${d.agent_version ? hwRow('ti-broadcast', 'Agent RMM', 'v' + esc(d.agent_version)) : ''}
             ${hwRow('ti-clock',              t('poste.hw.last_seen'),    formatRelative(d.last_seen))}
             ${d.ip_netbird ? hwRow('ti-network', 'Netbird IP', d.ip_netbird) : ''}
+            ${d.ssh_host_key_fp ? hwRowRaw('ti-key', 'Clé d\'hôte SSH', `
+              <span title="${esc('Empreinte SHA-256 apprise au premier contact' + (d.ssh_host_key_learned_at ? ' le ' + new Date(d.ssh_host_key_learned_at).toLocaleString('fr-FR') : ''))}"
+                    style="font-family:var(--font-mono,monospace);font-size:11px">${esc(d.ssh_host_key_fp.slice(0, 16))}…</span>
+              ${window.appState?.user?.isAdmin ? `<button class="btn btn-sm" style="margin-left:6px" onclick="resetSshHostKey()"
+                      title="${d.ssh_host_key_policy === 'strict'
+                        ? 'À faire seulement après une réinstallation du poste : politique strict, l\'empreinte devra être provisionnée avant le prochain accès SSH'
+                        : 'À faire seulement après une réinstallation du poste : l\'empreinte sera réapprise au prochain accès SSH'}">
+                <i class="ti ti-refresh"></i> Réinitialiser</button>` : ''}`) : ''}
             ${d.compliance_state ? hwRow('ti-shield-check', t('poste.hw.compliance'), complianceBadge(d.compliance_state)) : ''}
             ${d.join_type        ? hwRow('ti-cloud',         t('poste.hw.join_type'),   formatJoinType(d.join_type)) : ''}
             ${d.enrolled_at      ? hwRow('ti-calendar', t('poste.hw.enrolled'),    formatWithDate(d.enrolled_at)) : ''}
@@ -607,7 +623,7 @@ async function lapsRequestRotation() {
     await window.api.rotateAdminCredential(_device.id)
     showToast('Rotation demandée — effective au prochain checkin', 'success')
     _device = await window.api.getDevice(_device.id)
-    renderBody()
+    renderBodyAndPanels()
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   }
@@ -1810,6 +1826,26 @@ async function deleteDevice() {
     await window.api.deleteDevice(_device.id)
     showToast('Poste supprimé', 'success')
     navigateTo('/postes')
+  } catch (err) {
+    showToast(err.message || t('error.generic'), 'error')
+  }
+}
+
+// Oublie l'empreinte d'hôte SSH mémorisée (TOFU) : à faire seulement après
+// une réinstallation légitime du poste. Le prochain accès SSH réapprend la
+// clé ; l'action est auditée côté API.
+async function resetSshHostKey() {
+  if (!_device) return
+  if (!confirm(`Réinitialiser l'empreinte SSH de "${_device.hostname}" ?\n\n` +
+    `À faire seulement si le poste a été réinstallé. Sinon, une clé différente ` +
+    `peut signaler une interception : ne réinitialisez pas.`)) return
+  try {
+    await window.api.resetSshHostKey(_device.id)
+    showToast(_device.ssh_host_key_policy === 'strict'
+      ? 'Empreinte SSH réinitialisée — à provisionner avant le prochain accès (politique strict)'
+      : 'Empreinte SSH réinitialisée — réapprise au prochain accès', 'success')
+    _device = await window.api.getDevice(_device.id)
+    renderBodyAndPanels()
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   }

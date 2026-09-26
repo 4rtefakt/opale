@@ -18,6 +18,7 @@ import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 import { seedDevice } from '../fixtures/devices.js'
 
 import scriptsRoute from '../../modules/inventory/routes/scripts.js'
+import { startFakeSshServer, sshClientEnv, trackUnhandledRejections } from '../helpers/fake-ssh.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
@@ -622,4 +623,79 @@ test('POST /:id/exec — groupe mixte : seul le poste à IP littérale est exéc
     `SELECT device_id, status FROM script_executions WHERE script_id = $1`, [script.id])
   assert.deepEqual(rows.map(r => r.device_id), [devices[0].id], 'seul le poste à IP littérale')
   assert.equal(rows[0].status, 'success')
+})
+
+// Clé d'hôte SSH (TOFU) : la cible vient d'une IP remontée par l'agent. Sans
+// vérification, quiconque répond à cette IP recevait le script et renvoyait
+// une sortie arbitraire.
+async function waitForHostKey(deviceId) {
+  for (let i = 0; i < 50; i++) {
+    const { rows } = await db.query(`SELECT ssh_host_key_fp FROM devices WHERE id = $1`, [deviceId])
+    if (rows[0]?.ssh_host_key_fp) return rows[0].ssh_host_key_fp
+    await new Promise(r => setTimeout(r, 20))
+  }
+  return null
+}
+
+test('POST /:id/exec — clé d\'hôte SSH apprise au premier contact, puis toute autre clé refusée avant exécution', { skip: SKIP, timeout: 20000 }, async (t) => {
+  const legit = await startFakeSshServer(t, { output: 'ok' })
+  sshClientEnv(t, legit.port)
+  const token = await adminToken('oid-sc-exec-hostkey')
+  const script = await seedScript({ name: 'SSH host key' })
+  const { group, devices: [device] } = await groupWithIps('G-exec-hostkey', [{ hostname: 'PC-HOSTKEY', ip: '127.0.0.1' }])
+  const exec = () => fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+
+  // 1er contact : exécution normale, empreinte mémorisée.
+  const first = await exec()
+  assert.match(first.body, /"type":"end"/)
+  const learned = await waitForHostKey(device.id)
+  assert.ok(learned, 'empreinte apprise au premier contact')
+  assert.equal(legit.state.execs, 1)
+
+  // Même IP, autre clé d'hôte (imposteur ou poste réinstallé) : refus avant
+  // authentification, rien n'est exécuté, l'empreinte reste celle apprise.
+  const impostor = await startFakeSshServer(t, { output: 'sortie falsifiée' })
+  process.env.SSH_PORT = String(impostor.port)
+  const second = await exec()
+  assert.match(second.body, /"type":"end"/)
+  assert.equal(impostor.state.execs, 0, 'aucune commande reçue par l\'imposteur')
+  const { rows } = await db.query(
+    `SELECT status, output FROM script_executions WHERE script_id = $1 ORDER BY queued_at DESC LIMIT 1`, [script.id])
+  assert.equal(rows[0].status, 'error')
+  assert.match(rows[0].output, /Clé d'hôte SSH inattendue/)
+  const { rows: [dev] } = await db.query(`SELECT ssh_host_key_fp FROM devices WHERE id = $1`, [device.id])
+  assert.equal(dev.ssh_host_key_fp, learned, 'empreinte non écrasée')
+  const { rows: audit } = await db.query(
+    `SELECT details FROM audit_logs WHERE action = 'ssh_host_key_mismatch' AND target = $1`, [device.id])
+  assert.equal(audit.length, 1)
+  assert.equal(audit[0].details.expected_fingerprint, learned)
+})
+
+test('POST /:id/exec — hôte qui raccroche après authentification : exécution en erreur, API intacte', { skip: SKIP, timeout: 20000 }, async (t) => {
+  // Sans garde, conn.exec() levait « Not connected » dans un gestionnaire
+  // asynchrone : rejet non géré, donc arrêt de l'API, et réponse SSE jamais
+  // terminée.
+  const rejections = trackUnhandledRejections(t)
+  const server = await startFakeSshServer(t, { endOnReady: true })
+  sshClientEnv(t, server.port)
+  const token = await adminToken('oid-sc-exec-hangup')
+  const script = await seedScript({ name: 'SSH hangup' })
+  const { group } = await groupWithIps('G-exec-hangup', [{ hostname: 'PC-HANGUP', ip: '127.0.0.1' }])
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+  assert.match(res.body, /"type":"end"/)
+  const { rows } = await db.query(
+    `SELECT status FROM script_executions WHERE script_id = $1`, [script.id])
+  assert.equal(rows[0].status, 'error')
+  assert.equal(server.state.execs, 0)
+  await new Promise(r => setTimeout(r, 50))
+  assert.deepEqual(rejections, [])
 })
