@@ -19,20 +19,28 @@ sha256_of() {
   fi
 }
 
-# fetch URL DESTINATION SHA256 — télécharge à côté de la destination, vérifie
-# l'empreinte, puis remplace la destination (jamais de fichier non vérifié).
+# Téléchargements dans un dossier temporaire hors de front/, supprimé à la
+# sortie quelle qu'en soit la cause (succès, échec curl, empreinte fausse,
+# Ctrl-C) : aucun fichier partiel ne reste ni n'est servi.
+TMP_DL="$(mktemp -d)"
+trap 'rm -rf "$TMP_DL"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# fetch URL DESTINATION SHA256 — télécharge dans $TMP_DL, vérifie l'empreinte,
+# puis remplace la destination (jamais de fichier non vérifié dans front/).
 fetch() {
-  local url="$1" dest="$2" expected="$3" actual
-  curl -fsSL "$url" -o "$dest.part"
-  actual="$(sha256_of "$dest.part")"
+  local url="$1" dest="$2" expected="$3" tmp actual
+  tmp="$TMP_DL/$(basename "$dest")"
+  curl -fsSL "$url" -o "$tmp"
+  actual="$(sha256_of "$tmp")"
   if [ "$actual" != "$expected" ]; then
-    rm -f "$dest.part"
     echo "✗ SHA-256 inattendu pour $url" >&2
     echo "  attendu : $expected" >&2
     echo "  obtenu  : $actual" >&2
     exit 1
   fi
-  mv -f "$dest.part" "$dest"
+  mv -f "$tmp" "$dest"
 }
 
 echo "→ MSAL Browser 3.30.0..."
