@@ -964,19 +964,13 @@ export default async function agentRoute(fastify) {
     `, [deviceId, token.id])
 
     // ── Commandes script en attente (mode agent) ───────────────────────────
+    // Passage en 'running' seulement juste avant la réponse (cf. plus bas).
     const pendingScripts = await fastify.db.query(`
       SELECT id, script_name, script_content
       FROM script_executions
       WHERE device_id = $1 AND status = 'pending' AND mode = 'agent'
       ORDER BY queued_at ASC LIMIT 5
     `, [deviceId])
-
-    if (pendingScripts.rows.length) {
-      await fastify.db.query(`
-        UPDATE script_executions SET status = 'running', started_at = now()
-        WHERE id = ANY($1::uuid[])
-      `, [pendingScripts.rows.map(r => r.id)])
-    }
 
     // ── Fan-out deployment_jobs → deployments pour ce device ──────────────
     // Crée les execution rows manquantes pour les jobs scope=group|all|user
@@ -989,6 +983,15 @@ export default async function agentRoute(fastify) {
     // snapshot de contenu dans la même requête (cf. lib/deployment-snapshots.js).
     // Un job dont le package est en draft sera matérialisé à un checkin
     // ultérieur, une fois le package ré-approuvé.
+    //
+    // Migration 071 pas encore appliquée (table deployment_snapshots
+    // absente, code 42P01) : le fan-out et la sélection ci-dessous échouent
+    // en bloc → on journalise, on n'envoie AUCUN déploiement (jamais de
+    // repli sur le contenu courant de `packages`) et le checkin se termine
+    // normalement (inventaire, scripts, mise à jour agent). Toute autre
+    // erreur remonte.
+    let pendingRows = []
+    try {
     await fastify.db.query(`
       WITH ins AS (
       INSERT INTO deployments (package_id, device_id, deployed_by, job_id)
@@ -1035,7 +1038,7 @@ export default async function agentRoute(fastify) {
     // log + reste 'pending' (l'admin l'annule puis le rejoue, ce qui refait
     // un snapshot). Tri : les distribuables d'abord, pour qu'un lot de
     // lignes sans snapshot ne bloque jamais les autres.
-    const pendingRows = inMaintWindow ? (await fastify.db.query(`
+    pendingRows = inMaintWindow ? (await fastify.db.query(`
       SELECT d.id AS deployment_id, (s.deployment_id IS NOT NULL) AS has_snapshot,
              s.type, s.winget_id, s.install_script, s.post_install_script, s.detection_script, s.name
       FROM deployments d
@@ -1044,6 +1047,14 @@ export default async function agentRoute(fastify) {
       WHERE d.device_id = $1 AND d.status = 'pending' AND p.status = 'approved'
       ORDER BY (s.deployment_id IS NULL), d.queued_at ASC LIMIT 10
     `, [deviceId])).rows : []
+    } catch (err) {
+      if (err.code !== '42P01') throw err
+      fastify.log.error(
+        { err: err.message, device_id: deviceId },
+        'checkin : table deployment_snapshots absente (migration 071 non appliquée) — aucun déploiement distribué'
+      )
+      pendingRows = []
+    }
 
     const missingSnapshot = pendingRows.filter(r => !r.has_snapshot)
     if (missingSnapshot.length) {
@@ -1053,13 +1064,6 @@ export default async function agentRoute(fastify) {
       )
     }
     const pendingDeployments = { rows: pendingRows.filter(r => r.has_snapshot) }
-
-    if (pendingDeployments.rows.length) {
-      await fastify.db.query(`
-        UPDATE deployments SET status = 'running', started_at = now()
-        WHERE id = ANY($1::uuid[])
-      `, [pendingDeployments.rows.map(r => r.deployment_id)])
-    }
 
     // ── Packages à détecter (approuvés, pas détectés depuis 24h) ──────────
     const toDetect = await fastify.db.query(`
@@ -1123,12 +1127,39 @@ export default async function agentRoute(fastify) {
       details: { level: 'info', disks: disks.length, ip_netbird: ipNetbird, new: !lookup.rows.length, agent_version: agent_version || null },
     })
 
+    // ── Réservation des scripts / déploiements envoyés ─────────────────────
+    // Passage en 'running' juste avant la réponse : si une étape précédente
+    // du checkin lève, rien ne reste marqué 'running' sans avoir été livré
+    // (aucun timeout ne rattrape un script bloqué en 'running'). Le filtre
+    // status = 'pending' + RETURNING ne renvoie que les lignes réservées par
+    // CE checkin (deux checkins simultanés ne livrent pas deux fois la même).
+    let scriptsToSend = []
+    if (pendingScripts.rows.length) {
+      const { rows } = await fastify.db.query(`
+        UPDATE script_executions SET status = 'running', started_at = now()
+        WHERE id = ANY($1::uuid[]) AND status = 'pending'
+        RETURNING id
+      `, [pendingScripts.rows.map(r => r.id)])
+      const claimed = new Set(rows.map(r => r.id))
+      scriptsToSend = pendingScripts.rows.filter(r => claimed.has(r.id))
+    }
+    let deploymentsToSend = []
+    if (pendingDeployments.rows.length) {
+      const { rows } = await fastify.db.query(`
+        UPDATE deployments SET status = 'running', started_at = now()
+        WHERE id = ANY($1::uuid[]) AND status = 'pending'
+        RETURNING id
+      `, [pendingDeployments.rows.map(r => r.deployment_id)])
+      const claimed = new Set(rows.map(r => r.id))
+      deploymentsToSend = pendingDeployments.rows.filter(r => claimed.has(r.deployment_id))
+    }
+
     reply.send({
       ok:         true,
       device_id:  deviceId,
       new:        !lookup.rows.length,
-      commands:   pendingScripts.rows.map(r => ({ id: r.id, name: r.script_name, script: r.script_content })),
-      deployments: pendingDeployments.rows.map(r => ({
+      commands:   scriptsToSend.map(r => ({ id: r.id, name: r.script_name, script: r.script_content })),
+      deployments: deploymentsToSend.map(r => ({
         deployment_id:       r.deployment_id,
         name:                r.name,
         type:                r.type,
