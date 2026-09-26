@@ -24,8 +24,13 @@
 // relit l'historique une fois le verrou obtenu et ne rejoue rien.
 //
 // Fichier ne pouvant pas tourner dans une transaction (CREATE INDEX
-// CONCURRENTLY…) : ligne `-- opale:no-transaction` dans le fichier. Il est
+// CONCURRENTLY…) : ligne `-- opale:no-transaction`, seule sur sa ligne, dans
+// l'en-tête du fichier (commentaires avant le premier ordre SQL). Il est
 // alors envoyé tel quel, hors transaction (un seul ordre par fichier).
+//
+// Un fichier contenant lui-même BEGIN / COMMIT (hors blocs PL/pgSQL) est
+// refusé : il casserait la transaction du runner (fichier à moitié validé,
+// enregistrement hors transaction).
 //
 // Désactivable : DB_AUTO_MIGRATE=false (migrations appliquées à la main).
 
@@ -39,7 +44,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export const MIGRATIONS_DIR = path.resolve(__dirname, '../migrations')
 
 const FILE_RE = /^\d+_.*\.sql$/
-const NO_TX_RE = /^[ \t]*--[ \t]*opale:no-transaction\b/m
 
 // Clé du verrou consultatif : (hash constant, hash du schéma courant). Deux
 // schémas (suites de tests) ne se bloquent pas entre eux ; en prod, un seul.
@@ -60,6 +64,77 @@ export function parseAutoMigrate(raw) {
   throw new Error(`DB_AUTO_MIGRATE invalide (${raw}) — attendu : true ou false`)
 }
 
+// Directive « -- opale:no-transaction » : seule sur sa ligne, dans l'en-tête
+// (lignes vides ou de commentaire avant le premier ordre SQL). Une mention
+// dans un commentaire de prose, ou après du SQL, n'est pas une directive.
+export function isNoTransaction(sql) {
+  for (const raw of sql.split('\n')) {
+    const line = raw.trim()
+    if (line === '') continue
+    if (!line.startsWith('--')) return false
+    if (/^--\s*opale:no-transaction$/.test(line)) return true
+  }
+  return false
+}
+
+// Remplace commentaires, chaînes ('…', E'…', "…") et corps $tag$…$tag$ par
+// des blancs : il ne reste que le SQL « de premier niveau ».
+function topLevelSql(sql) {
+  let out = ''
+  let i = 0
+  while (i < sql.length) {
+    const c = sql[i], n = sql[i + 1]
+    if (c === '-' && n === '-') {
+      const j = sql.indexOf('\n', i)
+      i = j === -1 ? sql.length : j
+      continue
+    }
+    if (c === '/' && n === '*') {
+      const j = sql.indexOf('*/', i + 2)
+      i = j === -1 ? sql.length : j + 2
+      out += ' '
+      continue
+    }
+    if (c === "'" || c === '"') {
+      const escapes = c === "'" && /[eE]/.test(sql[i - 1] || '') && !/[A-Za-z0-9_]/.test(sql[i - 2] || '')
+      let j = i + 1
+      while (j < sql.length) {
+        if (escapes && sql[j] === '\\') { j += 2; continue }
+        if (sql[j] === c) {
+          if (sql[j + 1] === c) { j += 2; continue }
+          break
+        }
+        j++
+      }
+      i = j + 1
+      out += ' '
+      continue
+    }
+    if (c === '$') {
+      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i, i + 64))
+      if (m) {
+        const j = sql.indexOf(m[0], i + m[0].length)
+        i = j === -1 ? sql.length : j + m[0].length
+        out += ' '
+        continue
+      }
+    }
+    out += c
+    i++
+  }
+  return out
+}
+
+// Premier ordre de contrôle de transaction de premier niveau (BEGIN, START
+// TRANSACTION, COMMIT, END, ROLLBACK, ABORT), ou null.
+export function findTransactionControl(sql) {
+  for (const stmt of topLevelSql(sql).split(';')) {
+    const m = /^\s*(BEGIN|START\s+TRANSACTION|COMMIT|END|ROLLBACK|ABORT)\b/i.exec(stmt)
+    if (m) return m[1]
+  }
+  return null
+}
+
 function sha256(s) {
   return crypto.createHash('sha256').update(s).digest('hex')
 }
@@ -69,7 +144,7 @@ export async function listMigrationFiles(dir = MIGRATIONS_DIR) {
   const files = []
   for (const name of names) {
     const sql = await fs.readFile(path.join(dir, name), 'utf8')
-    files.push({ name, sql, checksum: sha256(sql), transactional: !NO_TX_RE.test(sql) })
+    files.push({ name, sql, checksum: sha256(sql), transactional: !isNoTransaction(sql) })
   }
   return files
 }
@@ -94,6 +169,15 @@ async function applyPending(client, files, log) {
     SELECT to_regclass('schema_migrations') IS NOT NULL AS has_history,
            to_regclass('users_cache')       IS NOT NULL AS has_schema
   `)
+  // Base « en service » : des données existent (utilisateurs ou postes). Un
+  // volume neuf où l'entrypoint Postgres n'a joué que 001 n'en a pas.
+  let hasData = false
+  if (state.has_schema) {
+    const { rows: [d] } = await client.query(`
+      SELECT EXISTS (SELECT 1 FROM users_cache) OR EXISTS (SELECT 1 FROM devices) AS has_data
+    `)
+    hasData = d.has_data
+  }
   await client.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       filename    TEXT PRIMARY KEY,
@@ -115,10 +199,25 @@ async function applyPending(client, files, log) {
   }
 
   const pending = files.filter(f => !applied.has(f.name))
-  if (!state.has_history && state.has_schema && pending.length) {
+
+  // Refus explicite AVANT d'appliquer quoi que ce soit.
+  for (const file of pending) {
+    const stmt = findTransactionControl(file.sql)
+    if (stmt) {
+      const e = new Error(
+        `Migration ${file.name} refusée : ordre « ${stmt} » au niveau du fichier — ` +
+        'le runner encadre déjà chaque fichier dans une transaction ; retirer cet ordre (cf. MIGRATIONS.md)')
+      e.migration = file.name
+      throw e
+    }
+  }
+
+  if (!state.has_history && hasData && pending.length) {
     log?.warn({ count: pending.length },
       'migrations : base existante sans historique (schema_migrations absente) — ' +
       'toutes les migrations vont être rejouées (idempotentes), puis enregistrées')
+  } else if (!state.has_history && pending.length) {
+    log?.info({ count: pending.length }, 'migrations : base neuve — application de toutes les migrations')
   }
 
   for (const file of pending) {

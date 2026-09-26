@@ -20,6 +20,8 @@
   - Un fichier déjà enregistré mais modifié depuis (sha256 différent) n'est
     **pas** rejoué : avertissement dans les logs. Corriger une migration
     passée = nouveau fichier.
+- **Volume neuf** (l'entrypoint Postgres n'a joué que `001`, aucune donnée) :
+  toutes les migrations sont appliquées, sans avertissement.
 - **Base existante sans historique** (migrée à la main avant le runner) : il
   n'y a volontairement **pas de « baseline »** qui marquerait des fichiers
   comme appliqués sans les exécuter — on ne sait pas ce qui a réellement été
@@ -59,11 +61,16 @@
     test d'état (cf. `043`, ignorée une fois `052` passée) ;
   - pas de nom de schéma en dur (`'public'`) : utiliser `current_schema()`
     ou `to_regclass()` (cf. `046`).
-- **Pas de `BEGIN` / `COMMIT`** dans un fichier : le runner encadre déjà
-  chaque fichier.
+- **Pas de `BEGIN` / `COMMIT`** (ni `START TRANSACTION`, `END`,
+  `ROLLBACK`) au niveau du fichier : le runner encadre déjà chaque fichier,
+  et **refuse** (avant d'appliquer quoi que ce soit) un fichier en attente
+  qui en contient. Les `BEGIN … END` des blocs PL/pgSQL (`DO $$ … $$`) ne
+  sont pas concernés.
 - **Ordre hors transaction** (`CREATE INDEX CONCURRENTLY`, …) : mettre la
-  ligne `-- opale:no-transaction` dans le fichier, et **un seul ordre** par
-  fichier (le fichier est alors envoyé tel quel, sans transaction ; il est
+  ligne `-- opale:no-transaction`, **seule sur sa ligne, dans l'en-tête**
+  du fichier (commentaires avant le premier ordre SQL ; une mention dans de
+  la prose ou après du SQL est ignorée), et **un seul ordre** par fichier
+  (le fichier est alors envoyé tel quel, sans transaction ; il est
   enregistré après succès, donc rejoué s'il est interrompu entre les deux).
   Aucun fichier du repo n'en a besoin aujourd'hui.
 

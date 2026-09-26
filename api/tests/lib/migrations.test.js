@@ -15,6 +15,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { seedReplayHazards, assertReplayHazardsIntact } from '../helpers/populated-db.js'
 import {
   runMigrations, listMigrationFiles, parseAutoMigrate, MIGRATIONS_DIR,
+  isNoTransaction, findTransactionControl,
 } from '../../lib/migrations.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
@@ -212,4 +213,52 @@ test('parseAutoMigrate : défaut actif, désactivable, valeur ambiguë refusée'
   for (const v of [undefined, '', 'true', '1', 'on', 'YES']) assert.equal(parseAutoMigrate(v), true, String(v))
   for (const v of ['false', '0', 'off', 'No']) assert.equal(parseAutoMigrate(v), false, v)
   assert.throws(() => parseAutoMigrate('fasle'), /DB_AUTO_MIGRATE invalide/)
+})
+
+// ── Durcissements (revue) ────────────────────────────────────────────────────
+
+test('volume neuf (seul 001 joué par l’entrypoint Postgres, aucune donnée) : pas d’avertissement « sans historique »', { skip: SKIP }, async (t) => {
+  const { db, connection } = await emptySchema(t)
+  await applyByHand(db, { upTo: '001_init.sql' })
+  const log = captureLog()
+  const res = await runMigrations(connection, { log })
+  assert.ok(res.applied.length > 60)
+  assert.ok(!log.entries.some(e => e.level === 'warn'), JSON.stringify(log.entries.filter(e => e.level === 'warn')))
+})
+
+test('directive no-transaction : seule sur sa ligne, dans l’en-tête du fichier', () => {
+  assert.equal(isNoTransaction('-- opale:no-transaction\nCREATE INDEX CONCURRENTLY x ON t (id);'), true)
+  assert.equal(isNoTransaction('-- Index sur t\n\n--   opale:no-transaction  \nCREATE INDEX CONCURRENTLY x ON t (id);'), true)
+  // Prose qui mentionne la directive : pas une directive.
+  assert.equal(isNoTransaction('-- opale:no-transaction n’est pas nécessaire ici\nCREATE TABLE t (id int);'), false)
+  // Après le premier ordre SQL : ignorée.
+  assert.equal(isNoTransaction('CREATE TABLE t (id int);\n-- opale:no-transaction\n'), false)
+})
+
+test('ordre BEGIN / COMMIT au niveau du fichier : détecté (hors blocs DO, chaînes et commentaires)', async () => {
+  assert.equal(findTransactionControl('BEGIN;\nCREATE TABLE t (id int);\nCOMMIT;'), 'BEGIN')
+  assert.equal(findTransactionControl('CREATE TABLE t (id int);\ncommit;'), 'commit')
+  assert.equal(findTransactionControl('START TRANSACTION; SELECT 1;'), 'START TRANSACTION')
+  // Faux positifs à éviter : corps PL/pgSQL, chaînes, commentaires.
+  assert.equal(findTransactionControl("DO $$ BEGIN PERFORM 1; END $$;"), null)
+  assert.equal(findTransactionControl("DO $body$\nBEGIN\n  NULL;\nEND\n$body$;"), null)
+  assert.equal(findTransactionControl("INSERT INTO s VALUES ('x; COMMIT; y');"), null)
+  assert.equal(findTransactionControl("-- BEGIN; COMMIT;\n/* ROLLBACK; */ SELECT 1;"), null)
+  assert.equal(findTransactionControl("SELECT E'it\\'s; COMMIT';"), null)
+  // Aucune migration du repo n'en contient.
+  for (const f of await listMigrationFiles(MIGRATIONS_DIR)) {
+    assert.equal(findTransactionControl(f.sql), null, f.name)
+  }
+})
+
+test('fichier en attente avec BEGIN / COMMIT : refus explicite, AUCUN fichier appliqué', { skip: SKIP }, async (t) => {
+  const { db, connection } = await emptySchema(t)
+  const dir = await tmpMigrations(t, {
+    '001_ok.sql': 'CREATE TABLE ok_t (id int);',
+    '002_tx.sql': 'BEGIN;\nCREATE TABLE tx_t (id int);\nCOMMIT;',
+  })
+  await assert.rejects(runMigrations(connection, { dir }), /002_tx\.sql.*BEGIN/)
+  const reg = async (n) => (await db.query('SELECT to_regclass($1) AS r', [n])).rows[0].r
+  assert.equal(await reg('ok_t'), null, 'rien appliqué avant le refus')
+  assert.equal(await reg('tx_t'), null)
 })
