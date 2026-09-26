@@ -555,6 +555,39 @@ test('pollOnce : mail en échec déplacé (nouvel id, exclu) → compteur d\'éc
   }
 )
 
+test('pollOnce : erreur sur une boîte (sauvegarde du curseur en échec) → les autres boîtes sont traitées',
+  { skip: SKIP }, async () => {
+    // Ex. verrou tenu par une session admin (lock_timeout) : la boîte en
+    // échec est sautée pour ce tick, pas toutes les suivantes.
+    const broken = 'broken@example.com'
+    await db.query(`UPDATE settings SET value = $1 WHERE key = 'mail.inboxes'`, [`${broken},${MAILBOX}`])
+    await db.query(`INSERT INTO settings (key, value) VALUES ($1, $2)`, [`mail.cursor.${broken}`, T0])
+    await db.query(`
+      CREATE FUNCTION test_fail_settings() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'sauvegarde impossible (test)'; END $$ LANGUAGE plpgsql
+    `)
+    await db.query(`
+      CREATE TRIGGER test_fail_settings BEFORE INSERT OR UPDATE ON settings
+      FOR EACH ROW WHEN (NEW.key = 'mail.cursor_state.broken@example.com') EXECUTE FUNCTION test_fail_settings()
+    `)
+    useGraph({ inbox: [fakeMail({ receivedDateTime: at(1) })] })
+    const warns = []
+    const log = { info() {}, error() {}, warn: (o, msg) => warns.push({ o, msg }) }
+    try {
+      const stats = await pollOnce(db, log)
+      assert.ok(stats.errors >= 1, 'échec compté')
+      assert.ok(warns.some(w => w.o?.mailbox === broken), 'échec de la boîte journalisé')
+      assert.equal(await cursorMs(), Date.parse(at(1)), 'la boîte suivante a avancé')
+    } finally {
+      graph.restore()
+      await db.query(`DROP TRIGGER test_fail_settings ON settings`)
+      await db.query(`DROP FUNCTION test_fail_settings()`)
+      await db.query(`UPDATE settings SET value = $1 WHERE key = 'mail.inboxes'`, [MAILBOX])
+      await db.query(`DELETE FROM settings WHERE key LIKE $1`, [`mail.cursor%${broken}`])
+    }
+  }
+)
+
 test('pollOnce : curseur modifié par l\'admin pendant un tick (SQL de reprise) → le tick ne l\'écrase pas',
   { skip: SKIP }, async () => {
     // Pendant un blocage, chaque tick réécrit curseur + état : l'UPDATE de

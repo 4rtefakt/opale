@@ -118,6 +118,10 @@ async function saveCursor(db, log, { updatedBy, cursorKey, expected, entries, ma
   const client = await db.connect()
   try {
     await client.query('BEGIN')
+    // Verrou tenu ailleurs (session admin restée ouverte en transaction) :
+    // on n'attend pas jusqu'au statement_timeout — échec rapide, la boîte
+    // est retentée au tick suivant (cf. boucle des workers).
+    await client.query(`SET LOCAL lock_timeout = '5s'`)
     const { rows } = await client.query('SELECT value FROM settings WHERE key = $1 FOR UPDATE', [cursorKey])
     if ((rows[0]?.value ?? null) !== expected) {
       await client.query('ROLLBACK')

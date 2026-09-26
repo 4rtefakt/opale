@@ -72,6 +72,18 @@ export async function pollSentOnce(db, log, injection = {}) {
   }
 
   for (const mailbox of mailboxes) {
+    // Une boîte en échec (verrou tenu sur son curseur, erreur DB…) est
+    // sautée pour ce tick, sans empêcher les suivantes.
+    try {
+      await pollMailbox(mailbox)
+    } catch (err) {
+      stats.errors++
+      log?.warn({ err: err.message, mailbox }, 'sent-worker: boîte en échec pour ce tick')
+    }
+  }
+  return stats
+
+  async function pollMailbox(mailbox) {
     const key = cursorKey(mailbox)
     let cursor = await getSetting(db, key)
     if (!cursor) {
@@ -79,7 +91,7 @@ export async function pollSentOnce(db, log, injection = {}) {
       cursor = rows[0].now.toISOString()
       await setSetting(db, key, cursor)
       log?.info({ mailbox, cursor }, 'sent-worker: curseur initialisé (pas de backfill auto)')
-      continue
+      return
     }
 
     // Normaliser le curseur en ISO 8601 strict (cf. poll-worker : un curseur
@@ -88,7 +100,7 @@ export async function pollSentOnce(db, log, injection = {}) {
     if (Number.isNaN(parsed.getTime())) {
       stats.errors++
       log?.warn({ mailbox, cursor }, 'sent-worker: curseur illisible, skip mailbox')
-      continue
+      return
     }
     const cursorIso = parsed.toISOString()
     if (cursorIso !== cursor) {
@@ -127,8 +139,6 @@ export async function pollSentOnce(db, log, injection = {}) {
     stats.errors += res.errors
     stats.abandoned += res.abandoned
   }
-
-  return stats
 }
 
 export function startMailSentPollWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {

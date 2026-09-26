@@ -79,6 +79,18 @@ export async function pollOnce(db, log, injection = {}) {
   }
 
   for (const mailbox of mailboxes) {
+    // Une boîte en échec (verrou tenu sur son curseur, erreur DB…) est
+    // sautée pour ce tick, sans empêcher les suivantes.
+    try {
+      await pollMailbox(mailbox)
+    } catch (err) {
+      stats.errors++
+      log?.warn({ err: err.message, mailbox }, 'email-bridge: boîte en échec pour ce tick')
+    }
+  }
+  return stats
+
+  async function pollMailbox(mailbox) {
     const key = cursorKey(mailbox)
     let cursor = await getSetting(db, key)
     if (!cursor) {
@@ -86,7 +98,7 @@ export async function pollOnce(db, log, injection = {}) {
       cursor = rows[0].now.toISOString()
       await setSetting(db, key, cursor)
       log?.info({ mailbox, cursor }, 'email-bridge: curseur initialisé (pas de backfill)')
-      continue
+      return
     }
 
     // Normaliser le format du curseur avant de l'envoyer à Graph. Si
@@ -99,7 +111,7 @@ export async function pollOnce(db, log, injection = {}) {
     if (Number.isNaN(parsed.getTime())) {
       stats.errors++
       log?.warn({ mailbox, cursor }, 'email-bridge: curseur illisible, skip mailbox (ré-initialiser via /api/settings)')
-      continue
+      return
     }
     const cursorIso = parsed.toISOString()
     if (cursorIso !== cursor) {
@@ -147,8 +159,6 @@ export async function pollOnce(db, log, injection = {}) {
     stats.errors += res.errors
     stats.abandoned += res.abandoned
   }
-
-  return stats
 }
 
 export function startMailPollWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
