@@ -103,7 +103,12 @@ docker inspect <conteneur-api> \
 ```
 
 - **Déjà un volume ou un bind mount** : rien à sauvegarder, passer à
-  l'étape 4.
+  l'étape 4 — mais **garder exactement le même nom de volume (ou le même
+  chemin hôte)** dans la compose. Si la compose mise à jour déclare
+  `attachments_data` alors que l'ancien volume porte un autre nom, un volume
+  neuf et vide est monté : les pièces jointes semblent perdues (elles sont
+  toujours dans l'ancien volume, `docker volume ls`). Adapter le nom dans la
+  compose plutôt que l'inverse.
 - **Aucun montage** (les fichiers sont dans le conteneur, cas de l'ancien
   `docker-compose.yml`) : ils seront **perdus** à la recréation du
   conteneur. Les sauvegarder d'abord :
@@ -112,7 +117,9 @@ docker inspect <conteneur-api> \
   docker compose cp api:/app/data/ticket-attachments ./attachments-backup
   ```
 
-Puis reconstruire et redémarrer (Node 22) :
+Puis reconstruire et redémarrer (Node 22). Avec l'image publiée sur GHCR
+au lieu d'un build local, remplacer `build --pull api` par
+`docker compose pull api` :
 
 ```bash
 git pull
