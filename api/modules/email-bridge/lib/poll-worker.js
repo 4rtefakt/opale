@@ -20,9 +20,12 @@
 
 import { listMessagesSince } from './graph-mail.js'
 import { processOne } from './process-mail.js'
+import { nonOverlapping } from '../../../lib/non-overlapping.js'
 
 const DEFAULT_INTERVAL_MS = 30_000
 let _timer = null
+let _kickoff = null
+let _run = null
 
 async function getSetting(db, key) {
   const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [key])
@@ -142,16 +145,20 @@ export async function pollOnce(db, log, injection = {}) {
 export function startMailPollWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
   if (_timer) return  // idempotent
 
-  const run = () =>
-    pollOnce(db, log).catch(err =>
-      log?.warn({ err: err.message }, 'email-bridge: tick a planté')
-    )
+  // Un seul tick à la fois : un tick lent (Graph, classifieur) n'est pas
+  // doublé par le suivant (curseur qui recule, mails retraités).
+  _run = nonOverlapping(() => pollOnce(db, log), {
+    onError: err => log?.warn({ err: err.message }, 'email-bridge: tick a planté'),
+  })
 
-  setTimeout(run, 5_000)
-  _timer = setInterval(run, intervalMs)
+  _kickoff = setTimeout(_run, 5_000)
+  _timer = setInterval(_run, intervalMs)
   log?.info({ intervalMs }, 'email-bridge: worker démarré')
 }
 
-export function stopMailPollWorker() {
+// Arrête le worker et attend la fin du tick en cours.
+export async function stopMailPollWorker() {
   if (_timer) { clearInterval(_timer); _timer = null }
+  if (_kickoff) { clearTimeout(_kickoff); _kickoff = null }
+  if (_run) { const run = _run; _run = null; await run.idle() }
 }

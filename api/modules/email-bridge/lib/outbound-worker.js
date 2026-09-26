@@ -26,11 +26,14 @@
 
 import { sendMail, sendReply } from './graph-send.js'
 import { buildSubject } from './thread-headers.js'
+import { nonOverlapping } from '../../../lib/non-overlapping.js'
 
 const DEFAULT_INTERVAL_MS = 10_000
 const MAX_BATCH = 20  // bound le travail par tick pour ne pas bloquer
 const MAX_ATTEMPTS = 5 // au-delà → dead-letter (≈ 50s de retries à 10s/tick)
 let _timer = null
+let _kickoff = null
+let _run = null
 
 async function getSetting(db, key) {
   const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [key])
@@ -272,15 +275,21 @@ export async function flushOutbox(db, log, { sendImpl, sendReplyImpl } = {}) {
 
 export function startMailOutboundWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
   if (_timer) return
-  const run = () =>
-    flushOutbox(db, log).catch(err =>
-      log?.warn({ err: err.message }, 'outbound: tick a planté')
-    )
-  setTimeout(run, 7_000)  // décalé du polling inbound (5s) pour étaler la charge
-  _timer = setInterval(run, intervalMs)
+  // Un seul tick à la fois : si Graph est lent, le tick suivant ne relit pas
+  // les mêmes messages en parallèle (la réclamation atomique de sendOne
+  // protège en plus contre une 2e instance de l'API).
+  _run = nonOverlapping(() => flushOutbox(db, log), {
+    onError: err => log?.warn({ err: err.message }, 'outbound: tick a planté'),
+  })
+  _kickoff = setTimeout(_run, 7_000)  // décalé du polling inbound (5s) pour étaler la charge
+  _timer = setInterval(_run, intervalMs)
   log?.info({ intervalMs }, 'email-bridge: worker outbound démarré')
 }
 
-export function stopMailOutboundWorker() {
+// Arrête le worker et attend la fin du tick en cours (pas d'arrêt entre la
+// réclamation d'un message et l'enregistrement du résultat de l'envoi).
+export async function stopMailOutboundWorker() {
   if (_timer) { clearInterval(_timer); _timer = null }
+  if (_kickoff) { clearTimeout(_kickoff); _kickoff = null }
+  if (_run) { const run = _run; _run = null; await run.idle() }
 }

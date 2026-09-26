@@ -15,10 +15,13 @@
 // pour pouvoir déployer le code AVANT que la perm Graph soit consentie.
 
 import { markMessageAsRead } from './graph-mail.js'
+import { nonOverlapping } from '../../../lib/non-overlapping.js'
 
 const DEFAULT_INTERVAL_MS = 15_000
 const MAX_BATCH = 20
 let _timer = null
+let _kickoff = null
+let _run = null
 
 async function getSetting(db, key) {
   const { rows } = await db.query('SELECT value FROM settings WHERE key = $1', [key])
@@ -88,15 +91,18 @@ export async function flushMarkRead(db, log, { markImpl = markMessageAsRead } = 
 
 export function startMailMarkReadWorker(db, log, intervalMs = DEFAULT_INTERVAL_MS) {
   if (_timer) return
-  const run = () =>
-    flushMarkRead(db, log).catch(err =>
-      log?.warn({ err: err.message }, 'mark-read: tick a planté')
-    )
-  setTimeout(run, 9_000)  // décalé de l'outbound (7s) et de l'inbound (5s)
-  _timer = setInterval(run, intervalMs)
+  // Un seul tick à la fois (cf. poll-worker).
+  _run = nonOverlapping(() => flushMarkRead(db, log), {
+    onError: err => log?.warn({ err: err.message }, 'mark-read: tick a planté'),
+  })
+  _kickoff = setTimeout(_run, 9_000)  // décalé de l'outbound (7s) et de l'inbound (5s)
+  _timer = setInterval(_run, intervalMs)
   log?.info({ intervalMs }, 'email-bridge: worker mark-read démarré')
 }
 
-export function stopMailMarkReadWorker() {
+// Arrête le worker et attend la fin du tick en cours.
+export async function stopMailMarkReadWorker() {
   if (_timer) { clearInterval(_timer); _timer = null }
+  if (_kickoff) { clearTimeout(_kickoff); _kickoff = null }
+  if (_run) { const run = _run; _run = null; await run.idle() }
 }
