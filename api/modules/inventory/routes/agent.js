@@ -128,6 +128,35 @@ function windowForAgent(w) {
   return str(w.start) && str(w.end) && str(w.tz) && days ? w : null
 }
 
+// Problème d'une fenêtre configurée (JSON déjà parsé), ou null si elle est
+// valide. null / {} / champs vides = pas de fenêtre (toujours ouverte).
+const HHMM_RE = /^(\d{1,2}):(\d{2})$/
+function maintenanceWindowProblem(w) {
+  if (w === null) return null
+  if (!windowForAgent(w)) return 'types incompatibles (objet ; weekdays entiers ; start, end, tz chaînes)'
+  if (Array.isArray(w.weekdays) && w.weekdays.some(d => d < 0 || d > 6)) return 'weekdays hors 0-6'
+  if (w.start || w.end) {
+    const ok = s => { const m = typeof s === 'string' && s.match(HHMM_RE); return !!m && +m[1] <= 23 && +m[2] <= 59 }
+    if (!ok(w.start) || !ok(w.end)) return 'start / end : H:MM ou HH:MM attendus (00:00 à 23:59)'
+  }
+  if (w.tz) {
+    try { new Intl.DateTimeFormat('en-US', { timeZone: w.tz }) } catch { return 'fuseau inconnu' }
+  }
+  return null
+}
+
+// Un avertissement par valeur invalide distincte et par process (valeurs
+// issues de la table settings : ensemble borné en pratique).
+const warnedInvalidWindows = new Set()
+function warnInvalidWindowOnce(fastify, raw, problem) {
+  if (warnedInvalidWindows.has(raw)) return
+  warnedInvalidWindows.add(raw)
+  fastify.log.warn(
+    { maintenance_window_default: clipStr(raw, 500), problem },
+    'fenêtre de maintenance invalide : aucun déploiement distribué tant qu\'elle n\'est pas corrigée'
+  )
+}
+
 // Maintenance window — sémantique strictement identique à
 // agent-go/maintenance.go (cf. tests Go MaintenanceWindow_*).
 // Fail-open : tout input invalide ou vide ⇒ toujours actif.
@@ -679,15 +708,26 @@ export default async function agentRoute(fastify) {
     const diskWarn = parseInt(settingMap.disk_warn_pct     ?? '80', 10)
     const diskCrit = parseInt(settingMap.disk_critical_pct ?? '90', 10)
 
+    // Fenêtre absente : toujours ouverte. Configurée mais invalide : aucun
+    // déploiement réservé (cf. deploymentsAllowed) ; scripts et mise à jour
+    // inchangés (fail-open).
     let maintenanceWindow = null
+    let windowProblem = null
     if (settingMap.maintenance_window_default) {
       try {
         maintenanceWindow = JSON.parse(settingMap.maintenance_window_default)
+        windowProblem = maintenanceWindowProblem(maintenanceWindow)
       } catch (err) {
-        fastify.log.warn({ err: err.message }, 'maintenance_window_default JSON invalide')
+        windowProblem = `JSON illisible (${err.message})`
       }
+      if (windowProblem) warnInvalidWindowOnce(fastify, settingMap.maintenance_window_default, windowProblem)
     }
     const inMaintWindow = isMaintenanceWindowActive(maintenanceWindow, new Date())
+    // Déploiements (installations en SYSTEM, winget…) : seulement dans une
+    // fenêtre valide et ouverte. Une fenêtre invalide évaluée fail-open les
+    // laissait partir à toute heure, sans signal : ils restent 'pending'
+    // (visible dans l'UI) jusqu'à correction du réglage.
+    const deploymentsAllowed = inMaintWindow && !windowProblem
 
     // ── Upsert device ───────────────────────────────────────────────────────
     // compliance_state lu ici pour le passer à l'évaluateur de conformité plus
@@ -1172,9 +1212,9 @@ export default async function agentRoute(fastify) {
     `, [deviceId])
 
     // ── Déploiements de packages en attente ────────────────────────────────
-    // Gated par la fenêtre de maintenance : hors fenêtre, on n'envoie
-    // pas les deployments pour éviter de les passer en 'running' alors
-    // que l'agent n'aurait pas le droit de les exécuter.
+    // Gated par la fenêtre de maintenance : hors fenêtre (ou fenêtre
+    // configurée invalide), rien n'est réservé. Le serveur est seul juge :
+    // l'agent (≥ 2.15.1) exécute ce qu'il reçoit.
     // Seuls les packages approuvés sont distribués : un package modifié
     // (repassé en draft) ne part plus en SYSTEM tant qu'un admin ne l'a
     // pas ré-approuvé — ses déploiements restent 'pending' en attendant.
@@ -1185,7 +1225,7 @@ export default async function agentRoute(fastify) {
     // log + reste 'pending' (l'admin l'annule puis le rejoue, ce qui refait
     // un snapshot). Tri : les distribuables d'abord, pour qu'un lot de
     // lignes sans snapshot ne bloque jamais les autres.
-    pendingRows = inMaintWindow ? (await fastify.db.query(`
+    pendingRows = deploymentsAllowed ? (await fastify.db.query(`
       SELECT d.id AS deployment_id, (s.deployment_id IS NOT NULL) AS has_snapshot,
              s.type, s.winget_id, s.install_script, s.post_install_script, s.detection_script, s.name
       FROM deployments d
