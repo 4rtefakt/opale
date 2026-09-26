@@ -2,7 +2,7 @@ import { isIP } from 'node:net'
 import { Client } from 'ssh2'
 import { resolveGroupMembers } from '../../groups/lib/groups.js'
 import { scriptOutputForDb } from '../lib/script-output.js'
-import { makeHostVerifier, loadKnownHostKey } from '../../remote/lib/ssh-host-key.js'
+import { hostKeyGuard } from '../../remote/lib/ssh-host-key.js'
 
 function sshKey() {
   const b64 = process.env.SSH_PRIVATE_KEY_B64
@@ -17,17 +17,24 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
     reply.raw.write(`data: ${JSON.stringify({ execId, deviceId: device.id, hostname: device.hostname, type, data })}\n\n`)
   }
 
-  // L'empreinte connue est chargée AVANT connect() : le hostVerifier de ssh2
-  // est synchrone (cf. remote/lib/ssh-host-key.js).
-  const knownFp = await loadKnownHostKey(fastify.db, device.id)
-
   return new Promise((resolve) => {
     const conn = new Client()
     const output = []
     const t0 = Date.now()
     let hostKeyRejection = null
+    // Clé d'hôte vérifiée avant authentification, mémorisée sur 'ready' au
+    // premier contact (cf. remote/lib/ssh-host-key.js).
+    const guard = hostKeyGuard(
+      { db: fastify.db, log: fastify.log }, device,
+      { onReject: (msg) => { hostKeyRejection = msg } }
+    )
 
-    conn.on('ready', () => {
+    conn.on('ready', async () => {
+      if (!(await guard.confirm())) {
+        conn.end()
+        send('error', `Connexion SSH échouée : ${hostKeyRejection}`)
+        return resolve({ status: 'error', output: hostKeyRejection, duration: Date.now() - t0 })
+      }
       send('connected', `Connecté à ${device.hostname} (${device.ip_netbird})`)
       conn.exec(scriptCode, { pty: false }, (err, stream) => {
         if (err) {
@@ -68,11 +75,7 @@ async function execOnDevice(fastify, device, scriptCode, execId, reply) {
       port:       parseInt(process.env.SSH_PORT || '22', 10),
       username:   process.env.SSH_USER || 'opale',
       privateKey: sshKey(),
-      hostVerifier: makeHostVerifier(
-        { db: fastify.db, log: fastify.log },
-        device, knownFp,
-        { onReject: (msg) => { hostKeyRejection = msg } }
-      ),
+      ...guard.sshOptions,
       readyTimeout: 10_000
     })
   })

@@ -2,7 +2,7 @@ import { isIP } from 'node:net'
 import { syncIntuneDevice } from '../../core/lib/graph.js'
 import { fetchBandwidth }   from '../../monitoring/lib/bandwidth.js'
 import { logAudit } from '../../core/lib/audit.js'
-import { makeHostVerifier, loadKnownHostKey } from '../../remote/lib/ssh-host-key.js'
+import { hostKeyGuard, hostKeyPolicy } from '../../remote/lib/ssh-host-key.js'
 
 async function getThresholds(fastify) {
   const res = await fastify.db.query(
@@ -187,6 +187,8 @@ export default async function devicesRoute(fastify) {
 
     return {
       ...formatDevice(d, thr),
+      // tofu | strict : adapte le texte de l'action de réinitialisation SSH.
+      ssh_host_key_policy: hostKeyPolicy(process.env, fastify.log),
       health_signals: d.health_signals || null,
       system_info,
       disks: disks.rows,
@@ -313,12 +315,6 @@ export default async function devicesRoute(fastify) {
     const errors = []
     const restarted = []  // { hostname, service } — alimente audit_logs.target
 
-    // Empreintes d'hôte chargées en amont : le hostVerifier de ssh2 est
-    // synchrone (cf. remote/lib/ssh-host-key.js).
-    const knownFps = new Map(
-      await Promise.all(rows.map(async d => [d.id, await loadKnownHostKey(fastify.db, d.id)]))
-    )
-
     await Promise.all(rows.map(d => new Promise(resolve => {
       // ip_netbird remonté par l'agent : SSH seulement vers une IP littérale,
       // jamais vers un nom d'hôte (redirection de la clé d'administration).
@@ -329,8 +325,15 @@ export default async function devicesRoute(fastify) {
       let hostKeyRejected = false
       const finish = () => { if (done) return; done = true; conn.end(); resolve() }
       const timeout = setTimeout(() => { errors.push(`[${d.hostname}] timeout`); conn.destroy(); finish() }, 15000)
+      // Clé d'hôte vérifiée avant authentification, mémorisée sur 'ready' au
+      // premier contact (cf. remote/lib/ssh-host-key.js).
+      const guard = hostKeyGuard(
+        { db: fastify.db, log: fastify.log }, d,
+        { onReject: (msg) => { hostKeyRejected = true; errors.push(`[${d.hostname}] ${msg}`) } }
+      )
 
-      conn.on('ready', () => {
+      conn.on('ready', async () => {
+        if (!(await guard.confirm())) { clearTimeout(timeout); return finish() }
         conn.exec(psCmd, (err, stream) => {
           if (err) {
             clearTimeout(timeout)
@@ -364,11 +367,7 @@ export default async function devicesRoute(fastify) {
         port:       parseInt(process.env.SSH_PORT || '22', 10),
         username:   (process.env.SSH_USER || '').split('@')[0],
         privateKey: sshKey,
-        hostVerifier: makeHostVerifier(
-          { db: fastify.db, log: fastify.log },
-          d, knownFps.get(d.id),
-          { onReject: (msg) => { hostKeyRejected = true; errors.push(`[${d.hostname}] ${msg}`) } }
-        ),
+        ...guard.sshOptions,
         readyTimeout: 8000,
       })
     })))
@@ -392,21 +391,23 @@ export default async function devicesRoute(fastify) {
   fastify.delete('/:id/ssh-host-key', {
     preHandler: [fastify.authenticate, fastify.requireAdmin],
   }, async (req, reply) => {
+    // Un seul ordre : l'empreinte auditée est exactement celle effacée, même
+    // si une connexion en apprend une au même moment.
     const { rows: [before] } = await fastify.db.query(
-      `SELECT hostname, ssh_host_key_fp FROM devices WHERE id = $1`, [req.params.id]
-    )
-    if (!before) return reply.code(404).send({ error: 'Poste introuvable' })
-    await fastify.db.query(
-      `UPDATE devices SET ssh_host_key_fp = NULL, ssh_host_key_learned_at = NULL WHERE id = $1`,
+      `UPDATE devices d SET ssh_host_key_fp = NULL, ssh_host_key_learned_at = NULL
+         FROM (SELECT id, ssh_host_key_fp FROM devices WHERE id = $1 FOR UPDATE) old
+        WHERE d.id = old.id
+       RETURNING d.hostname, old.ssh_host_key_fp AS previous_fingerprint`,
       [req.params.id]
     )
+    if (!before) return reply.code(404).send({ error: 'Poste introuvable' })
 
     const { entraId, displayName } = fastify.getUserIdentity(req)
     await logAudit(fastify.db, fastify.log, {
       action:  'ssh_host_key_reset',
       byUser:  displayName || entraId,
       target:  req.params.id,
-      details: { hostname: before.hostname, previous_fingerprint: before.ssh_host_key_fp },
+      details: { level: 'warn', hostname: before.hostname, previous_fingerprint: before.previous_fingerprint },
     })
     reply.code(204).send()
   })

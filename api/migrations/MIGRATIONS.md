@@ -152,7 +152,9 @@ L'ordre alphabétique du nom de fichier détermine l'ordre d'exécution.
   `ADD COLUMN IF NOT EXISTS`) : si cette branche est fusionnée, supprimer
   son `074` plutôt que de le renuméroter. Le `073_ssh_host_key` de
   `security-fixes` / `fix/agent-freeze-hardening` réutilise la même colonne
-  `ssh_host_key_fp` (même format SHA-256 base64) avec `ssh_host_key_seen` au
+  `ssh_host_key_fp` (SHA-256 base64, mais AVEC padding « = » ; ce code écrit
+  sans padding et normalise à la comparaison, préfixe `SHA256:` compris,
+  donc les deux formats restent compatibles) avec `ssh_host_key_seen` au
   lieu de `ssh_host_key_learned_at` : à réconcilier avec ce code plutôt que
   de fusionner tel quel.
 - `077_clear_stale_ip_netbird.sql` : met à NULL les `devices.ip_netbird`

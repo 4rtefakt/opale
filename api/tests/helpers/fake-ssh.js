@@ -17,15 +17,16 @@ export function ed25519KeyPair() {
   throw new Error('ssh2 : aucune clé ed25519 lisible générée')
 }
 
-// Démarre un serveur sur 127.0.0.1 (port libre). Retourne { port, execs }
-// où `execs` compte les commandes réellement reçues (0 si la poignée de main
-// a été refusée côté client avant authentification).
-export async function startFakeSshServer(t, { output = 'ok', exitCode = 0 } = {}) {
+// Démarre un serveur sur 127.0.0.1 (port libre). Retourne { port, state }
+// où `state.execs` compte les commandes réellement reçues (0 si la poignée de
+// main a été refusée côté client avant authentification). `rejectAuth` :
+// hôte qui refuse la clé d'Opale (IP réattribuée à un autre pair).
+export async function startFakeSshServer(t, { output = 'ok', exitCode = 0, rejectAuth = false } = {}) {
   const hostKey = ed25519KeyPair()
   const state = { execs: 0 }
   const server = new SshServer({ hostKeys: [hostKey.private] }, (client) => {
     client.on('error', () => {})
-    client.on('authentication', (ctx) => ctx.accept())
+    client.on('authentication', (ctx) => (rejectAuth ? ctx.reject() : ctx.accept()))
     client.on('ready', () => {
       client.on('session', (accept) => {
         const session = accept()

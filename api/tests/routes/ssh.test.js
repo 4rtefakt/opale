@@ -219,5 +219,8 @@ test('WS /:deviceId — clé d\'hôte SSH différente de l\'empreinte connue →
 
   const errors = messages.filter(m => m.type === 'error').map(m => m.data)
   assert.ok(errors.some(e => /Clé d'hôte SSH inattendue/.test(e)), JSON.stringify(messages))
+  // Le message explicite n'est pas suivi de l'erreur générique de ssh2
+  // (« Host denied »), qui masquait le motif dans la barre d'état.
+  assert.equal(errors.length, 1, JSON.stringify(errors))
   assert.equal(impostor.state.execs, 0, 'aucun shell ouvert chez l\'imposteur')
 })

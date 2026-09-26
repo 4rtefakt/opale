@@ -381,6 +381,51 @@ test('POST /force-checkin — clé d\'hôte SSH différente de l\'empreinte conn
   assert.equal(impostor.state.execs, 0)
 })
 
+test('POST /force-checkin — premier contact : empreinte apprise après authentification, commande exécutée', { skip: SKIP, timeout: 20000 }, async (t) => {
+  const server = await startFakeSshServer(t, { output: 'restarted: Opale-Agent' })
+  sshClientEnv(t, server.port)
+  const { token } = await adminAuth('oid-dev-force-hostkey-learn')
+  const id = await insertDevice({ hostname: 'PC-FORCE-LEARN' })
+  await db.query(`UPDATE devices SET ip_netbird = '127.0.0.1' WHERE id = $1`, [id])
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/devices/force-checkin',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { ids: [id] },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: 1, skipped: 0, errors: [] })
+  assert.equal(server.state.execs, 1)
+  const { rows: [d] } = await db.query('SELECT ssh_host_key_fp FROM devices WHERE id = $1', [id])
+  assert.ok(d.ssh_host_key_fp, 'empreinte mémorisée au premier contact')
+})
+
+test('POST /force-checkin — hôte qui refuse la clé d\'Opale : son empreinte n\'est PAS épinglée', { skip: SKIP, timeout: 20000 }, async (t) => {
+  // IP Netbird réattribuée à un autre pair : l'épingler bloquerait le vrai
+  // poste jusqu'à une réinitialisation manuelle.
+  const stranger = await startFakeSshServer(t, { rejectAuth: true })
+  sshClientEnv(t, stranger.port)
+  const { token } = await adminAuth('oid-dev-force-hostkey-noauth')
+  const id = await insertDevice({ hostname: 'PC-FORCE-NOAUTH' })
+  await db.query(`UPDATE devices SET ip_netbird = '127.0.0.1' WHERE id = $1`, [id])
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/devices/force-checkin',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { ids: [id] },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().ok, 0)
+  assert.equal(res.json().errors.length, 1)
+  assert.equal(stranger.state.execs, 0)
+  const { rows: [d] } = await db.query('SELECT ssh_host_key_fp FROM devices WHERE id = $1', [id])
+  assert.equal(d.ssh_host_key_fp, null)
+  const { rows: audits } = await db.query(
+    `SELECT 1 FROM audit_logs WHERE action = 'ssh_host_key_learned' AND target = $1`, [id]
+  )
+  assert.equal(audits.length, 0)
+})
+
 test('DELETE /:id/ssh-host-key — non-admin → 403, empreinte conservée', { skip: SKIP }, async () => {
   const u = await seedNonAdmin(db, { entraId: 'oid-dev-hostkey-na' })
   const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
@@ -412,6 +457,7 @@ test('DELETE /:id/ssh-host-key — admin → 204, empreinte effacée, action aud
   assert.equal(audit.length, 1)
   assert.equal(audit[0].details.previous_fingerprint, 'empreinte-avant')
   assert.equal(audit[0].details.hostname, 'PC-HOSTKEY-RESET')
+  assert.equal(audit[0].details.level, 'warn')
 })
 
 test('DELETE /:id/ssh-host-key — poste inconnu → 404', { skip: SKIP }, async () => {
@@ -431,4 +477,5 @@ test('GET /:id — expose l\'empreinte d\'hôte SSH apprise (fiche du poste)', {
   assert.equal(res.statusCode, 200)
   assert.equal(res.json().ssh_host_key_fp, 'empreinte-fiche')
   assert.ok(res.json().ssh_host_key_learned_at)
+  assert.equal(res.json().ssh_host_key_policy, 'tofu')
 })
