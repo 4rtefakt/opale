@@ -162,7 +162,9 @@ export function hostKeyGuard({ db, log }, device, opts = {}) {
     if (acceptedFp) {
       // Rekey : même clé attendue que pour la poignée de main initiale.
       if (fp === acceptedFp) return verify(true)
-      mismatch(acceptedFp, fp).finally(() => verify(false))
+      mismatch(acceptedFp, fp)
+        .then(() => verify(false))
+        .catch((err) => log.error({ err: err.message, device_id: device.id }, 'ssh : refus de rekey'))
       return
     }
     loadKnownHostKey(db, device.id).then(async (known) => {
@@ -192,6 +194,10 @@ export function hostKeyGuard({ db, log }, device, opts = {}) {
     }).catch((err) => {
       dbFailure(err)
       verify(false)
+    }).catch((err) => {
+      // verify(false) déclenche l'erreur fatale de ssh2, donc les écouteurs
+      // 'error' des routes : rien ne doit remonter en rejet non géré.
+      log.error({ err: err.message, device_id: device.id }, 'ssh : refus de la clé d\'hôte')
     })
   }
 
@@ -205,11 +211,12 @@ export function hostKeyGuard({ db, log }, device, opts = {}) {
     try {
       const { rowCount } = await db.query(
         // Une valeur vide ou réduite au préfixe (saisie manuelle ratée) compte
-        // comme absente, comme dans normalizeFingerprint.
+        // comme absente, comme dans normalizeFingerprint : blancs (espace,
+        // tabulation, retour ligne, espace insécable) et « = » autour.
         `UPDATE devices SET ssh_host_key_fp = $1, ssh_host_key_learned_at = now()
          WHERE id = $2
            AND (ssh_host_key_fp IS NULL
-                OR btrim(regexp_replace(btrim(ssh_host_key_fp), '^SHA256:', '', 'i'), ' =') = '')`,
+                OR ssh_host_key_fp ~* '^[[:space:]\u00a0]*(sha256:)?[[:space:]\u00a0=]*$')`,
         [fp, device.id]
       )
       if (rowCount === 1) {

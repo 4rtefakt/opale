@@ -124,6 +124,7 @@ export default async function sshRoute(fastify) {
     // sinon le contenu du terminal partirait chez qui répond à l'IP.
     let hostKeyRejected = false
     let sshFailed = false
+    let shellOpened = false
     const guard = hostKeyGuard(
       { db: fastify.db, log: fastify.log }, device,
       { onReject: (msg) => { hostKeyRejected = true; send('error', msg) } }
@@ -138,6 +139,7 @@ export default async function sshRoute(fastify) {
       send('status', 'Connecté')
       conn.shell({ term: 'xterm-256color', cols: 220, rows: 50 }, (err, stream) => {
         if (err) { send('error', err.message); conn.end(); return }
+        shellOpened = true
 
         // Données terminal → client
         stream.on('data', (data) => {
@@ -187,6 +189,11 @@ export default async function sshRoute(fastify) {
     })
 
     conn.on('close', () => {
+      // Poste qui raccroche avant l'ouverture du shell sans erreur ssh2 : le
+      // socket WS est fermé juste après, donc on le dit maintenant.
+      if (!shellOpened && !hostKeyRejected && !sshFailed) {
+        send('error', 'SSH : connexion fermée par le poste avant l\'ouverture du terminal')
+      }
       const durationSeconds = Math.round((Date.now() - startedAt) / 1000)
       // Flush du buffer AVANT l'UPDATE ended_at : le log est visible dès
       // que la session est marquée fermée. Échec non bloquant.

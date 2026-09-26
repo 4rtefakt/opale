@@ -38,6 +38,9 @@ test('normalizeFingerprint : préfixe SHA256:, padding et espaces ignorés', () 
   assert.equal(normalizeFingerprint(`  SHA256:${fp}=\n`), fp)
   assert.equal(normalizeFingerprint(`SHA256: ${fp}`), fp)
   assert.equal(normalizeFingerprint('SHA256:'), null)
+  for (const blank of ['\n', '\t', '\r\n', 'SHA256:\n', '\u00a0', 'SHA256:\u00a0']) {
+    assert.equal(normalizeFingerprint(blank), null, JSON.stringify(blank))
+  }
   assert.equal(normalizeFingerprint(''), null)
   assert.equal(normalizeFingerprint(null), null)
 })
@@ -208,7 +211,7 @@ test('rekey : comparé à la clé acceptée, sans aller-retour en base', { skip:
 })
 
 test('empreinte vide ou réduite au préfixe en base : traitée comme absente et réapprise', { skip: SKIP }, async () => {
-  for (const blank of ['', '   ', 'SHA256:', 'SHA256: =']) {
+  for (const blank of ['', '   ', 'SHA256:', 'SHA256: =', '\n', '\t', '\r\n', 'SHA256:\n', '\u00a0', 'SHA256:\u00a0']) {
     await storeFp(blank)
     const guard = guardFor()
     assert.equal(await handshake(guard, KEY_A), true, JSON.stringify(blank))

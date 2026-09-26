@@ -287,6 +287,8 @@ test('WS /:deviceId — hôte qui raccroche après authentification : erreur, se
   const messages = await openTerminal(device, token, 'test raccroché')
 
   assert.ok(!messages.some(m => m.type === 'status' && m.data === 'Connecté'), JSON.stringify(messages))
+  const errors = messages.filter(m => m.type === 'error')
+  assert.equal(errors.length, 1, JSON.stringify(messages))
   assert.equal(server.state.execs, 0)
   assert.ok(await waitForSessionEnd(device.id), 'remote_sessions.ended_at renseigné')
   await new Promise(r => setTimeout(r, 50))
