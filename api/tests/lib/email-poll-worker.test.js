@@ -194,6 +194,27 @@ test('pollOnce : mail visible plus tard au même horodatage que le curseur → i
   }
 )
 
+test('pollOnce : rafale de plus de 250 mails dans la même seconde → la boîte n\'est jamais bloquée (warn)',
+  { skip: SKIP }, async () => {
+    // Cas dégénéré : le listing inclusif renverrait toujours les mêmes 5
+    // pages (déjà traitées). Garde-fou : on passe la seconde, en le signalant.
+    const burst = Array.from({ length: 260 }, () => fakeMail({ receivedDateTime: at(1) }))
+    const later = fakeMail({ receivedDateTime: at(2) })
+    useGraph({ inbox: [...burst, later] })
+    const warns = []
+    const log = { info() {}, error() {}, warn: (_obj, msg) => warns.push(msg) }
+    try {
+      for (let tick = 0; tick < 10 && !(await ingestedIds()).includes(later.internetMessageId); tick++) {
+        await pollOnce(db, log)
+      }
+      assert.ok((await ingestedIds()).includes(later.internetMessageId), 'le mail suivant finit par être ingéré')
+      assert.ok(warns.some(m => /même horodatage/.test(m)), 'saut de seconde signalé')
+    } finally {
+      graph.restore()
+    }
+  }
+)
+
 test('pollOnce : transaction en échec sur un mail → curseur arrêté avant lui, retenté au tick suivant sans doublon',
   { skip: SKIP }, async () => {
     const a = fakeMail({ receivedDateTime: at(1) })
