@@ -124,7 +124,19 @@ after(async () => {
   }
 })
 
-afterEach(() => { interceptQuery = null })
+// Fin de test : toute connexion fermée côté client l'est aussi côté serveur
+// (onClose exécuté). Sinon son clearInterval(heartbeat) tombe dans le test
+// suivant, sur le setInterval simulé de celui-ci : MockTimers retire alors
+// un timer de sa propre file par position, et le heartbeat du test suivant
+// ne se déclenche plus au tick.
+afterEach(async () => {
+  interceptQuery = null
+  if (!fastify?.websocketServer) return
+  await waitFor(
+    () => [...fastify.websocketServer.clients].every((s) => s.readyState === WebSocket.OPEN),
+    'close côté serveur des connexions fermées par le test'
+  )
+})
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
