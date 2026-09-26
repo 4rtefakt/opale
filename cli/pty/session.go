@@ -18,9 +18,9 @@ type wsMsg struct {
 	Data any    `json:"data"`
 }
 
-// Connect opens a PTY WebSocket session (used by both console and ssh commands).
-// serverURL is the base HTTP/HTTPS URL of the opale server.
-// wsPath is the path + query string (e.g. /api/console/:id?nonce=...).
+// Connect ouvre une session terminal WebSocket (commandes console et ssh).
+// serverURL est l'URL HTTP(S) de base du serveur Opale, wsPath le chemin et
+// sa query string (ex. /api/console/:id?nonce=...).
 // Envoi : { type:"input", data:"<b64>" } / { type:"resize", data:{cols,rows} }
 // (identique pour SSH et console). Réception : cf. handleFrame, la forme de
 // `data` dépend du transport.
@@ -55,17 +55,7 @@ func Connect(serverURL, wsPath string) error {
 
 	// server → stdout
 	go func() {
-		for {
-			_, raw, err := conn.ReadMessage()
-			if err != nil {
-				done <- nil
-				return
-			}
-			if end, err := handleFrame(raw, os.Stdout, os.Stderr); end || err != nil {
-				done <- err
-				return
-			}
-		}
+		done <- readLoop(conn, os.Stdout, os.Stderr)
 	}()
 
 	// stdin → server
@@ -117,9 +107,25 @@ func pumpInput(r io.Reader, w *wsWriter) {
 	}
 }
 
+// readLoop relaie les frames serveur vers stdout/stderr jusqu'à la fin de
+// session : nil à la fermeture du socket ou sur une frame de fin, l'erreur
+// d'une frame illisible sinon.
+func readLoop(conn *websocket.Conn, stdout, stderr io.Writer) error {
+	for {
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			return nil
+		}
+		if end, err := handleFrame(raw, stdout, stderr); end || err != nil {
+			return err
+		}
+	}
+}
+
 // handleFrame traite une frame serveur → client. Les deux transports n'ont
-// pas la même forme de `data` (routes/ssh.js d'un côté, routes/console.js
-// qui relaie tel quel ce qu'émet agent-go/console.go de l'autre) :
+// pas la même forme de `data` : api/modules/remote/routes/ssh.js d'un côté,
+// de l'autre api/modules/inventory/routes/agent.js (1445-1478) qui relaie
+// tel quel vers le socket console ce qu'émet agent-go/console.go :
 //
 //	         SSH        console-via-agent
 //	data     "<b64>"    { b64 }

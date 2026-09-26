@@ -31,12 +31,13 @@ func TestToWS(t *testing.T) {
 	}
 }
 
-// Frames reçues par un client terminal (browser ou CLI), capturées telles
-// quelles sur le code serveur réel : agent Go (consoleManager + wsWriter,
-// agent-go/console.go) → routes/agent.js → routes/console.js pour la
-// console-via-agent ; routes/ssh.js face à un sshd ssh2 local pour le SSH.
-// Les deux transports n'ont pas la même forme de `data` : c'est ce que le
-// décodeur doit accepter explicitement.
+// Frames reçues par un client terminal (browser ou CLI) : forme identique au
+// code serveur (enveloppes et champs relevés en faisant tourner
+// agent-go/console.go, routes/agent.js, routes/console.js et routes/ssh.js),
+// contenu illustratif (invite Windows à côté d'erreurs d'un agent Linux,
+// qui refuse les consoles : console_other.go). Les deux transports n'ont pas
+// la même forme de `data` : c'est ce que le décodeur doit accepter
+// explicitement.
 var (
 	// status : api/modules/remote/routes/console.js:170 ; opened / data / exit :
 	// agent-go/console.go:124-125, 141-144, 156-157 relayés par
@@ -109,6 +110,15 @@ func TestHandleFrame_ConsoleTransport(t *testing.T) {
 	if !strings.Contains(r.stderr, "[Session terminée : read /dev/ptmx: input/output error]") {
 		t.Errorf("motif de fin non affiché : %q", r.stderr)
 	}
+	// Repli sur `code` quand l'exit n'a pas de reason, comme le browser.
+	for frame, want := range map[string]string{
+		`{"type":"exit","data":{"code":1}}`: "[Session terminée : code 1]",
+		`{"type":"exit","data":{}}`:         "[Session terminée : code ?]",
+	} {
+		if r = feed(frame); !strings.Contains(r.stderr, want) {
+			t.Errorf("%s : stderr = %q, doit contenir %q", frame, r.stderr, want)
+		}
+	}
 
 	for _, tc := range []struct{ frame, want string }{
 		{consoleAgentError, "[erreur] console non supportée sur cet OS (agent prod = Windows uniquement)"},
@@ -160,7 +170,9 @@ func TestHandleFrame_MalformedFramesSurfaceAnError(t *testing.T) {
 		`{"type":"data","data":"%%%pas-du-base64"}`,
 		`{"type":"data","data":{"b64":"%%%"}}`,
 		`{"type":"data","data":42}`,
+		`{"type":"data","data":null}`,
 		`{"type":"data"}`,
+		`{"data":"x"}`,
 	} {
 		r := feed(f)
 		if r.err == nil {
@@ -251,5 +263,67 @@ func TestWSWriter_ConcurrentResizeAndInput(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serveur de test : pas de fin de lecture")
+	}
+}
+
+// serveFrames : côté serveur de test, envoie les frames puis une frame de
+// fermeture (closePayload vide = `socket.close()` sans argument, comme
+// ssh.js), et attend que le client ait fini.
+func serveFrames(frames []string, closePayload []byte) func(c *websocket.Conn) {
+	return func(c *websocket.Conn) {
+		for _, f := range frames {
+			if c.WriteMessage(websocket.TextMessage, []byte(f)) != nil {
+				return
+			}
+		}
+		_ = c.WriteMessage(websocket.CloseMessage, closePayload)
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// runReadLoop fait tourner la vraie boucle de lecture sur un socket gorilla.
+func runReadLoop(t *testing.T, frames []string, closePayload []byte) frameRun {
+	t.Helper()
+	conn := dialTestWS(t, serveFrames(frames, closePayload))
+	var out, errOut bytes.Buffer
+	errc := make(chan error, 1)
+	go func() { errc <- readLoop(conn, &out, &errOut) }()
+	select {
+	case err := <-errc:
+		return frameRun{stdout: out.String(), stderr: errOut.String(), err: err}
+	case <-time.After(5 * time.Second):
+		t.Fatal("readLoop bloquée")
+	}
+	return frameRun{}
+}
+
+// Câblage réel (socket, pas de TTY) : sortie des deux transports, fin propre,
+// et propagation jusqu'à l'appelant de l'erreur d'une frame illisible.
+func TestReadLoop_Wiring(t *testing.T) {
+	r := runReadLoop(t, consoleFrames, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "exit"))
+	if r.err != nil || r.stdout != "PS C:\\Windows\\system32> héllo\r\n" ||
+		!strings.Contains(r.stderr, "[Session terminée : exit]") {
+		t.Errorf("console : %+v", r)
+	}
+
+	r = runReadLoop(t, sshFrames, []byte{})
+	if r.err != nil || r.stdout != "C:\\Users\\opale> héllo\r\nstderr-line\r\n" {
+		t.Errorf("ssh : %+v", r)
+	}
+
+	r = runReadLoop(t, []string{
+		consoleFrames[0],
+		`{"type":"data","data":null}`,
+		`{"type":"data","data":{"b64":"QVBSRVM="}}`, // "APRES"
+	}, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "exit"))
+	if r.err == nil || !strings.Contains(r.err.Error(), "illisible") {
+		t.Errorf("frame illisible : err = %v, want erreur remontée à l'appelant", r.err)
+	}
+	if strings.Contains(r.stdout, "APRES") {
+		t.Errorf("la session aurait dû s'arrêter à la frame illisible : stdout = %q", r.stdout)
 	}
 }
