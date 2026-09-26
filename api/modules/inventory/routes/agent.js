@@ -114,6 +114,20 @@ function getAgentBinaryMeta(arch = 'amd64') {
   return binCache[arch]
 }
 
+// Fenêtre telle que l'agent Go peut la décoder (types.go / maintenance.go
+// MaintenanceWindow : weekdays []int, start/end/tz string), sinon null.
+// Un champ de mauvais type fait échouer TOUT le décodage de la réponse du
+// checkin chez l'agent (≤ 2.14 compris) : chaque checkin échoue et, après
+// une mise à jour, le rollback se déclenche. null = fenêtre absente pour
+// tous les agents. Entiers bornés à 32 bits (build 386).
+function windowForAgent(w) {
+  if (!w || typeof w !== 'object' || Array.isArray(w)) return null
+  const str = v => v === undefined || v === null || typeof v === 'string'
+  const days = w.weekdays === undefined || w.weekdays === null
+    || (Array.isArray(w.weekdays) && w.weekdays.every(d => Number.isInteger(d) && Math.abs(d) < 2 ** 31))
+  return str(w.start) && str(w.end) && str(w.tz) && days ? w : null
+}
+
 // Maintenance window — sémantique strictement identique à
 // agent-go/maintenance.go (cf. tests Go MaintenanceWindow_*).
 // Fail-open : tout input invalide ou vide ⇒ toujours actif.
@@ -1377,7 +1391,7 @@ export default async function agentRoute(fastify) {
         detection_script: r.detection_script,
       })),
       agent_update:        agentUpdate,
-      maintenance_window:  maintenanceWindow,
+      maintenance_window:  windowForAgent(maintenanceWindow),
     })
   })
 
