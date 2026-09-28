@@ -273,11 +273,15 @@ export default async function emailRoute(fastify) {
   // GET /api/email/inbox/count — compteur pour le badge UI.
   fastify.get('/inbox/count',
     { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      // pending = mails ; threads = fils (regroupés par conversation, comme
+      // la liste « À trier ») — c'est ce que les badges affichent.
       const { rows } = await fastify.db.query(
-        `SELECT COUNT(*)::int AS pending FROM email_thread_mapping
+        `SELECT COUNT(*)::int AS pending,
+                COUNT(DISTINCT COALESCE(conversation_id, id::text))::int AS threads
+         FROM email_thread_mapping
          WHERE direction = 'inbound' AND action = 'pending_review'`
       )
-      reply.send({ pending: rows[0].pending })
+      reply.send({ pending: rows[0].pending, threads: rows[0].threads })
     })
 
   // POST /api/email/inbox/:id/to-ticket

@@ -111,10 +111,23 @@ export default async function ticketsRoute(fastify) {
   // GET /api/tickets/count — tickets ouverts non encore pris en charge (badge sidebar)
   // Admin-only : un non-admin ne s'auto-assignerait pas de tickets non assignés.
   fastify.get('/count', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+    // awaiting_reply : même règle que la liste (GET /, vue admin) — ticket
+    // open/in_progress dont le dernier message hors system n'est pas de moi —
+    // mais compté en SQL sur tous les tickets, pas sur une page de la liste.
+    const { displayName: meName } = fastify.getUserIdentity(req)
     const { rows } = await fastify.db.query(
-      `SELECT COUNT(*)::int AS open
-       FROM tickets
-       WHERE status = 'open' AND assigned_to_entra_id IS NULL`
+      `SELECT
+         (SELECT COUNT(*)::int FROM tickets
+           WHERE status = 'open' AND assigned_to_entra_id IS NULL) AS open,
+         (SELECT COUNT(*)::int FROM tickets t
+           JOIN LATERAL (
+             SELECT author FROM ticket_messages
+             WHERE ticket_id = t.id AND type <> 'system'
+             ORDER BY created_at DESC LIMIT 1
+           ) lm ON true
+           WHERE t.status IN ('open', 'in_progress')
+             AND lm.author IS NOT NULL AND lm.author <> $1) AS awaiting_reply`,
+      [meName]
     )
     reply.send(rows[0])
   })

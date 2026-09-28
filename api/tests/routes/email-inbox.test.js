@@ -216,6 +216,27 @@ test('GET /inbox/count — compte les pending_review uniquement',
   }
 )
 
+test("GET /inbox/count — threads : les mails d'une même conversation comptent pour un fil",
+  { skip: SKIP }, async () => {
+    const { token } = await adminAuth('oid-inbox-count-threads')
+    const get = async () => (await fastify.inject({
+      method: 'GET', url: '/api/email/inbox/count',
+      headers: { authorization: `Bearer ${token}` },
+    })).json()
+    const before = await get()
+
+    await seedInboxMapping(db, { conversationId: 'conv-count-threads' })
+    await seedInboxMapping(db, { conversationId: 'conv-count-threads' })
+    await seedInboxMapping(db, { conversationId: 'conv-count-threads' })
+    await seedInboxMapping(db, { conversationId: null })
+    await seedInboxMapping(db, { conversationId: 'conv-count-threads-done', action: 'skipped_other' })
+
+    const after = await get()
+    assert.equal(after.pending, before.pending + 4, 'pending compte les mails')
+    assert.equal(after.threads, before.threads + 2, 'threads compte les fils (sans conversation = un fil)')
+  }
+)
+
 // ─── POST /inbox/:id/to-ticket ───────────────────────────────────────────────
 
 test('POST /inbox/:id/to-ticket — crée un ticket + repointe le mapping',
