@@ -1,0 +1,61 @@
+name: Deploy demo
+
+# Démo publique (demo/README.md) : front statique + API factice sur un
+# Cloudflare Worker. Nécessite les secrets CLOUDFLARE_API_TOKEN (modèle
+# « Edit Cloudflare Workers ») et CLOUDFLARE_ACCOUNT_ID. Sans eux, le job
+# s'arrête proprement au lieu d'échouer.
+#
+# Livré dans demo/ : à déplacer vers .github/workflows/deploy-demo.yml (voir
+# demo/README.md), les workflows exigeant un jeton avec la portée « workflow ».
+
+on:
+  push:
+    branches: [main]
+    paths: ['front/**', 'demo/**', 'setup.sh', '.github/workflows/deploy-demo.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifier les secrets Cloudflare
+        id: secrets
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$TOKEN" ] || [ -z "$ACCOUNT" ]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID absents : démo non déployée."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          node-version: 22
+
+      - name: Vendoriser les dépendances front (polices, icônes, MSAL)
+        if: steps.secrets.outputs.ready == 'true'
+        run: bash ./setup.sh
+
+      - name: Tests de l'API factice
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: demo
+        run: npm test
+
+      - name: Déployer le Worker
+        if: steps.secrets.outputs.ready == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: demo
+          command: deploy

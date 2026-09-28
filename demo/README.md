@@ -25,11 +25,42 @@ cd demo && npm install && npm run dev
 
 ## Déployer sur Cloudflare
 
-Une seule fois, dans Cloudflare : créer un jeton API avec le modèle « Edit
-Cloudflare Workers », puis ajouter au dépôt GitHub les secrets
-`CLOUDFLARE_API_TOKEN` et `CLOUDFLARE_ACCOUNT_ID`. Le workflow
-`.github/workflows/deploy-demo.yml` déploie ensuite à chaque push sur `main`
-qui touche `front/` ou `demo/` (et à la demande, onglet Actions).
+Une seule fois :
+
+1. Dans Cloudflare, créer un jeton API avec le modèle « Edit Cloudflare
+   Workers » et noter l'identifiant de compte (Workers & Pages → Overview).
+2. Dans le dépôt GitHub, ajouter les secrets `CLOUDFLARE_API_TOKEN` et
+   `CLOUDFLARE_ACCOUNT_ID` (Settings → Secrets and variables → Actions).
+3. Installer le workflow (les workflows ne peuvent être ajoutés qu'avec un
+   jeton disposant de la portée `workflow`, d'où ce fichier livré ici) :
+
+   ```bash
+   git mv demo/deploy-demo.workflow.yml .github/workflows/deploy-demo.yml
+   git commit -m "ci: déploiement de la démo" && git push
+   ```
+
+Le workflow déploie ensuite à chaque push sur `main` qui touche `front/` ou
+`demo/` (et à la demande, onglet Actions). Sans les secrets, il s'arrête
+proprement avec une notice.
+
+Pour faire tourner les tests de l'API factice dans la CI, ajouter ce job à
+`.github/workflows/ci.yml` :
+
+```yaml
+  test-demo-api:
+    name: Test demo API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check + tests (node --test)
+        working-directory: demo
+        run: |
+          for f in *.js; do node --check "$f"; done
+          npm test
+```
 
 À la main :
 
