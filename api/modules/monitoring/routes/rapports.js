@@ -11,6 +11,13 @@ export default async function rapportsRoute(fastify) {
     )
     const hourlyRate = parseFloat(settingsRow.rows[0]?.value ?? '22.54')
 
+    // Fenêtre d'activité (temps économisé, actions, gains tickets). Défaut 30j
+    // pour la page Rapports ; la vue Point informatique passe la durée de la
+    // période choisie (?days=N). Clampé entier 1..365 → interpolation SQL sûre.
+    // NB : parc actif (7j), conformité et santé matériel restent des états
+    // courants, non affectés par days.
+    const days = Math.min(Math.max(parseInt(req.query.days ?? 30, 10) || 30, 1), 365)
+
     const [
       kpiParc,
       complianceRows,
@@ -20,6 +27,7 @@ export default async function rapportsRoute(fastify) {
       batteryStats,
       activeDevicesCount,
       ticketGains,
+      ticketsCreated,
     ] = await Promise.all([
 
       // ── KPI Parc supervisé : postes vus < 7 jours / total ──
@@ -88,7 +96,7 @@ export default async function rapportsRoute(fastify) {
           COUNT(*) AS count
         FROM audit_logs al
         INNER JOIN automation_costs ac ON ac.action_type = al.action
-        WHERE al.created_at > now() - interval '30 days'
+        WHERE al.created_at > now() - interval '1 day' * ${days}
         GROUP BY al.action, ac.label, ac.estimated_minutes
         ORDER BY (COUNT(*) * ac.estimated_minutes) DESC
       `),
@@ -179,7 +187,7 @@ export default async function rapportsRoute(fastify) {
       fastify.db.query(`
         SELECT COUNT(*) AS n
         FROM devices
-        WHERE last_seen > now() - interval '30 days'
+        WHERE last_seen > now() - interval '1 day' * ${days}
       `),
 
       // ── Gains tickets/mail sur 30j (actions synthétiques, pas dans
@@ -191,13 +199,21 @@ export default async function rapportsRoute(fastify) {
         SELECT
           (SELECT COUNT(*) FROM email_thread_mapping
              WHERE action = 'message_appended'
-               AND received_at > now() - interval '30 days')        AS mail_appended,
+               AND received_at > now() - interval '1 day' * ${days})  AS mail_appended,
           (SELECT COUNT(*) FROM tickets
              WHERE source = 'email'
-               AND created_at > now() - interval '30 days')         AS from_email,
+               AND created_at > now() - interval '1 day' * ${days})   AS from_email,
           (SELECT COUNT(*) FROM tickets
              WHERE status = 'merged'
-               AND updated_at > now() - interval '30 days')         AS merged
+               AND updated_at > now() - interval '1 day' * ${days})   AS merged
+      `),
+
+      // ── Tickets CRÉÉS sur la fenêtre, tout moyen (auto/manuel/mail) et tout
+      // état actuel (open/in_progress/resolved/merged…). Métrique de flux du
+      // support sur la période, pas un instantané des tickets ouverts.
+      fastify.db.query(`
+        SELECT COUNT(*)::int AS n FROM tickets
+        WHERE created_at > now() - interval '1 day' * ${days}
       `),
 
     ])
@@ -219,19 +235,22 @@ export default async function rapportsRoute(fastify) {
       total_eur:         Math.round(parseInt(r.count) * parseInt(r.estimated_minutes) * hourlyRate / 60),
     }))
 
-    // Ajout synthétique : agent_checkin_summary (1 par poste actif sur 30j)
+    // Ajout synthétique : agent_checkin_summary. Le modèle de base = 1 inventaire
+    // manuel évité par poste actif et par mois ; on le scale à la fenêtre
+    // (× days/30) pour rester proportionnel. days=30 → comportement d'origine.
     const checkinAc = acMap['agent_checkin_summary']
     if (checkinAc) {
-      const n = parseInt(activeDevicesCount.rows[0].n)
-      if (n > 0) {
+      const nActive = parseInt(activeDevicesCount.rows[0].n)
+      const count = Math.round(nActive * days / 30)
+      if (count > 0) {
         const mins = parseInt(checkinAc.estimated_minutes)
         activity.unshift({
           action_type:       'agent_checkin_summary',
           label:             checkinAc.label,
-          count:             n,
+          count,
           estimated_minutes: mins,
-          total_minutes:     n * mins,
-          total_eur:         Math.round(n * mins * hourlyRate / 60),
+          total_minutes:     count * mins,
+          total_eur:         Math.round(count * mins * hourlyRate / 60),
         })
       }
     }
@@ -321,11 +340,15 @@ export default async function rapportsRoute(fastify) {
         },
         security_score: securityScore,
         actions_count:  totalCount,
+        tickets_created: ticketsCreated.rows[0].n,
         time_saved: {
           minutes:     totalMinutes,
           eur:         totalEur,
           hourly_rate: parseFloat(hourlyRate.toFixed(2)),
-          annual_eur:  Math.round(totalEur * 12),  // projection sur 1 an
+          // Projection annuelle à partir du gain de la fenêtre (days).
+          // days=30 → ×12.17, identique en pratique à l'ancien ×12.
+          annual_eur:  Math.round(totalEur * 365 / days),
+          period_days: days,
         },
       },
       compliance,

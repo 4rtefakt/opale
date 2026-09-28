@@ -32,6 +32,7 @@ const ROUTE_MODULE = {
   scripts:    'inventory',
   onboarding: 'onboarding',
   rapports:   'monitoring',
+  point:      'monitoring',
   audit:      'core',
   parametres: 'core'
 }
@@ -130,7 +131,7 @@ window.formatRelative = (iso) => {
 // ─── Router ───
 const VIEWS = [
   'today','dashboard','alertes','tickets','postes','conformite','stock',
-  'users','groupes','scripts','onboarding','rapports','audit','parametres','packages','reseau'
+  'users','groupes','scripts','onboarding','rapports','point','audit','parametres','packages','reseau'
 ]
 
 function hideAllViews() {
@@ -260,6 +261,10 @@ async function router() {
   } else if (route === 'rapports') {
     const { renderRapports } = await import('/views/rapports.js')
     renderRapports(container)
+  } else if (route === 'point') {
+    // `#/point/<id>` ouvre un point précis (lien partageable) ; `new` = nouveau.
+    const { renderPoint } = await import('/views/point.js')
+    renderPoint(container, parts[1])
   } else if (route === 'reseau') {
     const { renderReseau } = await import('/views/reseau.js')
     renderReseau(container)

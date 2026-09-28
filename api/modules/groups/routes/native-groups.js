@@ -4,6 +4,124 @@ import { logAudit } from '../../core/lib/audit.js'
 // CRUD groupes natifs — coexiste avec routes/groups.js (Entra) sur le même
 // prefix /api/groups. Tous les endpoints sont admin-only.
 
+const MAX_IMPORT_DEPTH = 20
+
+// Vrai si rattacher childId comme membre de parentId créerait un cycle, i.e.
+// si parentId est déjà atteignable en descendant depuis childId.
+async function wouldCreateCycle(db, parentId, childId, _seen = new Set()) {
+  if (childId === parentId) return true
+  if (_seen.has(childId)) return false
+  _seen.add(childId)
+  const { rows } = await db.query(
+    'SELECT member_group_id FROM group_members WHERE group_id = $1 AND member_group_id IS NOT NULL', [childId]
+  )
+  for (const r of rows) {
+    if (await wouldCreateCycle(db, parentId, r.member_group_id, _seen)) return true
+  }
+  return false
+}
+
+// Crée un groupe Opale source='entra'. Gère la collision de nom
+// (groups_name_key) en suffixant avec un fragment de l'id Entra.
+// Appelé exclusivement dans une transaction (importEntraTree) : on isole chaque
+// tentative d'INSERT par un SAVEPOINT, car une erreur Postgres avorte sinon
+// toute la transaction.
+async function createEntraGroup(db, { name, description, color, entraGroupId, byUser }) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const tryName = (attempt === 0
+      ? name
+      : `${name} [${entraGroupId.slice(0, 6)}${attempt > 1 ? '-' + attempt : ''}]`).slice(0, 200)
+    await db.query('SAVEPOINT cg')
+    try {
+      const { rows: [g] } = await db.query(
+        `INSERT INTO groups (name, description, color, source, entra_group_id, created_by, updated_by)
+         VALUES ($1,$2,$3,'entra',$4,$5,$5) RETURNING id`,
+        [tryName, description, color, entraGroupId, byUser]
+      )
+      await db.query('RELEASE SAVEPOINT cg')
+      return g
+    } catch (err) {
+      await db.query('ROLLBACK TO SAVEPOINT cg')
+      if (err.constraint === 'groups_name_key') continue // collision de nom → suffixe
+      if (err.constraint === 'groups_entra_group_id_uniq') {     // créé en concurrence
+        const { rows: [g] } = await db.query('SELECT id FROM groups WHERE entra_group_id = $1', [entraGroupId])
+        if (g) return g
+      }
+      throw err
+    }
+  }
+  throw new Error(`Nom de groupe importé impossible à attribuer (collisions): ${name}`)
+}
+
+// Importe / resynchronise un groupe Entra ET ses sous-groupes, récursivement.
+//   mode 'import' : ne touche pas les membres d'un groupe déjà existant (réutilisé + lié).
+//   mode 'sync'   : full-replace des membres directs de chaque groupe visité.
+// seen : Map<entraGroupId, opaleGroupId> (anti-cycle + dédup). stats : compteurs.
+// Retourne l'id Opale du groupe (racine de cet appel) ou null si profondeur dépassée.
+async function importEntraTree(fastify, db, opts) {
+  const { entraGroupId, name, description = null, color = 'slate', byUser, recursive, mode, seen, stats, depth = 0 } = opts
+  if (seen.has(entraGroupId)) return seen.get(entraGroupId)
+  if (depth > MAX_IMPORT_DEPTH) { stats.depth_truncated = true; return null }
+
+  // find-or-create par entra_group_id
+  let { rows: [grp] } = await db.query('SELECT id FROM groups WHERE entra_group_id = $1', [entraGroupId])
+  const created = !grp
+  if (!grp) {
+    grp = await createEntraGroup(db, { name: name || entraGroupId, description, color, entraGroupId, byUser })
+    stats.groups_created++
+  }
+  seen.set(entraGroupId, grp.id)
+
+  // Membres directs depuis Graph (devices + users + sous-groupes directs)
+  let hostnames = [], userIds = [], nested = []
+  try {
+    ;[hostnames, userIds, nested] = await Promise.all([
+      fastify.graph.getGroupDeviceHostnames(entraGroupId),
+      fastify.graph.getGroupUserIds(entraGroupId),
+      recursive ? fastify.graph.getGroupNestedGroups(entraGroupId) : Promise.resolve([]),
+    ])
+  } catch (err) {
+    throw new Error(`Graph (${entraGroupId}): ${err.message}`)
+  }
+
+  // On (re)peuple les membres directs si le groupe est neuf, ou en mode sync.
+  if (created || mode === 'sync') {
+    const { rows: devs } = await db.query(
+      'SELECT id FROM devices WHERE hostname = ANY($1::text[])', [hostnames]
+    )
+    if (mode === 'sync') {
+      // Full-replace : on efface TOUS les membres directs (devices/users/liens
+      // de sous-groupes) puis on re-pose. Les sous-groupes eux-mêmes persistent.
+      await db.query('DELETE FROM group_members WHERE group_id = $1', [grp.id])
+    }
+    for (const d of devs) {
+      await db.query('INSERT INTO group_members (group_id, device_id, added_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING', [grp.id, d.id, byUser])
+    }
+    for (const uid of userIds) {
+      await db.query('INSERT INTO group_members (group_id, user_id, added_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING', [grp.id, uid, byUser])
+    }
+    stats.devices   += devs.length
+    stats.users     += userIds.length
+    stats.unmatched += (hostnames.length - devs.length)
+  }
+
+  // Sous-groupes : recursion + lien parent → enfant
+  for (const ng of nested) {
+    const childId = await importEntraTree(fastify, db, {
+      entraGroupId: ng.id, name: ng.displayName || ng.id, description: ng.description,
+      color, byUser, recursive, mode, seen, stats, depth: depth + 1,
+    })
+    if (childId) {
+      await db.query(
+        'INSERT INTO group_members (group_id, member_group_id, added_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING',
+        [grp.id, childId, byUser]
+      )
+    }
+  }
+
+  return grp.id
+}
+
 export default async function nativeGroupsRoute(fastify) {
   const auth = [fastify.authenticate, fastify.requireAdmin]
 
@@ -143,14 +261,22 @@ export default async function nativeGroupsRoute(fastify) {
     )
     if (!grp[0]) return reply.code(404).send({ error: 'Groupe introuvable' })
 
-    const device_id = req.body?.device_id ?? null
-    const user_id   = req.body?.user_id   ?? null
+    const device_id       = req.body?.device_id       ?? null
+    const user_id         = req.body?.user_id         ?? null
+    const member_group_id = req.body?.member_group_id ?? null
 
-    if (!device_id && !user_id) {
-      return reply.code(400).send({ error: 'device_id ou user_id requis' })
-    }
-    if (device_id && user_id) {
-      return reply.code(400).send({ error: 'Fournir device_id OU user_id, pas les deux' })
+    const provided = [device_id, user_id, member_group_id].filter(Boolean).length
+    if (provided === 0) return reply.code(400).send({ error: 'device_id, user_id ou member_group_id requis' })
+    if (provided > 1)   return reply.code(400).send({ error: 'Fournir un seul type de membre' })
+
+    // Groupe-dans-groupe : interdit le cycle (direct via CHECK, indirect ici).
+    if (member_group_id) {
+      if (member_group_id === req.params.id) return reply.code(400).send({ error: 'Un groupe ne peut pas se contenir lui-même' })
+      const { rows: tgt } = await fastify.db.query('SELECT id FROM groups WHERE id = $1', [member_group_id])
+      if (!tgt[0]) return reply.code(404).send({ error: 'Groupe membre introuvable' })
+      if (await wouldCreateCycle(fastify.db, req.params.id, member_group_id)) {
+        return reply.code(400).send({ error: 'Ajout refusé : créerait un cycle de groupes' })
+      }
     }
 
     const byUser = fastify.getUserIdentity(req).displayName
@@ -158,14 +284,14 @@ export default async function nativeGroupsRoute(fastify) {
     let row
     try {
       const r = await fastify.db.query(
-        `INSERT INTO group_members (group_id, device_id, user_id, added_by)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, group_id, device_id, user_id, added_at`,
-        [req.params.id, device_id, user_id, byUser]
+        `INSERT INTO group_members (group_id, device_id, user_id, member_group_id, added_by)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, group_id, device_id, user_id, member_group_id, added_at`,
+        [req.params.id, device_id, user_id, member_group_id, byUser]
       )
       row = r.rows[0]
     } catch (err) {
-      if (err.constraint === 'group_members_device_uniq' || err.constraint === 'group_members_user_uniq') {
+      if (err.constraint === 'group_members_device_uniq' || err.constraint === 'group_members_user_uniq' || err.constraint === 'group_members_group_uniq') {
         return reply.code(409).send({ error: 'Ce membre est déjà dans le groupe' })
       }
       if (err.constraint === 'group_members_device_id_fkey') {
@@ -174,7 +300,7 @@ export default async function nativeGroupsRoute(fastify) {
       throw err
     }
 
-    const target = device_id ? `device:${device_id}` : `user:${user_id}`
+    const target = device_id ? `device:${device_id}` : member_group_id ? `group:${member_group_id}` : `user:${user_id}`
     await logAudit(fastify.db, fastify.log, { action: 'group_member_added', byUser, target: grp[0].name, details: { target } })
     reply.code(201).send(row)
   })
@@ -208,72 +334,50 @@ export default async function nativeGroupsRoute(fastify) {
     const name  = String(req.body?.name        ?? '').trim()
     const desc  = String(req.body?.description ?? '').trim() || null
     const color = String(req.body?.color       ?? 'slate').trim()
+    const recursive = req.body?.recursive !== false   // défaut : importe aussi les sous-groupes
     if (!name)                          return reply.code(400).send({ error: 'name requis' })
     if (!GROUP_COLORS.includes(color))  return reply.code(400).send({ error: 'Couleur invalide' })
 
-    // Résolution des membres Entra (devices + users) en parallèle
-    let hostnames, userIds
-    try {
-      ;[hostnames, userIds] = await Promise.all([
-        fastify.graph.getGroupDeviceHostnames(entra_group_id),
-        fastify.graph.getGroupUserIds(entra_group_id),
-      ])
-    } catch (err) { return reply.code(502).send({ error: `Graph: ${err.message}` }) }
-
-    const { rows: devices } = await fastify.db.query(
-      `SELECT id FROM devices WHERE hostname = ANY($1::text[])`, [hostnames]
+    // Racine déjà importée ?
+    const { rows: [dup] } = await fastify.db.query(
+      'SELECT name FROM groups WHERE entra_group_id = $1', [entra_group_id]
     )
+    if (dup) return reply.code(409).send({ error: `Ce groupe Entra est déjà importé sous le nom "${dup.name}"` })
 
     const byUser = fastify.getUserIdentity(req).displayName
+    const seen  = new Map()
+    const stats = { groups_created: 0, devices: 0, users: 0, unmatched: 0 }
 
-    // Créer le groupe natif
-    let group
+    const client = await fastify.db.connect()
+    let rootId
     try {
-      const r = await fastify.db.query(
-        `INSERT INTO groups (name, description, color, source, entra_group_id, created_by, updated_by)
-         VALUES ($1,$2,$3,'entra',$4,$5,$5)
-         RETURNING id, name, description, color, source, entra_group_id, created_at`,
-        [name, desc, color, entra_group_id, byUser]
-      )
-      group = r.rows[0]
+      await client.query('BEGIN')
+      rootId = await importEntraTree(fastify, client, {
+        entraGroupId: entra_group_id, name, description: desc, color, byUser, recursive, mode: 'import', seen, stats,
+      })
+      await client.query('COMMIT')
     } catch (err) {
+      await client.query('ROLLBACK').catch(() => {})
+      if (/^Graph/.test(err.message)) return reply.code(502).send({ error: err.message })
       if (err.constraint === 'groups_name_key') return reply.code(409).send({ error: 'Un groupe avec ce nom existe déjà' })
-      if (err.constraint === 'groups_entra_group_id_uniq') {
-        const { rows: [existing] } = await fastify.db.query(
-          'SELECT name FROM groups WHERE entra_group_id = $1', [entra_group_id]
-        )
-        return reply.code(409).send({ error: `Ce groupe Entra est déjà importé sous le nom "${existing?.name ?? '?'}"` })
-      }
       throw err
+    } finally {
+      client.release()
     }
 
-    // Importer devices
-    for (const d of devices) {
-      await fastify.db.query(
-        `INSERT INTO group_members (group_id, device_id, added_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-        [group.id, d.id, byUser]
-      )
-    }
-    // Importer users
-    for (const uid of userIds) {
-      await fastify.db.query(
-        `INSERT INTO group_members (group_id, user_id, added_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-        [group.id, uid, byUser]
-      )
-    }
-
+    const { rows: [group] } = await fastify.db.query(
+      'SELECT id, name, description, color, source, entra_group_id, created_at FROM groups WHERE id = $1', [rootId]
+    )
     await logAudit(fastify.db, fastify.log, {
-      action: 'group_imported_from_entra',
-      byUser,
-      target: name,
-      details: { entra_group_id, devices_imported: devices.length, users_imported: userIds.length, unmatched: hostnames.length - devices.length },
+      action: 'group_imported_from_entra', byUser, target: name,
+      details: { entra_group_id, recursive, ...stats },
     })
-
     reply.code(201).send({
       ...group,
-      devices_imported: devices.length,
-      users_imported: userIds.length,
-      unmatched: hostnames.length - devices.length,
+      devices_imported: stats.devices,
+      users_imported:   stats.users,
+      nested_groups:    Math.max(0, stats.groups_created - 1),
+      unmatched:        stats.unmatched,
     })
   })
 
@@ -287,54 +391,37 @@ export default async function nativeGroupsRoute(fastify) {
     if (!grp) return reply.code(404).send({ error: 'Groupe introuvable' })
     if (!grp.entra_group_id) return reply.code(409).send({ error: 'Ce groupe n\'est pas lié à un groupe Entra' })
 
-    let hostnames, userIds
-    try {
-      ;[hostnames, userIds] = await Promise.all([
-        fastify.graph.getGroupDeviceHostnames(grp.entra_group_id),
-        fastify.graph.getGroupUserIds(grp.entra_group_id),
-      ])
-    } catch (err) { return reply.code(502).send({ error: `Graph: ${err.message}` }) }
-
-    const { rows: devices } = await fastify.db.query(
-      `SELECT id FROM devices WHERE hostname = ANY($1::text[])`, [hostnames]
-    )
-    const deviceIds = devices.map(r => r.id)
+    const recursive = req.body?.recursive !== false   // défaut : resync aussi les sous-groupes
     const byUser = fastify.getUserIdentity(req).displayName
+    const seen  = new Map()
+    const stats = { groups_created: 0, devices: 0, users: 0, unmatched: 0 }
 
-    // Full-replace devices + users dans une transaction
+    // Full-replace récursif (groupe + sous-groupes) dans une transaction.
     const client = await fastify.db.connect()
     try {
       await client.query('BEGIN')
-      await client.query(`DELETE FROM group_members WHERE group_id = $1 AND device_id IS NOT NULL`, [grp.id])
-      await client.query(`DELETE FROM group_members WHERE group_id = $1 AND user_id   IS NOT NULL`, [grp.id])
-      for (const id of deviceIds) {
-        await client.query(
-          `INSERT INTO group_members (group_id, device_id, added_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-          [grp.id, id, byUser]
-        )
-      }
-      for (const uid of userIds) {
-        await client.query(
-          `INSERT INTO group_members (group_id, user_id, added_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-          [grp.id, uid, byUser]
-        )
-      }
+      await importEntraTree(fastify, client, {
+        entraGroupId: grp.entra_group_id, name: grp.name, byUser, recursive, mode: 'sync', seen, stats,
+      })
       await client.query('COMMIT')
     } catch (err) {
-      await client.query('ROLLBACK')
+      await client.query('ROLLBACK').catch(() => {})
+      if (/^Graph/.test(err.message)) return reply.code(502).send({ error: err.message })
       throw err
     } finally {
       client.release()
     }
 
     await logAudit(fastify.db, fastify.log, {
-      action: 'group_synced_from_entra',
-      byUser,
-      target: grp.name,
-      details: { devices_synced: deviceIds.length, users_synced: userIds.length, unmatched: hostnames.length - deviceIds.length },
+      action: 'group_synced_from_entra', byUser, target: grp.name,
+      details: { recursive, ...stats },
     })
-
-    reply.send({ devices_synced: deviceIds.length, users_synced: userIds.length, unmatched: hostnames.length - deviceIds.length })
+    reply.send({
+      devices_synced: stats.devices,
+      users_synced:   stats.users,
+      nested_groups:  stats.groups_created,
+      unmatched:      stats.unmatched,
+    })
   })
 
   // ─── POST /api/groups/:id/detach-entra ───────────────────────────────────

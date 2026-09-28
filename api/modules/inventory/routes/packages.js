@@ -1,5 +1,5 @@
 import { getGroupDeviceHostnames } from '../../core/lib/graph.js'
-import { resolveGroupMembers } from '../../groups/lib/groups.js'
+import { resolveGroupDeviceIds } from '../../groups/lib/groups.js'
 import { SNAPSHOT_COLUMNS, SNAPSHOT_UPSERT, snapshotSelect } from '../lib/deployment-snapshots.js'
 
 // Gestion des packages déployables (winget ou script PowerShell)
@@ -372,8 +372,8 @@ export default async function packagesRoute(fastify) {
 
     } else if (scope === 'native_group') {
       if (!native_group_id) return reply.code(400).send({ error: 'native_group_id requis pour scope=native_group' })
-      const { devices } = await resolveGroupMembers(fastify.db, native_group_id)
-      resolvedDeviceIds = devices.map(d => d.device_id)
+      // Récursif : inclut les postes des sous-groupes (groupes imbriqués).
+      resolvedDeviceIds = await resolveGroupDeviceIds(fastify.db, native_group_id)
       if (!resolvedDeviceIds.length) return reply.code(400).send({ error: 'Groupe natif vide ou ne contient aucun poste' })
 
     } else if (scope === 'all') {

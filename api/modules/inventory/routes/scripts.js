@@ -1,6 +1,6 @@
 import { isIP } from 'node:net'
 import { Client } from 'ssh2'
-import { resolveGroupMembers } from '../../groups/lib/groups.js'
+import { resolveGroupDeviceIds } from '../../groups/lib/groups.js'
 import { scriptOutputForDb } from '../lib/script-output.js'
 import { hostKeyGuard } from '../../remote/lib/ssh-host-key.js'
 
@@ -180,8 +180,8 @@ export default async function scriptsRoute(fastify) {
 
     let targetIds = deviceIds || []
     if (native_group_id) {
-      const { devices: groupDevices } = await resolveGroupMembers(fastify.db, native_group_id)
-      targetIds = groupDevices.map(d => d.device_id)
+      // Récursif : inclut les postes des sous-groupes (groupes imbriqués).
+      targetIds = await resolveGroupDeviceIds(fastify.db, native_group_id)
       if (!targetIds.length) return reply.code(400).send({ error: 'Groupe natif vide ou ne contient aucun poste' })
     }
 

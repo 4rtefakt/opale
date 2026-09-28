@@ -60,6 +60,7 @@ export async function renderGroupes(container) {
   window.groupesSelectGroup     = groupesSelectGroup
   window.groupesAddDevice       = groupesAddDevice
   window.groupesAddUser         = groupesAddUser
+  window.groupesAddGroup        = groupesAddGroup
   window.groupesRemoveMember    = groupesRemoveMember
   window.groupesImportFromEntra = groupesImportFromEntra
   window.groupesSyncFromEntra   = groupesSyncFromEntra
@@ -384,6 +385,23 @@ function renderDetail(panel) {
       </button>
     </div>` : ''
 
+  const subGroups = g.groups || []
+  const groupRows = subGroups.length === 0
+    ? `<tr><td colspan="3" style="text-align:center;color:var(--text-tertiary);padding:12px">Aucun sous-groupe</td></tr>`
+    : subGroups.map(sg => {
+        const sp = PALETTE[sg.color] || PALETTE.slate
+        return `
+        <tr style="cursor:pointer" onclick="groupesSelectGroup(${jsArg(sg.group_id)})">
+          <td style="padding:6px 8px"><span style="width:10px;height:10px;border-radius:50%;background:${sp.bg};display:inline-block"></span></td>
+          <td style="padding:6px 8px;font-weight:500">${esc(sg.name || '—')}
+            <span style="font-size:11px;color:var(--text-tertiary);font-weight:400">· ${sg.member_count} membre(s)${sg.source === 'entra' ? ' · Entra' : ''}</span></td>
+          <td style="padding:6px 8px;text-align:right" onclick="event.stopPropagation()">
+            <button class="icon-btn icon-btn-danger" title="Retirer du groupe" onclick="groupesRemoveMember(${jsArg(g.id)},${jsArg(sg.member_id)})">
+              <i class="ti ti-x" style="font-size:12px"></i></button>
+          </td>
+        </tr>`
+      }).join('')
+
   panel.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
       <span style="width:12px;height:12px;border-radius:50%;background:${p.bg};flex-shrink:0"></span>
@@ -395,6 +413,18 @@ function renderDetail(panel) {
       </button>
     </div>
     ${entraActions}
+
+    <div style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <span style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary)">Sous-groupes (${subGroups.length})</span>
+        <button class="btn btn-sm" onclick="groupesAddGroup(${jsArg(g.id)})">
+          <i class="ti ti-plus"></i> Ajouter un groupe
+        </button>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tbody>${groupRows}</tbody>
+      </table>
+    </div>
 
     <div style="margin-bottom:14px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
@@ -575,6 +605,46 @@ async function groupesAddUser(groupId) {
   }
 }
 
+async function groupesAddGroup(groupId) {
+  let groups = []
+  try { groups = await window.api.getGroups() } catch (_) {}
+  const alreadyIn = new Set((_detail?.groups || []).map(g => g.group_id))
+  const options = groups
+    .filter(g => g.id !== groupId && !alreadyIn.has(g.id))
+    .map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`)
+    .join('')
+
+  if (!options) {
+    showModal(`
+      <p class="modal-title">Ajouter un sous-groupe</p>
+      <p style="font-size:13px;color:var(--text-secondary)">Aucun autre groupe disponible.</p>
+      <div class="modal-footer"><button class="btn" onclick="closeModal()">Fermer</button></div>`)
+    return
+  }
+  showModal(`
+    <p class="modal-title">Ajouter un sous-groupe</p>
+    <p style="font-size:12px;color:var(--text-secondary);margin:0 0 8px">Le groupe choisi devient membre : ses postes et utilisateurs sont inclus (récursivement).</p>
+    <select class="form-input" id="grp-add-group" style="width:100%">
+      <option value="">— Choisir un groupe —</option>
+      ${options}
+    </select>
+    <div id="grp-add-err" style="color:var(--red);font-size:12px;margin-top:6px;display:none"></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal()">Annuler</button>
+      <button class="btn btn-primary" onclick="groupesDoAddGroup(${jsArg(groupId)})">Ajouter</button>
+    </div>`)
+  window.groupesDoAddGroup = async (gid) => {
+    const member_group_id = document.getElementById('grp-add-group').value
+    if (!member_group_id) { showModalError('Sélectionnez un groupe'); return }
+    try {
+      await window.api.addGroupMember(gid, { member_group_id })
+      closeModal()
+      showToast('Sous-groupe ajouté', 'success')
+      await loadGroups(true)
+    } catch (e) { showModalError(e.message) }
+  }
+}
+
 async function groupesRemoveMember(groupId, memberId) {
   try {
     await window.api.removeGroupMember(groupId, memberId)
@@ -615,6 +685,10 @@ function groupesImportFromEntra() {
         <label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">Couleur</label>
         <select class="form-input" id="grp-entra-color" style="width:100%">${colorOptions}</select>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="grp-entra-recursive" checked>
+        Importer aussi les sous-groupes imbriqués
+      </label>
     </div>
     <div class="modal-footer">
       <button class="btn" onclick="closeModal()">Annuler</button>
@@ -667,14 +741,16 @@ function groupesImportFromEntra() {
     const name           = nameInput.value.trim()
     const description    = document.getElementById('grp-entra-desc').value.trim() || undefined
     const color          = document.getElementById('grp-entra-color').value
+    const recursive      = document.getElementById('grp-entra-recursive').checked
 
     if (!entra_group_id) { showFieldError('grp-entra-id', 'Sélectionnez un groupe Entra'); return }
     if (!name)           { showFieldError('grp-entra-name', 'Nom requis'); return }
 
     try {
-      const res = await window.api.importGroupFromEntra({ entra_group_id, name, description, color })
+      const res = await window.api.importGroupFromEntra({ entra_group_id, name, description, color, recursive })
       closeModal()
-      showToast(`Groupe importé — ${res.devices_imported} poste(s) importé(s)${res.unmatched ? `, ${res.unmatched} non trouvé(s)` : ''}`, 'success')
+      const nested = res.nested_groups ? ` · ${res.nested_groups} sous-groupe(s)` : ''
+      showToast(`Groupe importé — ${res.devices_imported} poste(s)${nested}${res.unmatched ? ` · ${res.unmatched} non trouvé(s)` : ''}`, 'success')
       await loadGroups()
     } catch (e) {
       showModalError(e.message)
@@ -685,7 +761,8 @@ function groupesImportFromEntra() {
 async function groupesSyncFromEntra(groupId) {
   try {
     const res = await window.api.syncGroupFromEntra(groupId)
-    showToast(`Synchronisé — ${res.devices_synced} poste(s), ${res.users_synced} utilisateur(s)${res.unmatched ? ` (${res.unmatched} postes non trouvés)` : ''}`, 'success')
+    const nested = res.nested_groups ? ` · ${res.nested_groups} sous-groupe(s)` : ''
+    showToast(`Synchronisé — ${res.devices_synced} poste(s), ${res.users_synced} utilisateur(s)${nested}${res.unmatched ? ` (${res.unmatched} non trouvés)` : ''}`, 'success')
     await loadGroups(true)
   } catch (e) {
     showToast(e.message, 'error')

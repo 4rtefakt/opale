@@ -1,8 +1,8 @@
 // POST /api/agent/checkin — réponse qui propose une mise à jour d'agent :
-//   - agent < 2.15.1 : il retourne sans traiter les commandes ni les
+//   - agent < 2.15.3 : il retourne sans traiter les commandes ni les
 //     déploiements de cette réponse (mise à jour réussie ou non) : rien n'y
 //     est réservé, les travaux restent 'pending' pour un checkin suivant ;
-//   - agent ≥ 2.15.1 : il exécute les travaux puis applique la mise à jour :
+//   - agent ≥ 2.15.3 : il exécute les travaux puis applique la mise à jour :
 //     réservation normale.
 //
 // Binaire et clé de signature jetables (dossier temporaire, AGENT_GO_DIR) :
@@ -97,9 +97,9 @@ async function statusOf(table, id) {
   return r.status
 }
 
-test('POST /checkin — mise à jour proposée à un agent < 2.15.1 : aucun travail réservé dans cette réponse', { skip: SKIP }, async () => {
+test('POST /checkin — mise à jour proposée à un agent < 2.15.3 : aucun travail réservé dans cette réponse', { skip: SKIP }, async () => {
   // 2.15.0 : build de main antérieur au correctif (même comportement que 2.14).
-  for (const [hostname, version] of [['PC-UPD-214', '2.14.0'], ['PC-UPD-2150', '2.15.0']]) {
+  for (const [hostname, version] of [['PC-UPD-214', '2.14.0'], ['PC-UPD-2150', '2.15.0'], ['PC-UPD-2151', '2.15.1'], ['PC-UPD-2152', '2.15.2']]) {
     const { device, secret, dep, scriptId } = await deviceWithJobs(hostname)
 
     const res = await goAgentCheckin(secret, device.hostname, version)
@@ -120,10 +120,10 @@ test('POST /checkin — mise à jour proposée à un agent < 2.15.1 : aucun trav
   }
 })
 
-test('POST /checkin — mise à jour proposée à un agent ≥ 2.15.1 : travaux réservés avec la mise à jour', { skip: SKIP }, async () => {
-  const { device, secret, dep, scriptId } = await deviceWithJobs('PC-UPD-2151')
+test('POST /checkin — mise à jour proposée à un agent ≥ 2.15.3 : travaux réservés avec la mise à jour', { skip: SKIP }, async () => {
+  const { device, secret, dep, scriptId } = await deviceWithJobs('PC-UPD-2153')
 
-  const res = await goAgentCheckin(secret, device.hostname, '2.15.1')
+  const res = await goAgentCheckin(secret, device.hostname, '2.15.3')
   assert.equal(res.statusCode, 200, res.body)
   const body = res.json()
   assert.equal(body.agent_update?.latest_version, SERVED_VERSION)

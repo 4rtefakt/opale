@@ -3,6 +3,7 @@ import alertSnoozesRoute from './routes/alert-snoozes.js'
 import complianceRoute   from './routes/compliance.js'
 import rapportsRoute     from './routes/rapports.js'
 import networkRoute      from './routes/network.js'
+import reviewsRoute      from './routes/reviews.js'
 
 export default {
   name: 'monitoring',
@@ -14,5 +15,6 @@ export default {
     await fastify.register(complianceRoute,   { prefix: '/api' })
     await fastify.register(rapportsRoute,     { prefix: '/api/rapports' })
     await fastify.register(networkRoute,      { prefix: '/api/network' })
+    await fastify.register(reviewsRoute,      { prefix: '/api/reviews' })
   }
 }

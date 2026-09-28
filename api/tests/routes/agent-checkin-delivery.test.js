@@ -4,9 +4,9 @@
 //     le serveur doit l'accepter sans effet de bord (pas de changement de
 //     statut, pas de doublon, pas de 4xx/5xx qui ferait renvoyer l'agent
 //     indéfiniment) ;
-//   - un agent < 2.15.1 ignore la réponse du re-checkin qui remonte ses
+//   - un agent < 2.15.3 ignore la réponse du re-checkin qui remonte ses
 //     résultats de déploiement : rien n'y est réservé, les travaux partent
-//     au checkin suivant (un agent ≥ 2.15.1 traite cette réponse).
+//     au checkin suivant (un agent ≥ 2.15.3 traite cette réponse).
 //     Réponse portant une mise à jour : cf. agent-checkin-update-jobs.test.js ;
 //   - détection post-install : le déploiement envoyé porte son package_id ;
 //     un agent ≤ 2.14 qui remonte le deployment_id à sa place voit sa
@@ -212,11 +212,11 @@ async function followUpScenario(hostname, agentVersion) {
   return { device, secret, version, eleventh, scriptId, body: followUp.json() }
 }
 
-test('POST /checkin — agent < 2.15.1 : rien n\'est réservé dans la réponse du re-checkin (ignorée), tout part au checkin suivant', { skip: SKIP }, async () => {
+test('POST /checkin — agent < 2.15.3 : rien n\'est réservé dans la réponse du re-checkin (ignorée), tout part au checkin suivant', { skip: SKIP }, async () => {
   // 2.15.0 : build de main antérieur au correctif (même comportement que
   // 2.14). Version absente (agent qui ne la remonte pas) : traitée comme
   // ancienne.
-  const cases = [['PC-FOLLOWUP-214', '2.14.0'], ['PC-FOLLOWUP-2150', '2.15.0'], ['PC-FOLLOWUP-NOVER', null]]
+  const cases = [['PC-FOLLOWUP-214', '2.14.0'], ['PC-FOLLOWUP-2150', '2.15.0'], ['PC-FOLLOWUP-2151', '2.15.1'], ['PC-FOLLOWUP-2152', '2.15.2'], ['PC-FOLLOWUP-NOVER', null]]
   for (const [hostname, agentVersion] of cases) {
     const { secret, version, eleventh, scriptId, body } = await followUpScenario(hostname, agentVersion)
     assert.deepEqual(body.deployments, [], `${hostname} : déploiement réservé dans une réponse ignorée`)
@@ -233,8 +233,8 @@ test('POST /checkin — agent < 2.15.1 : rien n\'est réservé dans la réponse 
   }
 })
 
-test('POST /checkin — agent ≥ 2.15.1 : le re-checkin réserve le lot suivant (réponse traitée)', { skip: SKIP }, async () => {
-  const { eleventh, scriptId, body } = await followUpScenario('PC-FOLLOWUP-2151', '2.15.1')
+test('POST /checkin — agent ≥ 2.15.3 : le re-checkin réserve le lot suivant (réponse traitée)', { skip: SKIP }, async () => {
+  const { eleventh, scriptId, body } = await followUpScenario('PC-FOLLOWUP-2153', '2.15.3')
   assert.deepEqual(body.deployments.map(d => d.deployment_id), [eleventh.id])
   assert.deepEqual(body.commands.map(c => c.id), [scriptId])
   assert.equal(await statusOf('deployments', eleventh.id), 'running')
@@ -242,7 +242,7 @@ test('POST /checkin — agent ≥ 2.15.1 : le re-checkin réserve le lot suivant
 
 test('POST /checkin — version non strictement X.Y.Z (rc, x, espace…) : traitée comme un ancien agent', { skip: SKIP }, async () => {
   // Une partie non numérique valait 0 : « 2.16.0-rc1 » ou « 2.16 » passaient
-  // pour ≥ 2.15.1. Dans le doute, rien n'est réservé dans une réponse que
+  // pour ≥ 2.15.3. Dans le doute, rien n'est réservé dans une réponse que
   // l'agent pourrait ignorer (les travaux attendent un checkin sans résultat).
   const followUpOf = (hostname, agent_version) => ({
     hostname, agent_version,
@@ -258,7 +258,7 @@ test('POST /checkin — version non strictement X.Y.Z (rc, x, espace…) : trait
     assert.deepEqual(res.json().deployments, [], `« ${version} » : déploiement réservé dans une réponse peut-être ignorée`)
     assert.equal(await statusOf('deployments', dep.id), 'pending')
   }
-  // Témoin : version stricte ≥ 2.15.1.
+  // Témoin : version stricte ≥ 2.15.3.
   const device = await seedDevice(db, { hostname: 'PC-SEMVER-STRICT' })
   const { secret } = await seedAgentToken(db, { deviceId: device.id })
   const { dep } = await snapshottedDeployment(device.id, 'Pkg Semver Strict')
@@ -287,9 +287,9 @@ test('POST /checkin — déploiement livré avec le package_id de son package (d
   assert.equal(sent.deployment_id, dep.id)
   assert.equal(sent.package_id, pkg.id)
 
-  // Agent ≥ 2.15.1 : détection post-install remontée avec ce package_id.
+  // Agent ≥ 2.15.3 : détection post-install remontée avec ce package_id.
   const ack = await checkin(secret, {
-    hostname: device.hostname, agent_version: '2.15.1',
+    hostname: device.hostname, agent_version: '2.15.3',
     deployment_results: [{ deployment_id: dep.id, exit_code: 0, output: 'ok' }],
     detection_results:  [{ package_id: sent.package_id, detected: true }],
   })
@@ -335,7 +335,7 @@ test('POST /checkin — résultat d\'une tentative précédente (claim_token pé
   const device = await seedDevice(db, { hostname: 'PC-CLAIM' })
   const { secret } = await seedAgentToken(db, { deviceId: device.id })
   const { dep } = await snapshottedDeployment(device.id, 'Pkg Claim')
-  const agent = { hostname: device.hostname, agent_version: '2.15.1' }
+  const agent = { hostname: device.hostname, agent_version: '2.15.3' }
 
   const first = await checkin(secret, agent)
   const token1 = first.json().deployments[0].claim_token

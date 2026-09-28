@@ -19,6 +19,7 @@ let schema, db, release, fastify, jwt
 const graph = {
   getGroupDeviceHostnames: async () => [],
   getGroupUserIds: async () => [],
+  getGroupNestedGroups: async () => [],
 }
 
 before(async () => {
@@ -427,6 +428,38 @@ test('POST /import-from-entra — succès : devices + users importés + audit lo
 
   graph.getGroupDeviceHostnames = async () => []
   graph.getGroupUserIds         = async () => []
+})
+
+test('POST /import-from-entra — sous-groupes Entra importés et liés (récursif par défaut)', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-ENTRA-NESTED' })
+  graph.getGroupDeviceHostnames = async (gid) => gid === 'entra-gid-child' ? [device.hostname] : []
+  graph.getGroupUserIds         = async () => []
+  graph.getGroupNestedGroups    = async (gid) => gid === 'entra-gid-parent'
+    ? [{ id: 'entra-gid-child', displayName: 'G-nested-child', description: null }]
+    : []
+  const token = await adminToken('oid-entra-imp-nested')
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/groups/import-from-entra',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { entra_group_id: 'entra-gid-parent', name: 'G-nested-parent', color: 'teal' },
+  })
+  assert.equal(res.statusCode, 201, res.body)
+  assert.equal(res.json().nested_groups, 1)
+  assert.equal(res.json().devices_imported, 1)
+
+  const { rows: [child] } = await db.query("SELECT id FROM groups WHERE entra_group_id = 'entra-gid-child'")
+  assert.ok(child)
+  const { rows: links } = await db.query(
+    'SELECT member_group_id FROM group_members WHERE group_id = $1 AND member_group_id IS NOT NULL', [res.json().id]
+  )
+  assert.deepEqual(links.map(r => r.member_group_id), [child.id])
+
+  // Le poste du sous-groupe fait partie des membres effectifs du parent.
+  const { resolveGroupDeviceIds } = await import('../../modules/groups/lib/groups.js')
+  assert.deepEqual(await resolveGroupDeviceIds(db, res.json().id), [device.id])
+
+  graph.getGroupDeviceHostnames = async () => []
+  graph.getGroupNestedGroups    = async () => []
 })
 
 test('POST /import-from-entra — entra_group_id déjà importé → 409', { skip: SKIP }, async () => {
