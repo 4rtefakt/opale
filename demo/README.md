@@ -71,7 +71,8 @@ npx wrangler login          # ou CLOUDFLARE_API_TOKEN=… dans l'environnement
 npm run deploy
 ```
 
-Le Worker est publié sur `https://opale-demo.<sous-domaine>.workers.dev` ;
+L'instance de référence est publiée sur https://opale-demo.4rtefakt.workers.dev.
+Un nouveau déploiement sort sur `https://opale-demo.<sous-domaine>.workers.dev` ;
 un domaine personnalisé se branche dans le tableau de bord Cloudflare
 (Workers → opale-demo → Settings → Domains & Routes). Renseigner ensuite
 l'URL dans `landing/index.html` (`DEMO_URL`) pour afficher le bouton

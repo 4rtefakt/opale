@@ -15,8 +15,10 @@
 
 ## Try it
 
-A public demo with fictional data runs on a Cloudflare Worker: the real
-front-end, a fake in-memory API, no account needed and nothing saved. See
+**[opale-demo.4rtefakt.workers.dev](https://opale-demo.4rtefakt.workers.dev)** —
+a public demo with fictional data on a Cloudflare Worker: the real front-end,
+a fake in-memory API, no account needed and nothing saved (mobile version at
+[/mobile.html](https://opale-demo.4rtefakt.workers.dev/mobile.html)). See
 [`demo/README.md`](demo/README.md) to run it locally (`cd demo && npm run dev`)
 or to deploy your own copy.
 

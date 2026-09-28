@@ -8,7 +8,7 @@
 <script>
   // Démo publique (demo/README.md) : renseigner l'URL du Worker déployé pour
   // afficher le bouton « Try the live demo ». Vide = bouton masqué.
-  const DEMO_URL = ''
+  const DEMO_URL = 'https://opale-demo.4rtefakt.workers.dev'
   document.addEventListener('DOMContentLoaded', () => {
     const a = document.getElementById('demo-cta')
     if (a && DEMO_URL) { a.href = DEMO_URL; a.hidden = false }
