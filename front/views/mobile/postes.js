@@ -9,8 +9,9 @@ export async function renderPostes(el) {
   _selected = new Set()
 
   el.innerHTML = `
-    <div class="m-header">
-      <h1>${t('mobile.postes.title')} <span id="m-postes-count" style="font-size:12px;font-weight:400;color:var(--text-tertiary)"></span></h1>
+    <div class="m-header big">
+      <div class="m-head-text"><h1>${t('mobile.postes.title')}<span id="m-postes-count" class="m-count"></span></h1></div>
+      <div class="m-actions"><button class="m-icon-btn" onclick="window.location.hash='#/search'" title="${esc(t('mobile.dashboard.search_title'))}"><i class="ti ti-search"></i></button></div>
     </div>
     <div class="m-search">
       <i class="ti ti-search"></i>
@@ -22,16 +23,16 @@ export async function renderPostes(el) {
       <button class="m-filter-pill" data-f="offline"  onclick="mPostesSetFilter('offline',this)">${t('mobile.postes.filter.offline')}</button>
       <button class="m-filter-pill" data-f="critical" onclick="mPostesSetFilter('critical',this)">${t('mobile.postes.filter.critical')}</button>
     </div>
-    <div class="m-scroll-list" id="m-postes-list" style="padding-bottom:84px">
-      <div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>
+    <div class="m-scroll-list" id="m-postes-list" style="padding-bottom:96px">
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>
 
     <!-- Action bar (apparaît en mode sélection) -->
     <div id="m-postes-actionbar" style="
-      position:fixed;left:0;right:0;bottom:56px;
-      background:var(--bg-secondary);border-top:1px solid var(--border);
+      position:fixed;left:0;right:0;bottom:calc(62px + env(safe-area-inset-bottom));
+      background:var(--bg-secondary);border-top:0.5px solid var(--border-md);
       padding:10px 12px;display:none;flex-direction:column;gap:8px;
-      box-shadow:0 -4px 12px rgba(0,0,0,.25);z-index:50;
+      box-shadow:0 -8px 24px rgba(0,0,0,.25);z-index:50;
     ">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <span id="m-postes-actionbar-count" style="font-size:13px;font-weight:600">0 ${t('mobile.postes.bulk.selected')}</span>
@@ -118,7 +119,7 @@ function renderList() {
   if (!list) return
 
   if (!filtered.length) {
-    list.innerHTML = `<div style="text-align:center;color:var(--text-tertiary);padding:30px">${t('mobile.postes.empty')}</div>`
+    list.innerHTML = `<div class="m-empty"><span>${t('mobile.postes.empty')}</span></div>`
     return
   }
 
@@ -132,12 +133,9 @@ function renderList() {
                    : d.status === 'warn' ? 'mobile.device.status.warn'
                    : 'mobile.device.status.offline'
     const isSelected = _selected.has(d.id)
-    const selectedStyle = isSelected
-      ? 'border:1.5px solid var(--blue);background:rgba(59,130,246,.08)'
-      : ''
     return `
-      <div class="m-device-card" data-id="${esc(d.id)}" style="position:relative;${selectedStyle}">
-        ${isSelected ? `<i class="ti ti-circle-check-filled" style="position:absolute;top:6px;right:6px;color:var(--blue);font-size:18px;background:var(--bg-secondary);border-radius:50%"></i>` : ''}
+      <div class="m-device-card ${isSelected ? 'sel' : ''}" data-id="${esc(d.id)}" style="position:relative${isSelected ? ';border-color:var(--blue);background:var(--primary-bg)' : ''}">
+        ${isSelected ? `<i class="ti ti-circle-check-filled" style="position:absolute;top:6px;right:6px;color:var(--blue);font-size:18px"></i>` : ''}
         <div class="m-status-dot" style="background:${dotColor}"></div>
         <div class="m-device-info">
           <div class="m-device-name">${esc(d.hostname)}</div>
@@ -147,7 +145,7 @@ function renderList() {
         <div class="m-device-right">
           <span class="m-pill m-pill-${pillCls}">${t(pillKey)}</span>
           ${pct > 0 ? `<div class="m-disk-mini"><div class="m-disk-mini-fill" style="width:${pct}%;background:${barColor}"></div></div>` : ''}
-          <span style="font-size:10px;color:var(--text-tertiary)">${formatRelative(d.last_seen)}</span>
+          <span class="when">${formatRelative(d.last_seen)}</span>
         </div>
       </div>`
   }).join('')

@@ -1,23 +1,26 @@
+// Page focus ticket (mobile) — UN ticket, rien d'autre. En haut : le titre
+// (toucher pour renommer), l'état lisible et la file « x sur n ». Puis quatre
+// faits (demandeur, poste, assigné, prochaine étape), la description repliée,
+// la conversation, et en bas une seule action évidente (« Terminé & suivant »)
+// au-dessus du composer note / réponse par mail. Le reste (personnes, postes,
+// tags, pièces jointes, lien) vit dans le menu ⋮.
+
+import {
+  shortName, initialsOf, ticketRef, statusLabel, prioLabel, nextLabel, dayLabel, dayKey,
+  cleanLegacyHtml, queueNext, queuePosition, TAG_PALETTE, TAG_COLOR_KEYS,
+} from '/views/ticket-shared.js'
+
 let _tk = null
 let _allTags = []  // cache local des tags du référentiel
 let _aiBusy = false
+let _container = null
 
 // jsArg() fourni globalement par mobile-app.js (window.jsArg) — pour passer
 // une string user-controlled en argument d'un onclick="fn('…')" inline.
 const mJsArg = window.jsArg
-
-const M_TK_TAG_PALETTE = {
-  slate:  '#475569', blue:   '#2563eb', green:  '#059669', amber:  '#d97706',
-  red:    '#dc2626', violet: '#7c3aed', pink:   '#db2777', teal:   '#0d9488',
-}
-const M_TK_TAG_COLOR_KEYS = Object.keys(M_TK_TAG_PALETTE)
-
-function shortName(name) {
-  if (!name) return ''
-  const parts = String(name).trim().split(/\s+/).filter(Boolean)
-  if (parts.length <= 1) return parts[0] || ''
-  return parts[0] + ' ' + parts[parts.length - 1][0].toUpperCase() + '.'
-}
+// Couleur de fond par nom de couleur de tag (TAG_PALETTE porte { bg, fg }).
+const M_TK_TAG_PALETTE = Object.fromEntries(Object.entries(TAG_PALETTE).map(([k, v]) => [k, v.bg]))
+const M_TK_TAG_COLOR_KEYS = TAG_COLOR_KEYS
 
 function formatBytes(n) {
   if (n == null) return ''
@@ -27,159 +30,142 @@ function formatBytes(n) {
 }
 
 export async function renderTicket(el, id) {
+  _container = el
+  const pos = queuePosition(id)
+  const backHash = pos?.from === 'today' ? '#/today' : '#/tickets'
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="window.location.hash='#/tickets'">
-        <i class="ti ti-arrow-left"></i>
-      </button>
+      <button class="m-icon-btn ghost" onclick="window.location.hash='${backHash}'" title="${esc(t('tickets.focus.back'))}"><i class="ti ti-arrow-left"></i></button>
       <h1 id="m-tk-title" onclick="mEditTitle()" title="${esc(t('mobile.ticket.menu.edit_title'))}"
-          style="flex:1;margin:0;font-size:15px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">…</h1>
-      <span id="m-tk-badge"></span>
-      <button class="m-icon-btn" id="m-tk-menu-btn" onclick="mTicketMenu()" title="Actions">
-        <i class="ti ti-dots-vertical"></i>
-      </button>
+          style="font-size:16px;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.25">…</h1>
+      <button class="m-icon-btn" id="m-tk-menu-btn" onclick="mTicketMenu()" title="${esc(t('tickets.focus.details'))}"><i class="ti ti-dots-vertical"></i></button>
     </div>
-    <div id="m-tk-thread" class="m-scroll" style="flex:1">
-      <div style="display:flex;justify-content:center;padding:40px"><div class="m-spinner"></div></div>
+    <div class="m-focus-bar" id="m-tk-bar"></div>
+    <div id="m-tk-thread" class="m-scroll" style="padding-top:0;gap:0">
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>
+    <div class="m-actionrow" id="m-tk-actions" style="display:none"></div>
     <div id="m-tk-reply-bar" class="m-reply-bar" style="display:none">
-      <button class="m-send-btn" id="m-reply-mode-btn" style="background:var(--bg-tertiary);color:var(--text-secondary)"
-        onclick="mToggleReplyMode()" title="${esc(t('mobile.ticket.reply_mode_hint'))}">
-        <i class="ti ti-note"></i>
-      </button>
-      <textarea class="m-reply-input" id="m-reply-txt" rows="1" placeholder="${t('mobile.ticket.reply_placeholder')}"
-        oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px'"></textarea>
-      <button class="m-send-btn" id="m-ai-btn" style="background:rgba(124,58,237,0.15);color:#7c3aed"
-        onclick="mAiSuggest()" title="${esc(t('mobile.ticket.ai.suggest'))}">
-        <i class="ti ti-sparkles"></i>
-      </button>
-      <button class="m-send-btn" onclick="mSendReply(this)">
-        <i class="ti ti-send"></i>
-      </button>
+      <button class="m-send-btn mode" id="m-reply-mode-btn" onclick="mToggleReplyMode()" title="${esc(t('mobile.ticket.reply_mode_hint'))}"><i class="ti ti-note"></i></button>
+      <textarea class="m-reply-input" id="m-reply-txt" rows="1" placeholder="${esc(t('mobile.ticket.reply_placeholder'))}"
+        oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
+      <button class="m-send-btn ai" id="m-ai-btn" onclick="mAiSuggest()" title="${esc(t('mobile.ticket.ai.suggest'))}"><i class="ti ti-sparkles"></i></button>
+      <button class="m-send-btn" id="m-send-btn" onclick="mSendReply(this)"><i class="ti ti-send"></i></button>
     </div>`
 
+  Object.assign(window, {
+    mSendReply, mToggleReplyMode, mEditDescription, mCopyLink, mTicketMenu, mCloseSheetThen,
+    mChangePriority, mEditTitle, mOpenTags, mToggleTag, mPickTagColor, mCreateTag, mAssignSelf, mUnassign,
+    mAiSuggest, mUseSuggestion, mDeleteSuggestion, mSendMsgByMail, mRetrySend, mOpenAssignee, mOpenPeople,
+    mOpenDevices, mOpenAttachments, mStatusMenu, mSetStatus, mDoneNext, mFocusComposer,
+  })
+
   try {
-    _tk = await window.api.getTicket(id)
+    const tk = await window.api.getTicket(id)
+    if (tk.merged_into) { window.showToast(t('tickets.merge.redirected').replace('{target}', ticketRef(tk.merged_into)), 'info'); window.location.hash = `#/ticket/${tk.merged_into}`; return }
+    _tk = tk
+    if (!_tk.has_inbound_mail) _replyMode = 'note'
     renderTicketBody()
   } catch (err) {
-    document.getElementById('m-tk-thread').innerHTML = mErrorBox(err.message, () => renderTicket(el, id))
+    document.getElementById('m-tk-thread').innerHTML = mErrorBox(err?.status === 404 ? t('tickets.focus.not_found') : err.message, () => renderTicket(el, id))
   }
-
-  window.mSendReply       = mSendReply
-  window.mToggleReplyMode = mToggleReplyMode
-  window.mEditDescription = mEditDescription
-  window.mCopyLink        = mCopyLink
-  window.mTicketMenu      = mTicketMenu
-  window.mCloseSheetThen  = mCloseSheetThen   // requis par les onclick="mCloseSheetThen(...)" du menu
-  window.mChangePriority  = mChangePriority
-  window.mEditTitle       = mEditTitle
-  window.mOpenTags        = mOpenTags
-  window.mToggleTag       = mToggleTag
-  window.mPickTagColor    = mPickTagColor
-  window.mCreateTag       = mCreateTag
-  window.mAssignSelf      = mAssignSelf
-  window.mUnassign        = mUnassign
-  window.mAiSuggest       = mAiSuggest
-  window.mUseSuggestion   = mUseSuggestion
-  window.mDeleteSuggestion = mDeleteSuggestion
-  window.mSendMsgByMail   = mSendMsgByMail
-  window.mRetrySend       = mRetrySend
-  window.mOpenAssignee    = mOpenAssignee
-  window.mOpenPeople      = mOpenPeople
-  window.mOpenDevices     = mOpenDevices
-  window.mOpenAttachments = mOpenAttachments
 }
 
 function renderTicketBody() {
   const tk = _tk
+  const me = window.appState?.user
+  const nx = nextLabel(tk)
+  const pos = queuePosition(tk.id)
+  const resolved = tk.status === 'resolved'
+  const closed   = tk.status === 'closed'
+  const devCount = (tk.related_devices || []).length
+  const peopleCount = (tk.related_users || []).length
+  const attCount = (tk.attachments || []).length
 
   document.getElementById('m-tk-title').textContent = tk.title
 
-  const pillCls = tk.status === 'resolved' ? 'm-pill-on' : tk.status === 'in_progress' ? 'm-pill-warn' : 'm-pill-off'
-  const pillTxt = statusLabel(tk.status)
-  document.getElementById('m-tk-badge').outerHTML =
-    `<span id="m-tk-badge" class="m-pill ${pillCls}">${pillTxt}</span>`
+  const pillCls = nx.cls === 'needs' ? 'm-pill-needs' : nx.cls === 'crit' ? 'm-pill-crit' : nx.cls === 'done' ? 'm-pill-on' : 'm-pill-off'
+  const bar = document.getElementById('m-tk-bar')
+  if (bar) bar.innerHTML = `
+    <button class="m-pill ${pillCls}" onclick="mStatusMenu()">${esc(nx.label)} <i class="ti ti-chevron-down" style="font-size:11px"></i></button>
+    <button class="m-pill ${tk.priority === 'critical' ? 'm-pill-crit' : tk.priority === 'high' ? 'm-pill-warn' : 'm-pill-off'}" onclick="mChangePriority()"><i class="ti ti-flag" style="font-size:11px"></i> ${esc(prioLabel(tk.priority))}</button>
+    ${tk.has_inbound_mail ? `<span class="m-pill m-pill-info"><i class="ti ti-mail" style="font-size:11px"></i> ${esc(t('mobile.ticket.via_mail', { n: tk.inbound_mail_count || 0 }))}</span>` : ''}
+    <span class="m-queue">${pos ? esc(t('tickets.focus.queue', { i: pos.index, n: pos.total })) : `#${ticketRef(tk.id)}`}</span>`
 
-  const resolved = tk.status === 'resolved'
-  const closed   = tk.status === 'closed'
-
-  const devCount = (tk.related_devices || []).length
-  const attCount = (tk.attachments || []).length
-  const peopleCount = (tk.related_users || []).length
+  // Conversation avec séparateurs de jour.
+  let lastDay = ''
+  const conv = (tk.messages || []).map(m => {
+    const k = dayKey(m.created_at)
+    const sep = k && k !== lastDay ? `<div class="m-day">${esc(dayLabel(m.created_at))}</div>` : ''
+    lastDay = k || lastDay
+    return sep + renderMsg(m)
+  }).join('')
 
   const thread = document.getElementById('m-tk-thread')
   thread.innerHTML = `
-    <!-- Méta -->
-    <div style="padding:12px 16px;border-bottom:0.5px solid var(--border);display:flex;flex-direction:column;gap:6px">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        ${tk.hostname ? `<span style="font-size:12px;background:var(--bg-secondary);padding:2px 8px;border-radius:4px"><i class="ti ti-device-laptop" style="font-size:11px"></i> ${esc(tk.hostname)}${devCount > 1 ? ` +${devCount - 1}` : ''}</span>` : ''}
-        <span style="font-size:12px;background:var(--bg-secondary);padding:2px 8px;border-radius:4px;color:${prioColor(tk.priority)}">${prioLabel(tk.priority)}</span>
-        ${tk.is_auto ? `<span style="font-size:12px;background:var(--bg-secondary);padding:2px 8px;border-radius:4px;color:var(--blue)">Auto</span>` : ''}
-        <span style="font-size:12px;background:var(--bg-secondary);padding:2px 8px;border-radius:4px;cursor:pointer" onclick="mOpenPeople()">
-          <i class="ti ti-user" style="font-size:11px;opacity:0.7"></i> ${tk.requester_name ? esc(shortName(tk.requester_name)) : t('mobile.ticket.people.no_requester')}${peopleCount > 1 ? ` +${peopleCount - 1}` : ''}
-        </span>
-        <span style="font-size:12px;background:var(--bg-secondary);padding:2px 8px;border-radius:4px;cursor:pointer" onclick="mOpenAssignee()">
-          <i class="ti ti-user-check" style="font-size:11px;opacity:0.7"></i> ${tk.assigned_to_name ? esc(shortName(tk.assigned_to_name)) : t('mobile.ticket.assignee.none')}
-        </span>
-        ${attCount ? `<span style="font-size:12px;background:var(--bg-secondary);padding:2px 8px;border-radius:4px;cursor:pointer" onclick="mOpenAttachments()"><i class="ti ti-paperclip" style="font-size:11px;opacity:0.7"></i> ${attCount}</span>` : ''}
-      </div>
-      ${(tk.tags || []).length ? `
-      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-        ${tk.tags.map(g => `<span style="font-size:11px;background:${M_TK_TAG_PALETTE[g.color] || M_TK_TAG_PALETTE.slate};color:#fff;padding:1px 8px;border-radius:8px">${esc(g.name)}</span>`).join('')}
-      </div>` : ''}
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
-        <span style="font-size:11px;color:var(--text-tertiary)"><span style="font-family:monospace">#${mTicketRef(tk.id)}</span> · ${formatRelative(tk.created_at)}${tk.created_by_name ? ' · ' + esc(tk.created_by_name) : ''}${tk.has_inbound_mail ? ` · <i class="ti ti-mail" style="font-size:11px"></i> ${t('mobile.ticket.via_mail', { n: tk.inbound_mail_count || 0 })}` : ''}</span>
-        ${closed
-          ? `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('resolved',this)">${t('mobile.ticket.menu.unarchive')}</button>`
-          : !resolved
-          ? `<div style="display:flex;gap:6px">
-              ${tk.status === 'open'        ? `<button class="m-pill m-pill-warn" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('in_progress',this)">En cours</button>` : ''}
-              ${tk.status === 'in_progress' ? `<button class="m-pill m-pill-off"  style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('open',this)">Ouvrir</button>` : ''}
-              <button class="m-pill m-pill-on" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('resolved',this)">Résoudre</button>
-             </div>`
-          : `<div style="display:flex;gap:6px">
-              <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('open',this)">Rouvrir</button>
-              <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('closed',this)">${t('mobile.ticket.menu.archive')}</button>
-             </div>`
-        }
-      </div>
+    <div class="m-facts" style="padding:4px 0 8px">
+      <button class="m-fact" onclick="mOpenPeople()">
+        <span class="k">${esc(t('tickets.info.requester'))}${peopleCount > 1 ? ` +${peopleCount - 1}` : ''}</span>
+        <span class="v ${tk.requester_name ? '' : 'empty'}"><i class="ti ti-user"></i>${esc(tk.requester_name || t('tickets.no_requester'))}</span>
+      </button>
+      <button class="m-fact" onclick="mOpenDevices()">
+        <span class="k">${esc(t('tickets.info.device'))}${devCount > 1 ? ` +${devCount - 1}` : ''}</span>
+        <span class="v ${tk.hostname ? '' : 'empty'}"><i class="ti ti-device-laptop"></i>${esc(tk.hostname || t('tickets.no_device'))}</span>
+      </button>
+      <button class="m-fact" onclick="${tk.assigned_to_entra_id ? 'mOpenAssignee()' : 'mAssignSelf(this)'}">
+        <span class="k">${esc(t('tickets.info.assignee'))}</span>
+        <span class="v ${tk.assigned_to_name ? '' : ''}" ${tk.assigned_to_name ? '' : 'style="color:var(--blue-text)"'}><i class="ti ti-user-check"></i>${esc(tk.assigned_to_name ? (tk.assigned_to_entra_id === me?.entraId ? t('today.why.you') : shortName(tk.assigned_to_name)) : t('tickets.assign_self'))}</span>
+      </button>
+      <button class="m-fact" onclick="mOpenTags()">
+        <span class="k">${esc(t('tickets.info.tags'))}</span>
+        <span class="v ${(tk.tags || []).length ? '' : 'empty'}">${(tk.tags || []).length
+          ? tk.tags.slice(0, 3).map(g => `<span class="m-ticket-tag" style="background:${M_TK_TAG_PALETTE[g.color] || M_TK_TAG_PALETTE.slate}">${esc(g.name)}</span>`).join('')
+          : `<i class="ti ti-tag"></i>${esc(t('mobile.ticket.tags.add_short'))}`}</span>
+      </button>
     </div>
+    <details class="m-details" style="margin-bottom:10px" ${tk.description && (tk.messages || []).length <= 1 ? 'open' : ''}>
+      <summary><i class="ti ti-align-left"></i> ${esc(t('mobile.ticket.description'))}${tk.description ? '' : ` <span class="n">— ${esc(t('mobile.ticket.description_none'))}</span>`}
+        <span class="m-icon-btn ghost sm" style="margin-left:auto" onclick="event.preventDefault();mEditDescription()"><i class="ti ti-pencil"></i></span><i class="ti ti-chevron-down chev" style="margin-left:0"></i></summary>
+      <div class="body">${tk.description ? esc(cleanLegacyHtml(tk.description)) : `<span class="m-muted">${esc(t('mobile.ticket.description_empty'))}</span>`}</div>
+    </details>
+    ${attCount ? `<button class="m-row" style="border:0.5px solid var(--border);border-radius:var(--radius-sm);margin-bottom:10px;background:var(--bg-secondary)" onclick="mOpenAttachments()"><i class="ti ti-paperclip"></i><span class="main"><span class="ttl">${esc(t('mobile.ticket.menu.attachments'))}</span></span><span class="end">${attCount} <i class="ti ti-chevron-right chev"></i></span></button>` : ''}
+    <div id="m-tk-msgs" style="display:flex;flex-direction:column;gap:2px;margin:0 -16px;padding-bottom:8px">
+      ${conv || `<div class="m-empty" style="padding:20px"><span>${esc(t('tickets.msg.none'))}</span></div>`}
+    </div>`
 
-    <!-- Description -->
-    <div style="padding:12px 16px;background:var(--bg-secondary);border-bottom:0.5px solid var(--border)" onclick="mEditDescription()">
-      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary);margin-bottom:4px;display:flex;justify-content:space-between">
-        <span>${t('mobile.ticket.description')}</span><i class="ti ti-pencil"></i>
-      </div>
-      ${tk.description
-        ? `<div style="font-size:12px;color:var(--text-secondary);white-space:pre-wrap;max-height:160px;overflow:auto">${esc(tk.description)}</div>`
-        : `<div style="font-size:12px;color:var(--text-tertiary);font-style:italic">${t('mobile.ticket.description_empty')}</div>`}
-    </div>
+  // Une action évidente en bas : Terminé (& suivant) ; sur un résolu : rouvrir /
+  // archiver ; sur une archive : désarchiver.
+  const actions = document.getElementById('m-tk-actions')
+  if (actions) {
+    actions.style.display = 'flex'
+    actions.innerHTML = closed
+      ? `<button class="m-btn" onclick="mSetStatus('resolved', this)"><i class="ti ti-archive-off"></i> ${esc(t('tickets.unarchive'))}</button>`
+      : resolved
+        ? `<button class="m-btn" onclick="mSetStatus('open', this)"><i class="ti ti-refresh"></i> ${esc(t('tickets.reopen'))}</button>
+           <button class="m-btn" onclick="mSetStatus('closed', this)"><i class="ti ti-archive"></i> ${esc(t('tickets.archive'))}</button>`
+        : `${nx.key === 'needs' ? `<button class="m-btn needs" onclick="mFocusComposer('mail')"><i class="ti ti-mail-forward"></i> ${esc(t('today.act.reply'))}</button>` : ''}
+           <button class="m-btn ${nx.key === 'needs' ? '' : 'primary'}" onclick="mDoneNext(this)" title="${esc(t('tickets.focus.done_hint'))}"><i class="ti ti-check"></i> ${esc(pos && pos.total > 1 ? t('tickets.focus.done_next') : t('tickets.focus.done'))}</button>`
+  }
 
-    <!-- Messages -->
-    <div id="m-tk-msgs" style="display:flex;flex-direction:column;gap:0;padding-bottom:8px">
-      ${(tk.messages || []).map(m => renderMsg(m)).join('')}
-    </div>
-  `
-
-  window.mSetStatus = mSetStatus
-
-  // Barre de réponse (masquée sur un ticket archivé) + bascule note / mail
   const replyBar = document.getElementById('m-tk-reply-bar')
   if (replyBar) replyBar.style.display = closed ? 'none' : 'flex'
   paintReplyMode()
 
-  // Scroll en bas
+  // Le dernier message est ce qu'on lit en premier ; les faits sont un geste plus haut.
   thread.scrollTop = thread.scrollHeight
+}
+
+function isInbound(m) {
+  if (m.type !== 'comment') return false
+  const tk = _tk
+  if ((tk?.mail_authors || []).includes(m.author)) return true
+  if (tk?.requester_name && m.author === tk.requester_name) return true
+  return /@/.test(m.author || '') || m.author === 'Email'
 }
 
 function renderMsg(m) {
   if (m.type === 'system' || m.type === 'resolution') {
-    return `
-    <div style="text-align:center;padding:8px 16px">
-      <span style="font-size:11px;color:var(--text-tertiary);background:var(--bg-secondary);padding:3px 10px;border-radius:20px">
-        ${esc(m.content)} · ${formatRelative(m.created_at)}
-      </span>
-    </div>`
+    return `<div class="m-msg-sys"><span>${esc(m.content)} · ${esc(formatRelative(m.created_at))}</span></div>`
   }
 
   // Brouillon IA : bulle distincte (jamais envoyée par mail). Actions :
@@ -187,59 +173,45 @@ function renderMsg(m) {
   if (m.type === 'ai_suggestion') {
     return `
     <div class="m-msg">
-      <div class="m-av" style="width:28px;height:28px;font-size:11px;flex-shrink:0;background:rgba(124,58,237,0.15);color:#7c3aed">
-        <i class="ti ti-sparkles" style="font-size:14px"></i>
-      </div>
-      <div class="m-msg-bubble" style="background:rgba(124,58,237,0.08);border:0.5px solid rgba(124,58,237,0.25)">
-        <div class="m-msg-author" style="color:#7c3aed">${esc(m.author)} · ${t('mobile.ticket.ai.badge')}</div>
+      <div class="m-av" style="width:28px;height:28px;font-size:11px;background:var(--purple-bg);color:var(--purple)"><i class="ti ti-sparkles" style="font-size:14px"></i></div>
+      <div class="m-msg-bubble m-msg-bubble-ai">
+        <div class="m-msg-author" style="color:var(--purple)">${esc(t('mobile.ticket.ai.badge'))} · ${esc(t('tickets.focus.ai_draft'))}</div>
         <div class="m-msg-content">${esc(m.content)}</div>
-        <div style="display:flex;gap:8px;margin-top:6px">
-          <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" data-content="${esc(m.content)}" onclick="mUseSuggestion(this)">
-            <i class="ti ti-corner-up-left" style="font-size:11px"></i> ${t('mobile.ticket.ai.use')}
-          </button>
-          <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px;color:var(--text-tertiary)" onclick="mDeleteSuggestion('${esc(m.id)}',this)">
-            <i class="ti ti-x" style="font-size:11px"></i> ${t('mobile.ticket.ai.discard')}
-          </button>
+        <div class="m-msg-actions">
+          <button class="m-pill m-pill-off" data-content="${esc(m.content)}" onclick="mUseSuggestion(this)"><i class="ti ti-corner-up-left" style="font-size:11px"></i> ${esc(t('mobile.ticket.ai.use'))}</button>
+          <button class="m-pill m-pill-off" style="color:var(--text-tertiary)" onclick="mDeleteSuggestion('${esc(m.id)}',this)"><i class="ti ti-x" style="font-size:11px"></i> ${esc(t('mobile.ticket.ai.discard'))}</button>
         </div>
-        <div class="m-msg-time">${formatRelative(m.created_at)}</div>
+        <div class="m-msg-time">${esc(formatRelative(m.created_at))}</div>
       </div>
     </div>`
   }
 
-  const av   = (m.author || '?').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
   const isMe = m.author === window.appState?.user?.displayName
-  // Reçu par mail : auteur = expéditeur d'un mail entrant du ticket.
-  const inbound = m.type === 'comment' && !isMe && (
-    (_tk?.mail_authors || []).includes(m.author) || m.author === _tk?.requester_name || /@/.test(m.author || ''))
+  const inbound = !isMe && isInbound(m)
 
-  // Badge d'état + action mail selon le type (note interne / commentaire
-  // public) et l'état d'envoi. Aligné avec la sémantique desktop (Phase 1c).
-  let badge = ''
-  let action = ''
+  let badge = '', action = ''
   if (m.type === 'internal_note') {
-    badge = `<span class="m-msg-badge" style="background:var(--bg-tertiary);color:var(--text-secondary)"><i class="ti ti-note" style="font-size:10px"></i> ${t('mobile.ticket.msg.internal')}</span>`
-    if (_tk?.has_inbound_mail) {
-      action = `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSendMsgByMail('${esc(m.id)}',this)"><i class="ti ti-mail-forward" style="font-size:11px"></i> ${t('mobile.ticket.msg.send_by_mail')}</button>`
-    }
+    badge = `<span class="m-msg-badge" style="background:var(--amber-bg);color:var(--amber)"><i class="ti ti-lock" style="font-size:10px"></i> ${esc(t('mobile.ticket.msg.internal'))}</span>`
+    if (_tk?.has_inbound_mail) action = `<button class="m-pill m-pill-off" onclick="mSendMsgByMail('${esc(m.id)}',this)"><i class="ti ti-mail-forward" style="font-size:11px"></i> ${esc(t('mobile.ticket.msg.send_by_mail'))}</button>`
   } else if (inbound) {
-    badge = `<span class="m-msg-badge" style="background:rgba(59,130,246,.15);color:var(--blue-text)"><i class="ti ti-mail-down" style="font-size:10px"></i> ${t('mobile.ticket.msg.received_by_mail')}</span>`
+    badge = `<span class="m-msg-badge" style="background:var(--primary-bg);color:var(--blue-text)"><i class="ti ti-mail-down" style="font-size:10px"></i> ${esc(t('mobile.ticket.msg.received_by_mail'))}</span>`
   } else if (m.type === 'comment' && m.outbound_failed_at) {
-    badge = `<span class="m-msg-badge" style="background:rgba(239,68,68,.15);color:var(--red)" title="${esc(m.outbound_error || '')}"><i class="ti ti-mail-x" style="font-size:10px"></i> ${t('mobile.ticket.msg.send_failed')}</span>`
-    action = `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mRetrySend('${esc(m.id)}',this)"><i class="ti ti-refresh" style="font-size:11px"></i> ${t('mobile.ticket.msg.retry_send')}</button>`
+    badge = `<span class="m-msg-badge" style="background:var(--red-bg);color:var(--red)" title="${esc(m.outbound_error || '')}"><i class="ti ti-mail-x" style="font-size:10px"></i> ${esc(t('mobile.ticket.msg.send_failed'))}</span>`
+    action = `<button class="m-pill m-pill-off" onclick="mRetrySend('${esc(m.id)}',this)"><i class="ti ti-refresh" style="font-size:11px"></i> ${esc(t('mobile.ticket.msg.retry_send'))}</button>`
   } else if (m.type === 'comment' && !m.email_sent_at) {
-    badge = `<span class="m-msg-badge" style="background:rgba(245,158,11,.15);color:var(--amber)"><i class="ti ti-mail-fast" style="font-size:10px"></i> ${t('mobile.ticket.msg.sending')}</span>`
+    badge = `<span class="m-msg-badge" style="background:var(--amber-bg);color:var(--amber)"><i class="ti ti-mail-fast" style="font-size:10px"></i> ${esc(t('mobile.ticket.msg.sending'))}</span>`
   } else if (m.type === 'comment' && m.email_sent_at) {
-    badge = `<span class="m-msg-badge" style="background:rgba(34,197,94,.15);color:var(--green)"><i class="ti ti-mail-check" style="font-size:10px"></i> ${t('mobile.ticket.msg.sent_by_mail')}</span>`
+    badge = `<span class="m-msg-badge" style="background:var(--green-bg);color:var(--green)"><i class="ti ti-mail-check" style="font-size:10px"></i> ${esc(t('mobile.ticket.msg.sent_by_mail'))}</span>`
   }
 
   return `
   <div class="m-msg ${isMe ? 'm-msg-me' : ''}">
-    ${!isMe ? `<div class="m-av" style="width:28px;height:28px;font-size:11px;flex-shrink:0${inbound ? ';background:var(--green)' : ''}">${esc(av)}</div>` : ''}
+    ${!isMe ? `<div class="m-av" style="width:28px;height:28px;font-size:11px${inbound ? ';background:var(--green)' : ''}">${esc(initialsOf(m.author))}</div>` : ''}
     <div class="m-msg-bubble ${isMe ? 'm-msg-bubble-me' : ''} ${inbound ? 'm-msg-bubble-in' : ''} ${m.type === 'internal_note' ? 'm-msg-bubble-note' : ''}">
       ${!isMe ? `<div class="m-msg-author">${esc(m.author)}</div>` : ''}
       <div class="m-msg-content">${esc(m.content)}</div>
-      ${badge || action ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:5px">${badge}${action}</div>` : ''}
-      <div class="m-msg-time">${formatRelative(m.created_at)}</div>
+      ${badge || action ? `<div class="m-msg-actions">${badge}${action}</div>` : ''}
+      <div class="m-msg-time">${esc(formatRelative(m.created_at))}</div>
     </div>
   </div>`
 }
@@ -259,18 +231,25 @@ function paintReplyMode() {
   if (!canMail) _replyMode = 'note'
   const btn = document.getElementById('m-reply-mode-btn')
   const input = document.getElementById('m-reply-txt')
+  const send = document.getElementById('m-send-btn')
   if (btn) {
     btn.style.display = canMail ? 'flex' : 'none'
-    btn.innerHTML = _replyMode === 'mail' ? '<i class="ti ti-mail-forward"></i>' : '<i class="ti ti-note"></i>'
-    btn.style.background = _replyMode === 'mail' ? 'rgba(34,197,94,.18)' : 'var(--bg-tertiary)'
-    btn.style.color = _replyMode === 'mail' ? 'var(--green)' : 'var(--text-secondary)'
+    btn.classList.toggle('mail', _replyMode === 'mail')
+    btn.innerHTML = _replyMode === 'mail' ? '<i class="ti ti-mail-forward"></i>' : '<i class="ti ti-lock"></i>'
   }
   if (input) input.placeholder = _replyMode === 'mail' ? t('mobile.ticket.reply_placeholder_mail') : t('mobile.ticket.reply_placeholder')
+  if (send) send.innerHTML = _replyMode === 'mail' ? '<i class="ti ti-send"></i>' : '<i class="ti ti-note"></i>'
 }
 function mToggleReplyMode() {
   _replyMode = _replyMode === 'mail' ? 'note' : 'mail'
   paintReplyMode()
   window.showToast(_replyMode === 'mail' ? t('mobile.ticket.reply_mode_mail') : t('mobile.ticket.reply_mode_note'), 'info')
+}
+// « Répondre » : bascule le composer en mode mail et lui donne le focus.
+function mFocusComposer(mode) {
+  if (mode === 'mail' && _tk?.has_inbound_mail) _replyMode = 'mail'
+  paintReplyMode()
+  document.getElementById('m-reply-txt')?.focus()
 }
 
 async function mSendReply(btn) {
@@ -280,22 +259,61 @@ async function mSendReply(btn) {
   const mail = _replyMode === 'mail' && _tk?.has_inbound_mail
   await withBusy(btn, async () => {
     try {
-      const msg = await window.api.addMessage(_tk.id, { content })
+      const msg = mail
+        ? await window.api.addMessage(_tk.id, { content })
+        : await window.api.addMessage(_tk.id, { content, type: 'internal_note' })
       if (mail) await window.api.sendMessageByMail(_tk.id, msg.id)
       input.value = ''
       input.style.height = 'auto'
       await reload()
-      if (mail) window.showToast(t('mobile.ticket.msg.send_queued'), 'success')
+      window.showToast(mail ? t('tickets.toast.mail_queued') : t('tickets.toast.note_added'), 'success')
+    } catch (err) { window.showToast(err?.body?.error || t('mobile.ticket.toast.error'), 'error') }
+  })
+}
+
+// « Terminé » : résout, puis passe au suivant de la file s'il y en a un, sinon
+// revient d'où l'on vient (Aujourd'hui ou la liste).
+async function mDoneNext(btn) {
+  const pos = queuePosition(_tk.id)
+  await withBusy(btn, async () => {
+    try {
+      await window.api.updateTicket(_tk.id, { status: 'resolved' })
+      window.showToast(t('tickets.toast.resolved'), 'success')
+      // Ticket hors file (ouvert depuis une fiche poste, un lien…) : on reste ici.
+      const next = pos ? queueNext(_tk.id) : null
+      if (next) window.location.hash = `#/ticket/${next}`
+      else if (pos) window.location.hash = pos.from === 'today' ? '#/today' : '#/tickets'
+      else await reload()
     } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
   })
 }
 
+function mStatusMenu() {
+  const tk = _tk
+  const opts = [
+    ['open',        'ti-circle',      t('tickets.status.open'),        t('tickets.focus.st.open_sub')],
+    ['in_progress', 'ti-player-play', t('tickets.status.in_progress'), t('tickets.focus.st.progress_sub')],
+    ['resolved',    'ti-check',       t('tickets.status.resolved'),    t('tickets.focus.st.resolved_sub')],
+    ['closed',      'ti-archive',     t('tickets.status.closed'),      t('tickets.focus.st.closed_sub')],
+  ]
+  window.mShowSheet(`
+    <div class="m-sheet-title">${esc(t('tickets.status.change'))}</div>
+    <div style="padding:6px 0 0">
+      ${opts.map(([val, icon, lbl, sub]) => `
+      <button class="m-menu-row" onclick="mCloseSheetThen(()=>mSetStatus('${val}'))">
+        <i class="ti ${icon}" style="color:${tk.status === val ? 'var(--blue-text)' : 'var(--text-tertiary)'}"></i>
+        <span style="flex:1;min-width:0"><div>${esc(lbl)}</div><div style="font-size:11.5px;color:var(--text-tertiary)">${esc(sub)}</div></span>
+        ${tk.status === val ? '<i class="ti ti-check" style="color:var(--blue-text)"></i>' : ''}
+      </button>`).join('')}
+    </div>`)
+}
+
 function mEditDescription() {
   window.mShowSheet(`
-    <div class="m-sheet-title">${t('mobile.ticket.description')}</div>
-    <div style="padding:0 4px;display:flex;flex-direction:column;gap:12px">
-      <textarea class="m-input" id="m-edit-desc" rows="7" style="resize:none">${esc(_tk.description || '')}</textarea>
-      <button class="m-btn-primary" onclick="mSaveDescription(this)">${t('mobile.ticket.save')}</button>
+    <div class="m-sheet-title">${esc(t('mobile.ticket.description'))}</div>
+    <div style="padding:12px 0 0;display:flex;flex-direction:column;gap:12px">
+      <textarea class="m-input" id="m-edit-desc" rows="7" style="resize:none">${esc(cleanLegacyHtml(_tk.description || ''))}</textarea>
+      <button class="m-btn-primary" onclick="mSaveDescription(this)">${esc(t('mobile.ticket.save'))}</button>
     </div>`)
   setTimeout(() => document.getElementById('m-edit-desc')?.focus(), 100)
   window.mSaveDescription = async (btn) => {
@@ -317,15 +335,12 @@ async function mCopyLink() {
   catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
 }
 
-function mTicketRef(id) { return String(id || '').replace(/-/g, '').slice(0, 8).toUpperCase() }
-
 async function mSetStatus(status, btn) {
   await withBusy(btn, async () => {
     try {
       await window.api.updateTicket(_tk.id, { status })
       await reload()
-      const labels = { resolved: 'Ticket résolu ✓', open: 'Ticket rouvert', in_progress: 'En cours', closed: t('mobile.ticket.toast.archived') }
-      window.showToast(labels[status] || 'Mis à jour', status === 'resolved' ? 'success' : 'info')
+      window.showToast(t('tickets.toast.status_set', { s: statusLabel(status) }), status === 'resolved' ? 'success' : 'info')
     } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
   })
 }
@@ -354,7 +369,7 @@ function mUseSuggestion(btn) {
   if (!input) return
   input.value = btn.dataset.content || ''
   input.style.height = 'auto'
-  input.style.height = Math.min(input.scrollHeight, 100) + 'px'
+  input.style.height = Math.min(input.scrollHeight, 120) + 'px'
   input.focus()
 }
 
@@ -403,47 +418,34 @@ function mTicketMenu() {
 
   window.mShowSheet(`
     <div class="m-sheet-title">${esc(tk.title)}</div>
-    <div style="display:flex;flex-direction:column;gap:2px;padding:0 4px">
-
-      ${tk.status === 'open' ? `
-      <button class="m-menu-row" onclick="mCloseSheetThen(()=>mSetStatus('in_progress'))">
-        <i class="ti ti-player-play" style="color:var(--amber)"></i> ${t('mobile.ticket.menu.set_in_progress')}
-      </button>` : ''}
-      ${tk.status === 'in_progress' ? `
-      <button class="m-menu-row" onclick="mCloseSheetThen(()=>mSetStatus('open'))">
-        <i class="ti ti-player-stop" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.set_open')}
-      </button>` : ''}
-      ${tk.status !== 'resolved' && tk.status !== 'closed' ? `
-      <button class="m-menu-row" onclick="mCloseSheetThen(()=>mSetStatus('resolved'))">
-        <i class="ti ti-check" style="color:var(--green)"></i> ${t('mobile.ticket.menu.resolve')}
-      </button>` : `
-      <button class="m-menu-row" onclick="mCloseSheetThen(()=>mSetStatus('open'))">
-        <i class="ti ti-refresh" style="color:var(--blue)"></i> ${t('mobile.ticket.menu.reopen')}
-      </button>`}
-
-      <div style="height:1px;background:var(--border);margin:6px 0"></div>
+    <div style="padding:6px 0 0">
+      <button class="m-menu-row" onclick="mCloseSheetThen(mStatusMenu)">
+        <i class="ti ti-progress" style="color:var(--blue-text)"></i> ${t('tickets.status.change')}
+        <span class="end">${esc(statusLabel(tk.status))}</span>
+      </button>
+      <div class="m-menu-sep"></div>
 
       <button class="m-menu-row" onclick="mCloseSheetThen(mOpenAssignee)">
-        <i class="ti ti-user-check" style="color:var(--blue)"></i> ${t('mobile.ticket.menu.assignee')}
-        <span style="margin-left:auto;font-size:11px;color:var(--text-tertiary)">${tk.assigned_to_name ? esc(shortName(tk.assigned_to_name)) : t('mobile.ticket.assignee.none')}</span>
+        <i class="ti ti-user-check" style="color:var(--blue-text)"></i> ${t('mobile.ticket.menu.assignee')}
+        <span class="end">${tk.assigned_to_name ? esc(shortName(tk.assigned_to_name)) : t('mobile.ticket.assignee.none')}</span>
       </button>
 
       <button class="m-menu-row" onclick="mCloseSheetThen(mOpenPeople)">
         <i class="ti ti-users" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.people')}
-        ${peopleCount ? `<span style="margin-left:auto;font-size:11px;color:var(--text-tertiary)">${peopleCount}</span>` : ''}
+        ${peopleCount ? `<span class="end">${peopleCount}</span>` : ''}
       </button>
 
       <button class="m-menu-row" onclick="mCloseSheetThen(mOpenDevices)">
         <i class="ti ti-device-laptop" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.devices')}
-        ${devCount ? `<span style="margin-left:auto;font-size:11px;color:var(--text-tertiary)">${devCount}</span>` : ''}
+        ${devCount ? `<span class="end">${devCount}</span>` : ''}
       </button>
 
       <button class="m-menu-row" onclick="mCloseSheetThen(mOpenAttachments)">
         <i class="ti ti-paperclip" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.attachments')}
-        ${attCount ? `<span style="margin-left:auto;font-size:11px;color:var(--text-tertiary)">${attCount}</span>` : ''}
+        ${attCount ? `<span class="end">${attCount}</span>` : ''}
       </button>
 
-      <div style="height:1px;background:var(--border);margin:6px 0"></div>
+      <div class="m-menu-sep"></div>
 
       <button class="m-menu-row" onclick="mChangePriority()">
         <i class="ti ti-flag" style="color:${prioColor(tk.priority)}"></i> ${t('mobile.ticket.menu.priority')} — ${prioLabel(tk.priority)}
@@ -469,7 +471,7 @@ function mTicketMenu() {
 
       <button class="m-menu-row" onclick="mOpenTags()">
         <i class="ti ti-tag" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.tags')}
-        ${(tk.tags || []).length ? `<span style="margin-left:auto;font-size:11px;color:var(--text-tertiary)">${tk.tags.length}</span>` : ''}
+        ${(tk.tags || []).length ? `<span class="end">${tk.tags.length}</span>` : ''}
       </button>
 
     </div>`)
@@ -877,12 +879,12 @@ function mCloseSheetThen(fn) {
 
 function mChangePriority() {
   window.mShowSheet(`
-    <div class="m-sheet-title">Changer la priorité</div>
-    <div style="display:flex;flex-direction:column;gap:2px;padding:0 4px">
-      ${[['low','Basse','var(--text-tertiary)'],['normal','Normale','var(--text-secondary)'],['high','Haute','var(--amber)'],['critical','Critique','var(--red)']].map(([val, lbl, col]) => `
+    <div class="m-sheet-title">${esc(t('tickets.new.priority'))}</div>
+    <div style="padding:6px 0 0">
+      ${[['low','var(--text-tertiary)'],['normal','var(--text-secondary)'],['high','var(--amber)'],['critical','var(--red)']].map(([val, col]) => `
       <button class="m-menu-row ${_tk.priority === val ? 'active' : ''}" onclick="mSetPriority('${val}')">
-        <i class="ti ti-flag" style="color:${col}"></i> ${lbl}
-        ${_tk.priority === val ? '<i class="ti ti-check" style="margin-left:auto;color:var(--blue)"></i>' : ''}
+        <i class="ti ti-flag" style="color:${col}"></i> ${esc(prioLabel(val))}
+        ${_tk.priority === val ? '<i class="ti ti-check" style="margin-left:auto;color:var(--blue-text)"></i>' : ''}
       </button>`).join('')}
     </div>`)
   window.mSetPriority = mSetPriority
@@ -893,16 +895,16 @@ async function mSetPriority(priority) {
   try {
     await window.api.updateTicket(_tk.id, { priority })
     await reload()
-    window.showToast('Priorité mise à jour', 'success')
+    window.showToast(t('tickets.toast.priority_changed'), 'success')
   } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
 }
 
 function mEditTitle() {
   window.mShowSheet(`
-    <div class="m-sheet-title">Modifier le titre</div>
-    <div style="padding:0 4px;display:flex;flex-direction:column;gap:12px">
-      <input class="m-input" id="m-edit-title" value="${esc(_tk.title)}" autocomplete="off">
-      <button class="m-btn-primary" onclick="mSaveTitle(this)">Enregistrer</button>
+    <div class="m-sheet-title">${esc(t('mobile.ticket.menu.edit_title'))}</div>
+    <div style="padding:12px 0 0;display:flex;flex-direction:column;gap:12px">
+      <input class="m-input" id="m-edit-title" value="${esc(_tk.title)}" maxlength="200" autocomplete="off">
+      <button class="m-btn-primary" onclick="mSaveTitle(this)">${esc(t('btn.save'))}</button>
     </div>`)
   setTimeout(() => document.getElementById('m-edit-title')?.focus(), 100)
   window.mSaveTitle = async (btn) => {
@@ -913,7 +915,7 @@ function mEditTitle() {
         await window.api.updateTicket(_tk.id, { title })
         window.mCloseSheet()
         await reload()
-        window.showToast('Titre modifié', 'success')
+        window.showToast(t('tickets.toast.renamed'), 'success')
       } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
     })
   }
@@ -921,14 +923,6 @@ function mEditTitle() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function statusLabel(s) {
-  return s === 'resolved' ? 'Résolu' : s === 'in_progress' ? 'En cours' : s === 'proposed' ? 'Proposé'
-       : s === 'closed' ? 'Archivé' : s === 'merged' ? 'Fusionné' : 'Ouvert'
-}
-// Valeur inconnue échappée : priority est du texte libre côté API.
-function prioLabel(p) {
-  return p === 'low' ? 'Basse' : p === 'normal' ? 'Normale' : p === 'high' ? 'Haute' : p === 'critical' ? 'Critique' : esc(p || '—')
-}
 function prioColor(p) {
   return p === 'critical' ? 'var(--red)' : p === 'high' ? 'var(--amber)' : 'var(--text-tertiary)'
 }

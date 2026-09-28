@@ -44,7 +44,7 @@ test('validateMobileNav — rejette les éléments non-string', () => {
 })
 
 test('MOBILE_NAV_ROUTES — contient les routes attendues', () => {
-  for (const r of ['dashboard', 'postes', 'alertes', 'tickets', 'scripts', 'stock',
+  for (const r of ['today', 'dashboard', 'postes', 'alertes', 'tickets', 'scripts', 'stock',
                    'onboarding', 'rapports', 'audit', 'packages', 'conformite', 'ask']) {
     assert.ok(MOBILE_NAV_ROUTES.has(r), `manque ${r}`)
   }

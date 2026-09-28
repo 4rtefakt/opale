@@ -13,11 +13,9 @@ const mObJsArg = window.jsArg
 export async function renderOnboarding(el) {
   _filter = 'active'
   el.innerHTML = `
-    <div class="m-header">
-      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
-        <i class="ti ti-arrow-left"></i>
-      </button>
-      <h1 style="flex:1">${t('mobile.onboarding.title')}</h1>
+    <div class="m-header big">
+      <button class="m-icon-btn ghost" onclick="window.location.hash='#/menu'"><i class="ti ti-arrow-left"></i></button>
+      <div class="m-head-text"><h1>${t('mobile.onboarding.title')}</h1></div>
       <button class="m-icon-btn" onclick="mObNew('offboard')" title="${t('mobile.onboarding.btn.new_offboard')}">
         <i class="ti ti-user-minus"></i>
       </button>
@@ -31,7 +29,7 @@ export async function renderOnboarding(el) {
       <button class="m-filter-pill"        data-f="all"    onclick="mObSetFilter('all',this)">${t('mobile.onboarding.filter.all')}</button>
     </div>
     <div class="m-scroll-list" id="m-ob-list">
-      <div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   window.mObSetFilter = (f, btn) => {
@@ -55,7 +53,7 @@ export async function renderOnboarding(el) {
 async function loadOnboardings() {
   const list = document.getElementById('m-ob-list')
   if (!list) return
-  list.innerHTML = `<div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>`
+  list.innerHTML = `<div class="m-loading-row"><div class="m-spinner"></div></div>`
   try {
     const params = {}
     if (_filter === 'done') params.status = 'done'
@@ -73,7 +71,7 @@ function renderList() {
   if (!list) return
 
   if (!_items.length) {
-    list.innerHTML = `<div style="text-align:center;color:var(--text-tertiary);padding:30px">${t('mobile.onboarding.empty')}</div>`
+    list.innerHTML = `<div class="m-empty"><span>${t('mobile.onboarding.empty')}</span></div>`
     return
   }
 

@@ -6,17 +6,15 @@ export async function renderPackages(el) {
   _packages = []
 
   el.innerHTML = `
-    <div class="m-header">
-      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
-        <i class="ti ti-arrow-left"></i>
-      </button>
-      <h1>Packages</h1>
-      <button class="m-icon-btn" onclick="mPkgOpenCreate()">
+    <div class="m-header big">
+      <button class="m-icon-btn ghost" onclick="window.location.hash='#/menu'"><i class="ti ti-arrow-left"></i></button>
+      <div class="m-head-text"><h1>${esc(t('mobile.nav.route.packages'))}</h1></div>
+      <button class="m-icon-btn primary" onclick="mPkgOpenCreate()">
         <i class="ti ti-plus"></i>
       </button>
     </div>
     <div class="m-scroll-list" id="m-pkg-list" style="padding:12px;gap:10px">
-      <div style="display:flex;justify-content:center;padding:40px"><div class="m-spinner"></div></div>
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   window.mPkgOpenCreate = mPkgOpenCreate
@@ -55,7 +53,7 @@ function renderList() {
   const list = document.getElementById('m-pkg-list')
   if (!list) return
   if (!_packages.length) {
-    list.innerHTML = `<div style="text-align:center;color:var(--text-tertiary);padding:40px">Aucun package</div>`
+    list.innerHTML = `<div class="m-empty"><span>Aucun package</span></div>`
     return
   }
   list.innerHTML = _packages.map(p => {
@@ -94,7 +92,7 @@ function renderList() {
   }).join('')
 
   window.mPkgDetail = async (id) => {
-    window.mShowSheet(`<div style="display:flex;justify-content:center;padding:40px"><div class="m-spinner"></div></div>`)
+    window.mShowSheet(`<div class="m-loading-row"><div class="m-spinner"></div></div>`)
     try {
       const pkg = await window.api.getPackage(id)
       renderDetailSheet(pkg)
@@ -292,7 +290,7 @@ async function mPkgOpenDeploy(id, name) {
   _deployPkgId = id
   window.mShowSheet(`
     <div class="m-sheet-title">Déployer — ${esc(name)}</div>
-    <div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>`)
+    <div class="m-loading-row"><div class="m-spinner"></div></div>`)
   try {
     const data = await window.api.getDevices({ limit: 200 })
     _deployDevices = data.devices || data || []

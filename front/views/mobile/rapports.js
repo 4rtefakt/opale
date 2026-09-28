@@ -3,14 +3,12 @@
 
 export async function renderRapports(el) {
   el.innerHTML = `
-    <div class="m-header">
-      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
-        <i class="ti ti-arrow-left"></i>
-      </button>
-      <h1>${t('rapports.title')}</h1>
+    <div class="m-header big">
+      <button class="m-icon-btn ghost" onclick="window.location.hash='#/menu'"><i class="ti ti-arrow-left"></i></button>
+      <div class="m-head-text"><h1>${t('rapports.title')}</h1></div>
     </div>
     <div class="m-scroll" id="m-rapports-body">
-      <div style="display:flex;justify-content:center;padding:40px"><div class="m-spinner"></div></div>
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   try {

@@ -5,12 +5,10 @@ const mScJsArg = window.jsArg
 
 export async function renderScripts(el) {
   el.innerHTML = `
-    <div class="m-header">
-      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
-        <i class="ti ti-arrow-left"></i>
-      </button>
-      <h1 style="flex:1">${t('mobile.scripts.title')}</h1>
-      <button class="m-icon-btn" onclick="mScriptNew()" title="${t('mobile.scripts.btn.new')}">
+    <div class="m-header big">
+      <button class="m-icon-btn ghost" onclick="window.location.hash='#/menu'"><i class="ti ti-arrow-left"></i></button>
+      <div class="m-head-text"><h1>${t('mobile.scripts.title')}</h1></div>
+      <button class="m-icon-btn primary" onclick="mScriptNew()" title="${t('mobile.scripts.btn.new')}">
         <i class="ti ti-plus"></i>
       </button>
     </div>
@@ -19,7 +17,7 @@ export async function renderScripts(el) {
       <input type="text" placeholder="${t('mobile.scripts.search_placeholder')}" id="m-scripts-q" oninput="mScriptsFilter()">
     </div>
     <div class="m-scroll-list" id="m-scripts-list">
-      <div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   window.mScriptsFilter = renderList
@@ -46,7 +44,7 @@ function renderList() {
   if (!list) return
 
   if (!filtered.length) {
-    list.innerHTML = `<div style="text-align:center;color:var(--text-tertiary);padding:30px">${t('mobile.scripts.empty')}</div>`
+    list.innerHTML = `<div class="m-empty"><span>${t('mobile.scripts.empty')}</span></div>`
     return
   }
 

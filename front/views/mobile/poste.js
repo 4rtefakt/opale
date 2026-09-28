@@ -6,11 +6,11 @@ export async function renderPoste(el, id) {
       <button class="m-icon-btn" onclick="window.location.hash='#/postes'">
         <i class="ti ti-arrow-left"></i>
       </button>
-      <h1 id="m-poste-title" style="flex:1;margin:0;font-size:16px;font-weight:600">…</h1>
+      <h1 id="m-poste-title">…</h1>
       <span id="m-poste-badge"></span>
     </div>
-    <div class="m-scroll" id="m-poste-body">
-      <div style="display:flex;justify-content:center;padding:40px"><div class="m-spinner"></div></div>
+    <div class="m-scroll" id="m-poste-body" style="padding-top:4px">
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   try {
@@ -34,8 +34,30 @@ function renderBody(el) {
   document.getElementById('m-poste-badge').outerHTML =
     `<span id="m-poste-badge" class="m-pill m-pill-${pillCls}">${pillTxt}</span>`
 
+  const pct = parseFloat(d.disk_used_pct) || 0
+  const diskColor = pct >= 90 ? 'var(--red)' : pct >= 80 ? 'var(--amber)' : 'var(--green)'
   const body = document.getElementById('m-poste-body')
   body.innerHTML = `
+    <!-- Les faits d'abord : qui, quoi, vu quand, disque -->
+    <div class="m-facts" style="padding:0">
+      <div class="m-fact">
+        <span class="k">${esc(t('poste.user'))}</span>
+        <span class="v ${d.user?.name ? '' : 'empty'}"><i class="ti ti-user"></i>${esc(d.user?.name || '—')}</span>
+      </div>
+      <div class="m-fact">
+        <span class="k">${esc(t('poste.hw.model'))}</span>
+        <span class="v ${d.model ? '' : 'empty'}"><i class="ti ti-device-laptop"></i>${esc(d.model || d.manufacturer || '—')}</span>
+      </div>
+      <div class="m-fact">
+        <span class="k">${esc(t('poste.hw.last_seen'))}</span>
+        <span class="v"><i class="ti ti-clock"></i>${esc(formatRelative(d.last_seen))}</span>
+      </div>
+      <div class="m-fact">
+        <span class="k">${esc(t('poste.disks'))}</span>
+        <span class="v" style="color:${pct ? diskColor : 'inherit'}"><i class="ti ti-database"></i>${pct ? pct + ' %' : '—'}</span>
+      </div>
+    </div>
+
     <!-- Actions rapides -->
     <div class="m-action-grid">
       ${d.ip_netbird && d.status === 'online' ? `
@@ -43,17 +65,17 @@ function renderBody(el) {
         <i class="ti ti-terminal"></i>
         <span>SSH</span>
       </button>` : `
-      <button class="m-action-btn" disabled style="opacity:.4" title="${d.ip_netbird ? 'Poste hors ligne' : 'IP Netbird manquante'}">
+      <button class="m-action-btn" disabled title="${esc(d.ip_netbird ? t('mobile.device.status.offline') : 'Netbird')}">
         <i class="ti ti-terminal"></i>
         <span>SSH</span>
       </button>`}
       <button class="m-action-btn" onclick="mOpenNewTicket()">
         <i class="ti ti-ticket"></i>
-        <span>Ticket</span>
+        <span>${esc(t('mobile.poste.act.ticket'))}</span>
       </button>
       <button class="m-action-btn" onclick="mForceCheckin(this)">
         <i class="ti ti-refresh"></i>
-        <span>Sync RMM</span>
+        <span>${esc(t('mobile.poste.act.checkin'))}</span>
       </button>
       <button class="m-action-btn" onclick="mSyncDevice(this)">
         <i class="ti ti-brand-azure"></i>
@@ -61,7 +83,7 @@ function renderBody(el) {
       </button>
       <button class="m-action-btn" onclick="mRunScript()">
         <i class="ti ti-player-play"></i>
-        <span>Script</span>
+        <span>${esc(t('mobile.poste.act.script'))}</span>
       </button>
       ${(window.appState?.user?.isAdmin && d.laps) ? `
       <button class="m-action-btn" onclick="mOpenLaps()">
@@ -70,48 +92,59 @@ function renderBody(el) {
       </button>` : ''}
     </div>
 
+    <!-- Alertes actives : en premier, c'est ce qui demande une action -->
+    ${(d.active_alerts || []).length ? `
+    <div class="m-panel">
+      <div class="m-panel-header"><i class="ti ti-alert-triangle" style="color:var(--red)"></i> ${esc(t('poste.alerts'))}</div>
+      ${d.active_alerts.map(a => `
+        <div class="m-kv" style="flex-direction:column;align-items:flex-start;gap:2px">
+          <span style="font-weight:500">${esc(a.message || a.type)}</span>
+          <span class="m-muted" style="font-size:11.5px">${formatRelative(a.created_at)}</span>
+        </div>`).join('')}
+    </div>` : ''}
+
     <!-- Utilisateur -->
     ${d.user ? `
     <div class="m-panel">
-      <div class="m-panel-header"><i class="ti ti-user"></i> Utilisateur</div>
-      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px">
+      <div class="m-panel-header"><i class="ti ti-user"></i> ${esc(t('poste.user'))}</div>
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 14px">
         <div class="m-av">${initials(d.user.name)}</div>
-        <div>
+        <div style="min-width:0">
           <div style="font-weight:500;font-size:14px">${esc(d.user.name || '—')}</div>
           ${d.user.job_title ? `<div style="font-size:12px;color:var(--text-secondary)">${esc(d.user.job_title)}</div>` : ''}
-          ${d.user.email ? `<div style="font-size:11px;color:var(--blue)">${esc(d.user.email)}</div>` : ''}
+          ${d.user.email ? `<div style="font-size:11.5px;color:var(--blue-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.user.email)}</div>` : ''}
         </div>
       </div>
     </div>` : ''}
 
-    <!-- Hardware -->
-    <div class="m-panel">
-      <div class="m-panel-header"><i class="ti ti-device-laptop"></i> Matériel</div>
-      ${hwRow('ti-building-factory-2', 'Fabricant',   d.manufacturer)}
-      ${hwRow('ti-device-laptop',      'Modèle',      d.model)}
-      ${hwRow('ti-cpu',                'CPU',          d.cpu)}
-      ${hwRow('ti-layers-intersect',   'RAM',          d.ram_gb ? d.ram_gb + ' Go' : null)}
-      ${hwRow('ti-brand-windows',      'OS',           d.os)}
-      ${hwRow('ti-hash',               'Build OS',     d.os_build)}
-      ${hwRow('ti-settings',           'BIOS',         d.bios_version)}
-      ${hwRow('ti-fingerprint',        'Numéro série', d.serial)}
-      ${d.ip_netbird ? hwRowRaw('ti-network', 'Netbird IP', `<span style="cursor:pointer;color:var(--blue-text)" onclick="navigator.clipboard.writeText(${jsArg(d.ip_netbird)}).then(()=>window.showToast('IP copiée','success'))">${esc(d.ip_netbird)}</span>`) : ''}
-      ${hwRow('ti-clock',              'Vu',           formatRelative(d.last_seen))}
-      ${d.compliance_state ? hwRowRaw('ti-shield-check', 'Conformité', complianceBadge(d.compliance_state)) : ''}
-      ${hwRow('ti-cloud',              'Jonction',     d.join_type ? formatJoinType(d.join_type) : null)}
-      ${d.enrolled_at      ? hwRow('ti-calendar-plus', 'Enrôlement',    fmtDate(d.enrolled_at))    : ''}
-      ${d.intune_last_sync ? hwRow('ti-refresh',        'Sync Intune',   fmtDate(d.intune_last_sync)) : ''}
-    </div>
-
-    <!-- Sécurité & Performances -->
+    <!-- Sécurité (état des protections : lisible d'un coup d'œil) -->
     ${mSecurityPanel(d)}
+
+    <!-- Matériel & identité Intune : repliés, détail rarement utile -->
+    <details class="m-details">
+      <summary><i class="ti ti-device-laptop"></i> ${esc(t('poste.hardware'))} <span class="n">${esc([d.manufacturer, d.os].filter(Boolean).join(' · '))}</span><i class="ti ti-chevron-down chev"></i></summary>
+      ${hwRow('ti-building-factory-2', t('poste.hw.manufacturer'), d.manufacturer)}
+      ${hwRow('ti-device-laptop',      t('poste.hw.model'),        d.model)}
+      ${hwRow('ti-cpu',                t('poste.hw.cpu'),          d.cpu)}
+      ${hwRow('ti-layers-intersect',   t('poste.hw.ram'),          d.ram_gb ? d.ram_gb + ' Go' : null)}
+      ${hwRow('ti-brand-windows',      t('poste.hw.os'),           d.os)}
+      ${hwRow('ti-hash',               t('poste.hw.os_build'),     d.os_build)}
+      ${hwRow('ti-settings',           t('poste.hw.bios'),         d.bios_version)}
+      ${hwRow('ti-fingerprint',        t('poste.hw.serial'),       d.serial)}
+      ${d.ip_netbird ? hwRowRaw('ti-network', 'Netbird', `<span style="color:var(--blue-text)" onclick="navigator.clipboard.writeText(${jsArg(d.ip_netbird)}).then(()=>window.showToast(t('mobile.poste.ip_copied'),'success'))">${esc(d.ip_netbird)}</span>`) : ''}
+      ${d.compliance_state ? hwRowRaw('ti-shield-check', t('poste.hw.compliance'), complianceBadge(d.compliance_state)) : ''}
+      ${hwRow('ti-cloud',              t('poste.hw.join_type'),    d.join_type ? formatJoinType(d.join_type) : null)}
+      ${d.enrolled_at      ? hwRow('ti-calendar-plus', t('poste.hw.enrolled'),    fmtDate(d.enrolled_at))      : ''}
+      ${d.intune_last_sync ? hwRow('ti-refresh',       t('poste.hw.intune_sync'), fmtDate(d.intune_last_sync)) : ''}
+    </details>
+
     ${mPerfPanel(d)}
 
     <!-- Disques -->
     ${(d.disks || []).length ? `
     <div class="m-panel">
-      <div class="m-panel-header"><i class="ti ti-database"></i> Disques</div>
-      <div style="padding:4px 16px 12px">
+      <div class="m-panel-header"><i class="ti ti-database"></i> ${esc(t('poste.disks'))}</div>
+      <div style="padding:2px 14px 12px">
         ${d.disks.map(disk => {
           const pct = disk.used_pct ?? 0
           const color = pct >= 90 ? 'var(--red)' : pct >= 80 ? 'var(--amber)' : 'var(--green)'
@@ -130,8 +163,8 @@ function renderBody(el) {
 
     <!-- Réseau -->
     ${(d.network || []).length ? `
-    <div class="m-panel">
-      <div class="m-panel-header"><i class="ti ti-network"></i> Réseau</div>
+    <details class="m-details">
+      <summary><i class="ti ti-network"></i> ${esc(t('poste.network'))} <span class="n">${d.network.length}</span><i class="ti ti-chevron-down chev"></i></summary>
       ${d.network.map(iface => {
         const icon = iface.type === 'wifi' ? 'ti-wifi' : iface.type === 'netbird' ? 'ti-network' : 'ti-plug-connected'
         return `
@@ -144,7 +177,7 @@ function renderBody(el) {
           ${iface.type ? `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:var(--bg-secondary);color:var(--text-secondary)">${esc(iface.type)}</span>` : ''}
         </div>`
       }).join('')}
-    </div>` : ''}
+    </details>` : ''}
 
     <!-- Bande passante -->
     ${mBwPanel(d.bandwidth)}
@@ -152,41 +185,26 @@ function renderBody(el) {
     <!-- Ping -->
     ${mPingPanel(d.ping)}
 
-    <!-- Alertes actives -->
-    ${(d.active_alerts || []).length ? `
-    <div class="m-panel">
-      <div class="m-panel-header"><i class="ti ti-alert-triangle" style="color:var(--red)"></i> Alertes actives</div>
-      ${d.active_alerts.map(a => `
-        <div style="padding:10px 16px;border-bottom:0.5px solid var(--border)">
-          <div style="font-size:13px;font-weight:500">${esc(a.message || a.type)}</div>
-          <div style="font-size:11px;color:var(--text-tertiary);margin-top:2px">${formatRelative(a.created_at)}</div>
-        </div>`).join('')}
-    </div>` : ''}
-
     <!-- Tickets ouverts -->
     ${(d.tickets || []).length ? `
     <div class="m-panel">
-      <div class="m-panel-header"><i class="ti ti-ticket"></i> Tickets</div>
+      <div class="m-panel-header"><i class="ti ti-ticket"></i> ${esc(t('poste.tickets'))}</div>
       ${d.tickets.map(tk => `
-        <div class="m-device-card" onclick="window.location.hash='#/ticket/${esc(tk.id)}'">
-          <div class="m-device-info">
-            <div class="m-device-name">${esc(tk.title)}</div>
-            <div class="m-device-sub">${formatRelative(tk.created_at)}</div>
-          </div>
-          <span class="m-pill ${tk.status === 'resolved' ? 'm-pill-on' : 'm-pill-warn'}">${tk.status === 'resolved' ? 'Résolu' : 'Ouvert'}</span>
-        </div>`).join('')}
+        <button class="m-row" onclick="window.location.hash='#/ticket/${esc(tk.id)}'">
+          <i class="ti ti-ticket"></i>
+          <span class="main"><span class="ttl">${esc(tk.title)}</span><span class="sub">${formatRelative(tk.created_at)}</span></span>
+          <span class="end"><span class="m-pill ${tk.status === 'resolved' ? 'm-pill-on' : tk.status === 'in_progress' ? 'm-pill-warn' : 'm-pill-off'}">${esc(t('tickets.status.' + (['open','in_progress','resolved','closed'].includes(tk.status) ? tk.status : 'open')))}</span><i class="ti ti-chevron-right chev"></i></span>
+        </button>`).join('')}
     </div>` : ''}
 
     <!-- Scripts à distance -->
     <div class="m-panel" id="m-exec-panel">
-      <div class="m-panel-header" style="display:flex;justify-content:space-between;align-items:center">
-        <span><i class="ti ti-terminal-2"></i> Scripts</span>
-        <button class="m-icon-btn" style="width:28px;height:28px;font-size:14px" onclick="mRunScript()" title="Exécuter">
-          <i class="ti ti-player-play"></i>
-        </button>
+      <div class="m-panel-header">
+        <i class="ti ti-terminal-2"></i> ${esc(t('mobile.nav.route.scripts'))}
+        <button class="m-icon-btn sm" onclick="mRunScript()" title="${esc(t('mobile.poste.run_script'))}"><i class="ti ti-player-play"></i></button>
       </div>
       <div id="m-exec-history">
-        <div style="display:flex;justify-content:center;padding:16px"><div class="m-spinner" style="width:18px;height:18px;border-width:2px"></div></div>
+        <div class="m-loading-row"><div class="m-spinner"></div></div>
       </div>
     </div>
   `
@@ -200,69 +218,28 @@ function renderBody(el) {
     const port = window.ENV?.SSH_PORT
     const sshCmd = `ssh ${user}@${d.ip_netbird}${port && port !== 22 ? ` -p ${port}` : ''}`
     window.mShowSheet(`
-      <div class="m-sheet-title"><i class="ti ti-terminal" style="margin-right:6px"></i>Connexion SSH</div>
-      <div style="padding:0 16px 4px;display:flex;flex-direction:column;gap:12px">
-        <div style="background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:12px;font-size:12px;color:var(--amber);line-height:1.5">
-          <strong>Information importante</strong><br>
-          Cette connexion SSH est enregistrée (journal d'accès). Elle est réservée à la maintenance technique autorisée.
+      <div class="m-sheet-title"><i class="ti ti-terminal"></i> ${esc(t('mobile.poste.ssh.title'))}</div>
+      <div style="padding:12px 0 4px;display:flex;flex-direction:column;gap:12px">
+        <div style="background:var(--amber-bg);border-radius:var(--radius-sm);padding:12px;font-size:12.5px;color:var(--amber);line-height:1.5">
+          <strong>${esc(t('mobile.poste.ssh.warn_title'))}</strong><br>${esc(t('mobile.poste.ssh.warn'))}
         </div>
-        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">
-          Cible : <strong style="color:var(--text-primary)">${esc(d.hostname)}</strong> — ${esc(d.ip_netbird)}
+        <div style="font-size:12.5px;color:var(--text-secondary);line-height:1.5">
+          ${esc(t('mobile.poste.ssh.target'))} : <strong style="color:var(--text-primary)">${esc(d.hostname)}</strong> — ${esc(d.ip_netbird)}
         </div>
         <button class="m-btn-primary" onclick="window.mCloseSheet();window.location.hash='#/ssh/${esc(d.id)}'">
-          <i class="ti ti-browser"></i> Navigateur (ici)
+          <i class="ti ti-browser"></i> ${esc(t('mobile.poste.ssh.browser'))}
         </button>
-        <button style="width:100%;padding:13px;border-radius:10px;font-size:14px;font-weight:600;
-          background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);cursor:pointer;
-          display:flex;align-items:center;justify-content:center;gap:6px"
-          onclick="navigator.clipboard.writeText(${jsArg(sshCmd)}).then(()=>{window.mCloseSheet();window.showToast('Commande copiée','success')})">
-          <i class="ti ti-terminal-2"></i> Terminal local
+        <button class="m-btn block" onclick="navigator.clipboard.writeText(${jsArg(sshCmd)}).then(()=>{window.mCloseSheet();window.showToast(t('mobile.poste.ssh.copied'),'success')})">
+          <i class="ti ti-terminal-2"></i> ${esc(t('mobile.poste.ssh.terminal'))}
         </button>
-        <button style="width:100%;padding:10px;border-radius:10px;font-size:13px;font-weight:500;background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer" onclick="window.mCloseSheet()">
-          Annuler
-        </button>
+        <button class="m-btn ghost block" onclick="window.mCloseSheet()">${esc(t('btn.cancel'))}</button>
       </div>`)
   }
 
-  window.mOpenNewTicket = () => {
-    window.mShowSheet(`
-      <div class="m-sheet-title">Nouveau ticket</div>
-      <div style="display:flex;flex-direction:column;gap:12px;padding:0 4px">
-        <div>
-          <div class="m-label">Titre</div>
-          <input class="m-input" id="m-nt-title" value="${esc(d.hostname)} — " autocomplete="off">
-        </div>
-        <div>
-          <div class="m-label">Priorité</div>
-          <select class="m-input" id="m-nt-prio">
-            <option value="low">Basse</option>
-            <option value="normal" selected>Normale</option>
-            <option value="high">Haute</option>
-            <option value="critical">Critique</option>
-          </select>
-        </div>
-        <div>
-          <div class="m-label">Description</div>
-          <textarea class="m-input" id="m-nt-desc" rows="3" style="resize:none"></textarea>
-        </div>
-        <button class="m-btn-primary" onclick="mSubmitNewTicket(this)">Créer le ticket</button>
-      </div>`)
-    window.mSubmitNewTicket = async (btn) => {
-      const title = document.getElementById('m-nt-title')?.value?.trim()
-      if (!title) return
-      await withBusy(btn, async () => {
-        try {
-          await window.api.createTicket({
-            title,
-            priority: document.getElementById('m-nt-prio')?.value,
-            description: document.getElementById('m-nt-desc')?.value?.trim(),
-            device_id: d.id
-          })
-          window.mCloseSheet()
-          window.showToast('Ticket créé', 'success')
-        } catch { window.showToast('Erreur', 'error') }
-      })
-    }
+  // Nouveau ticket : la feuille complète de la liste, préremplie avec ce poste.
+  window.mOpenNewTicket = async () => {
+    const { mNewTicket } = await import('/views/mobile/tickets.js')
+    mNewTicket({ device: { id: d.id, hostname: d.hostname } })
   }
 
   // Anti double-submit : withBusy désactive le bouton + spinner pendant l'appel,
@@ -271,30 +248,30 @@ function renderBody(el) {
     try {
       const res = await window.api.forceCheckinDevices([d.id])
       if (res.errors?.length) window.showToast(res.errors[0], 'error')
-      else window.showToast('Checkin RMM déclenché', 'success')
-    } catch { window.showToast('Erreur', 'error') }
+      else window.showToast(t('mobile.poste.toast.checkin'), 'success')
+    } catch { window.showToast(t('mobile.common.error'), 'error') }
   })
 
   window.mSyncDevice = (btn) => withBusy(btn, async () => {
     try {
       await window.api.forceSyncDevices([d.id])
-      window.showToast('Sync Intune lancée', 'success')
-    } catch { window.showToast('Erreur', 'error') }
+      window.showToast(t('mobile.dashboard.toast.sync_started'), 'success')
+    } catch { window.showToast(t('mobile.common.error'), 'error') }
   })
 
   window.mRunScript = async () => {
     let scripts = []
     try { scripts = await window.api.getScripts() } catch {}
-    if (!scripts.length) { window.showToast('Aucun script', 'error'); return }
+    if (!scripts.length) { window.showToast(t('mobile.postes.bulk.scripts.empty'), 'error'); return }
     window.mShowSheet(`
-      <div class="m-sheet-title">Exécuter un script</div>
-      <div style="padding:0 4px">
-        <div class="m-label">Script</div>
+      <div class="m-sheet-title"><i class="ti ti-player-play" style="color:var(--green)"></i> ${esc(t('mobile.poste.run_script'))}</div>
+      <div style="padding:12px 0 0">
+        <div class="m-label">${esc(t('mobile.postes.bulk.scripts.choose'))}</div>
         <select class="m-input" id="m-run-script-sel">
           ${scripts.map(s => `<option value="${esc(s.id)}">${esc(s.name)}${s.category ? ` (${esc(s.category)})` : ''}</option>`).join('')}
         </select>
-        <p style="font-size:11px;color:var(--text-tertiary);margin:10px 0">L'exécution se fera au prochain checkin de l'agent (max 15 min).</p>
-        <button class="m-btn-primary" style="margin-top:4px" onclick="mSubmitRunScript(this)">Mettre en file</button>
+        <p class="m-muted" style="font-size:12px;margin:10px 0">${esc(t('mobile.postes.bulk.scripts.delay'))}</p>
+        <button class="m-btn-primary" style="margin-top:4px" onclick="mSubmitRunScript(this)"><i class="ti ti-player-play"></i> ${esc(t('mobile.postes.bulk.scripts.confirm'))}</button>
       </div>`)
     window.mSubmitRunScript = async (btn) => {
       const scriptId = document.getElementById('m-run-script-sel')?.value
@@ -303,9 +280,9 @@ function renderBody(el) {
         try {
           await window.api.runScript(scriptId, d.id)
           window.mCloseSheet()
-          window.showToast('Script mis en file', 'success')
+          window.showToast(t('mobile.poste.toast.script_queued'), 'success')
           loadExecHistory(d.id)
-        } catch { window.showToast('Erreur', 'error') }
+        } catch { window.showToast(t('mobile.common.error'), 'error') }
       })
     }
   }
@@ -595,22 +572,14 @@ function mPerfPanel(d) {
 function hwRow(icon, label, value) {
   if (!value) return ''
   return `
-  <div style="display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:0.5px solid var(--border)">
-    <i class="ti ${icon}" style="font-size:14px;color:var(--text-tertiary);width:16px;text-align:center;flex-shrink:0"></i>
-    <span style="font-size:12px;color:var(--text-secondary);width:90px;flex-shrink:0">${label}</span>
-    <span style="font-size:12px;font-weight:500;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(String(value))}</span>
-  </div>`
+  <div class="m-kv"><i class="ti ${icon}"></i><span class="k">${label}</span><span class="v">${esc(String(value))}</span></div>`
 }
 
 // hwRow avec HTML brut pour la valeur (ex : badge coloré)
 function hwRowRaw(icon, label, html) {
   if (!html) return ''
   return `
-  <div style="display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:0.5px solid var(--border)">
-    <i class="ti ${icon}" style="font-size:14px;color:var(--text-tertiary);width:16px;text-align:center;flex-shrink:0"></i>
-    <span style="font-size:12px;color:var(--text-secondary);width:90px;flex-shrink:0">${label}</span>
-    <span style="font-size:12px;font-weight:500;flex:1;min-width:0">${html}</span>
-  </div>`
+  <div class="m-kv"><i class="ti ${icon}"></i><span class="k">${label}</span><span class="v" style="white-space:normal">${html}</span></div>`
 }
 
 function complianceBadge(state) {

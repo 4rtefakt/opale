@@ -1,9 +1,7 @@
 export function renderSearch(el) {
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="window.location.hash='#/dashboard'">
-        <i class="ti ti-arrow-left"></i>
-      </button>
+      <button class="m-icon-btn ghost" onclick="history.length > 1 ? history.back() : (window.location.hash='#/today')"><i class="ti ti-arrow-left"></i></button>
       <div class="m-search" style="margin:0;flex:1">
         <i class="ti ti-search"></i>
         <input type="text" id="m-gsearch-q" placeholder="${t('mobile.search.placeholder')}"
@@ -34,11 +32,11 @@ async function runSearch() {
   if (!results) return
 
   if (!q || q.length < 2) {
-    results.innerHTML = `<div style="text-align:center;color:var(--text-tertiary);padding:30px;font-size:13px">${t('mobile.search.min_chars')}</div>`
+    results.innerHTML = `<div class="m-empty"><span>${t('mobile.search.min_chars')}</span></div>`
     return
   }
 
-  results.innerHTML = `<div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>`
+  results.innerHTML = `<div class="m-loading-row"><div class="m-spinner"></div></div>`
 
   try {
     const [devData, tickets] = await Promise.all([
@@ -50,7 +48,7 @@ async function runSearch() {
     const tks     = Array.isArray(tickets) ? tickets : []
 
     if (!devices.length && !tks.length) {
-      results.innerHTML = `<div style="text-align:center;color:var(--text-tertiary);padding:30px;font-size:13px">${t('mobile.search.no_results', { q: esc(q) })}</div>`
+      results.innerHTML = `<div class="m-empty"><span>${t('mobile.search.no_results', { q: esc(q) })}</span></div>`
       return
     }
 

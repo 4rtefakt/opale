@@ -7,14 +7,12 @@ let _navSel = []
 
 export async function renderSettings(el) {
   el.innerHTML = `
-    <div class="m-header">
-      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
-        <i class="ti ti-arrow-left"></i>
-      </button>
-      <h1>${t('mobile.settings.title')}</h1>
+    <div class="m-header big">
+      <button class="m-icon-btn ghost" onclick="window.location.hash='#/menu'"><i class="ti ti-arrow-left"></i></button>
+      <div class="m-head-text"><h1>${t('mobile.settings.title')}</h1></div>
     </div>
     <div class="m-scroll" id="m-settings-body">
-      <div style="display:flex;justify-content:center;padding:40px"><div class="m-spinner"></div></div>
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   window.mAddSSHKey    = mAddSSHKey
@@ -57,7 +55,7 @@ function renderBody() {
   const bioEnabled   = window.bio?.isEnabled?.()   ?? false
 
   body.innerHTML = `
-    <div style="padding:16px;display:flex;flex-direction:column;gap:16px">
+    <div style="display:flex;flex-direction:column;gap:14px">
 
       <!-- Apparence -->
       <div class="m-panel">
@@ -330,6 +328,7 @@ function renderAppearance() {
         <i style="background:${p['bg-secondary']}"></i><i style="background:${p['bg-tertiary']}"></i><i style="background:${p['primary']}"></i>
       </div>
       <div class="m-theme-name">${esc(th.label)}</div>
+      <div class="m-theme-desc">${esc(th.desc || '')}</div>
     </button>`
   }).join('')
   row.innerHTML = [['system', 'ti-device-mobile', t('settings.appearance.mode.system')], ['light', 'ti-sun', t('settings.appearance.mode.light')], ['dark', 'ti-moon', t('settings.appearance.mode.dark')]]

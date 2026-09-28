@@ -58,9 +58,7 @@ export function renderAsk(el) {
   _running = false
   el.innerHTML = `
     <div class="m-header">
-      <button class="m-icon-btn" onclick="history.back()">
-        <i class="ti ti-arrow-left"></i>
-      </button>
+      <button class="m-icon-btn ghost" onclick="history.length > 1 ? history.back() : (window.location.hash='#/menu')"><i class="ti ti-arrow-left"></i></button>
       <div class="m-search" style="margin:0;flex:1">
         <i class="ti ti-sparkles" style="color:var(--blue-text)"></i>
         <input type="text" id="m-ask-q" placeholder="${t('mobile.ask.placeholder')}"
@@ -152,7 +150,7 @@ function renderResults(data) {
   if (!b) return
   const r = RENDERERS[data.resource]
   if (!r) {
-    b.innerHTML = `<div style="text-align:center;color:var(--text-tertiary);padding:30px;font-size:13px">${esc(t('ask.unknown_resource'))}</div>`
+    b.innerHTML = `<div class="m-empty"><span>${esc(t('ask.unknown_resource'))}</span></div>`
     return
   }
 
@@ -164,7 +162,7 @@ function renderResults(data) {
 
   if (!data.rows.length) {
     b.innerHTML = specLine +
-      `<div style="text-align:center;color:var(--text-tertiary);padding:30px;font-size:13px">${esc(t('ask.no_results'))}</div>`
+      `<div class="m-empty"><span>${esc(t('ask.no_results'))}</span></div>`
     return
   }
 

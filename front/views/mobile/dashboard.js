@@ -1,23 +1,23 @@
 export async function renderDashboard(el) {
   el.innerHTML = `
-    <div class="m-header">
-      <h1>${t('mobile.dashboard.title')}</h1>
-      <button class="m-icon-btn" onclick="window.location.hash='#/search'" title="${t('mobile.dashboard.search_title')}">
-        <i class="ti ti-search"></i>
-      </button>
-      <button class="m-icon-btn" onclick="withBusy(this, () => window.api.syncIntune().then(()=>showToast(t('mobile.dashboard.toast.sync_started'),'success')).catch(()=>showToast(t('mobile.dashboard.toast.error'),'error')))" title="${t('mobile.dashboard.sync_title')}">
-        <i class="ti ti-refresh"></i>
-      </button>
+    <div class="m-header big">
+      <div class="m-head-text"><h1>${esc(t('nav.dashboard'))}</h1></div>
+      <div class="m-actions">
+        <button class="m-icon-btn" onclick="window.location.hash='#/search'" title="${esc(t('mobile.dashboard.search_title'))}"><i class="ti ti-search"></i></button>
+        <button class="m-icon-btn" onclick="withBusy(this, () => window.api.syncIntune().then(()=>showToast(t('mobile.dashboard.toast.sync_started'),'success')).catch(()=>showToast(t('mobile.dashboard.toast.error'),'error')))" title="${esc(t('mobile.dashboard.sync_title'))}"><i class="ti ti-refresh"></i></button>
+      </div>
     </div>
     <div class="m-scroll" id="m-dash-body">
-      <div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   try {
-    const [devices, alerts] = await Promise.all([
+    const [devices, alerts, dash] = await Promise.all([
       window.api.getDevices({ limit: 200 }),
-      window.api.getAlerts().catch(() => ({ counts: {}, active: [] }))
+      window.api.getAlerts().catch(() => ({ counts: {}, active: [] })),
+      window.api.getDashboard().catch(() => null),
     ])
+    const k = dash?.kpis || {}
 
     const all      = devices.devices || []
     const online   = all.filter(d => d.status === 'online').length
@@ -42,8 +42,14 @@ export async function renderDashboard(el) {
         </div>
       </div>
 
+      <div class="m-fleet">
+        ${k.compliance_failing_devs > 0 ? `<a href="#/conformite">${esc(t('today.fleet.noncompliant', { n: k.compliance_failing_devs }))}</a>` : `<span>${esc(t('today.fleet.compliant'))}</span>`}
+        <span>·</span>
+        ${(k.deployments_running || k.deployments_pending) ? `<a href="#/packages">${esc(t('today.fleet.deployments', { n: k.deployments_running || 0, p: k.deployments_pending || 0 }))}</a>` : `<span>${esc(t('today.fleet.deployments_idle'))}</span>`}
+      </div>
+
       ${activeAlerts.length ? `
-        <div class="m-section">${t('mobile.dashboard.section.active_alerts')}</div>
+        <div class="m-section">${t('mobile.dashboard.section.active_alerts')}<a class="m-link" href="#/alertes">${esc(t('mobile.alertes.title'))} →</a></div>
         ${activeAlerts.slice(0, 3).map(a => `
           <div class="m-alert-card crit" onclick="window.location.hash='#/poste/${esc(a.device_id)}'">
             <div class="m-alert-head">
@@ -57,7 +63,7 @@ export async function renderDashboard(el) {
           </div>`).join('')}
       ` : ''}
 
-      <div class="m-section">${t('mobile.dashboard.section.recent')}</div>
+      <div class="m-section">${t('mobile.dashboard.section.recent')}<a class="m-link" href="#/postes">${esc(t('mobile.postes.title'))} →</a></div>
       ${recent.map(d => deviceCard(d)).join('')}
     `
   } catch (err) {

@@ -10,7 +10,7 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="stylesheet" href="/tabler-icons-webfont/tabler-icons.min.css">
 <link rel="stylesheet" href="/styles/mobile.css">
-<meta name="theme-color" content="#ffffff">
+<meta name="theme-color" content="#11141C">
 <script src="/env.js"></script>
 <script src="/theme.js"></script>
 <script>
@@ -42,9 +42,9 @@
 </div>
 
 <!-- BIO LOCK -->
-<div id="m-bio-lock" style="display:none;flex-direction:column;align-items:center;justify-content:center;height:100dvh;gap:16px;background:var(--bg)">
+<div id="m-bio-lock" style="display:none;flex-direction:column;align-items:center;justify-content:center;height:100dvh;gap:16px;background:var(--bg-primary)">
   <i class="ti ti-fingerprint" style="font-size:64px;color:var(--blue)"></i>
-  <div style="font-size:20px;font-weight:700;letter-spacing:1px" data-brand="product_name">Opale</div>
+  <div class="m-login-logo" data-brand="product_name">Opale</div>
   <div style="font-size:13px;color:var(--text-secondary)">Vérification requise</div>
   <button id="m-bio-unlock-btn" class="m-login-btn" style="margin-top:8px">
     <i class="ti ti-fingerprint"></i> Déverrouiller
@@ -58,6 +58,7 @@
 <div id="m-app" style="display:none;flex-direction:column;height:100dvh;overflow:hidden">
 
   <!-- Screens -->
+  <div id="m-screen-today"      class="m-screen"></div>
   <div id="m-screen-dashboard"  class="m-screen"></div>
   <div id="m-screen-postes"     class="m-screen"></div>
   <div id="m-screen-poste"      class="m-screen"></div>
@@ -77,20 +78,21 @@
   <div id="m-screen-ask"        class="m-screen"></div>
   <div id="m-screen-conformite" class="m-screen"></div>
 
-  <!-- Bottom nav -->
+  <!-- Bottom nav (regénérée par mobile-app.js selon les préférences) -->
   <nav id="m-bottom-nav">
-    <button class="m-nav-item" data-route="dashboard" onclick="mNavigateTo('dashboard')">
-      <i class="ti ti-layout-dashboard"></i>Dashboard
+    <button class="m-nav-item active" data-route="today" onclick="mNavigateTo('today')">
+      <i class="ti ti-sun"></i>Aujourd'hui
+    </button>
+    <button class="m-nav-item" data-route="tickets" onclick="mNavigateTo('tickets')">
+      <i class="ti ti-ticket"></i>Tickets
+      <span class="m-nav-badge" id="m-badge-tickets" style="display:none"></span>
     </button>
     <button class="m-nav-item" data-route="postes" onclick="mNavigateTo('postes')">
       <i class="ti ti-device-laptop"></i>Postes
     </button>
     <button class="m-nav-item" data-route="alertes" onclick="mNavigateTo('alertes')">
       <i class="ti ti-bell"></i>Alertes
-      <span class="m-nav-badge" id="m-badge-crit" style="display:none"></span>
-    </button>
-    <button class="m-nav-item" data-route="tickets" onclick="mNavigateTo('tickets')">
-      <i class="ti ti-ticket"></i>Tickets
+      <span class="m-nav-badge crit" id="m-badge-crit" style="display:none"></span>
     </button>
     <button class="m-nav-item" data-route="menu" onclick="mNavigateTo('menu')">
       <i class="ti ti-dots"></i>Plus

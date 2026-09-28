@@ -141,7 +141,7 @@ window.addPullToRefresh = (scrollEl, onRefresh) => {
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
-const SCREENS = ['dashboard','postes','poste','ssh','tickets','ticket','menu','settings',
+const SCREENS = ['today','dashboard','postes','poste','ssh','tickets','ticket','menu','settings',
                  'scripts','stock','onboarding','rapports','audit','search','alertes','packages',
                  'ask','conformite']
 
@@ -152,9 +152,9 @@ window.mNavigateTo = (route) => { window.location.hash = '#/' + route }
 // doivent ouvrir la fiche, pas la liste. Le `?…` éventuel est ignoré.
 const DETAIL_ALIASES = { tickets: 'ticket', postes: 'poste' }
 function getRoute() {
-  const hash  = window.location.hash || '#/dashboard'
+  const hash  = window.location.hash || '#/today'
   const parts = hash.slice(2).split('?')[0].split('/').filter(Boolean)
-  let route = parts[0] || 'dashboard'
+  let route = parts[0] || 'today'
   if (DETAIL_ALIASES[route] && parts[1]) { route = DETAIL_ALIASES[route] }
   return { route, parts }
 }
@@ -164,8 +164,8 @@ function getRoute() {
 let _navRoutes = [...MOBILE_NAV_DEFAULT]
 
 // (Re)génère les 4 onglets raccourcis + l'onglet « Plus » fixe depuis `routes`.
-// Recrée le badge d'alertes critiques si « alertes » est un raccourci
-// (updateBadge cible #m-badge-crit ; absent sinon → no-op silencieux).
+// Recrée les badges (alertes critiques, tickets à traiter) si l'onglet est un
+// raccourci (updateBadges cible #m-badge-* ; absent sinon → no-op silencieux).
 function renderBottomNav(routes) {
   _navRoutes = routes
   const nav = document.getElementById('m-bottom-nav')
@@ -173,9 +173,9 @@ function renderBottomNav(routes) {
   const shortcuts = routes.map(r => {
     const meta = MOBILE_NAV_ITEMS[r]
     if (!meta) return ''
-    const badge = r === 'alertes'
-      ? '<span class="m-nav-badge" id="m-badge-crit" style="display:none"></span>'
-      : ''
+    const badge = r === 'alertes' ? '<span class="m-nav-badge crit" id="m-badge-crit" style="display:none"></span>'
+                : r === 'tickets' ? '<span class="m-nav-badge" id="m-badge-tickets" style="display:none"></span>'
+                : ''
     return `<button class="m-nav-item" data-route="${r}" onclick="mNavigateTo('${r}')">
       <i class="ti ${meta.icon}"></i>${esc(t(meta.labelKey))}${badge}
     </button>`
@@ -185,9 +185,11 @@ function renderBottomNav(routes) {
       <i class="ti ti-dots"></i>${esc(t('mobile.nav.more'))}
     </button>`
   setActiveNav(getRoute().route)
+  paintBadges()
 }
 // Exposé pour que l'écran de réglage rafraîchisse la barre après sauvegarde.
 window.mRenderBottomNav = renderBottomNav
+window.mNavRoutes = () => [..._navRoutes]
 
 // Vues de détail → onglet liste parent. Toute route absente des raccourcis
 // (et ≠ menu) vit sous l'onglet « Plus ».
@@ -216,12 +218,15 @@ async function router() {
   const container = document.getElementById(`m-screen-${route}`)
   if (!container) {
     // Route desktop sans équivalent mobile (users, groupes, réseau…) : on
-    // retombe sur le tableau de bord plutôt qu'un écran vide.
-    mNavigateTo('dashboard'); return
+    // retombe sur Aujourd'hui plutôt qu'un écran vide.
+    mNavigateTo('today'); return
   }
   container.classList.add('active')
 
-  if (route === 'dashboard') {
+  if (route === 'today') {
+    const { renderToday } = await import('/views/mobile/today.js')
+    await renderToday(container)
+  } else if (route === 'dashboard') {
     const { renderDashboard } = await import('/views/mobile/dashboard.js')
     await renderDashboard(container)
   } else if (route === 'postes') {
@@ -285,18 +290,28 @@ async function router() {
   }, 300)
 }
 
-// ── Alert badge ───────────────────────────────────────────────────────────────
-async function updateBadge() {
-  try {
-    const data  = await window.api.getAlerts()
-    const total = (data.counts?.critical || 0) + (data.counts?.warn || 0)
-    const badge = document.getElementById('m-badge-crit')
-    if (badge) {
-      badge.textContent = total
-      badge.style.display = total > 0 ? '' : 'none'
-    }
-  } catch {}
+// ── Badges de la barre du bas ────────────────────────────────────────────────
+// Alertes : critiques + avertissements. Tickets : fils de mails à trier +
+// tickets en attente de réponse (compteurs serveur, comme le desktop).
+let _badges = { crit: 0, tickets: 0 }
+function paintBadges() {
+  const crit = document.getElementById('m-badge-crit')
+  if (crit) { crit.textContent = _badges.crit; crit.style.display = _badges.crit > 0 ? '' : 'none' }
+  const tk = document.getElementById('m-badge-tickets')
+  if (tk) { tk.textContent = _badges.tickets; tk.style.display = _badges.tickets > 0 ? '' : 'none' }
 }
+window.mSetTicketsBadge = (n) => { _badges.tickets = n || 0; paintBadges() }
+async function updateBadges() {
+  const [alerts, inbox, tickets] = await Promise.all([
+    window.api.getAlerts().catch(() => null),
+    window.api.getInboxCount().catch(() => ({})),
+    window.api.getTicketsCount().catch(() => ({})),
+  ])
+  if (alerts) _badges.crit = (alerts.counts?.critical || 0) + (alerts.counts?.warn || 0)
+  _badges.tickets = (inbox.threads ?? inbox.pending ?? 0) + (tickets.awaiting_reply || 0)
+  paintBadges()
+}
+window.mUpdateTicketsBadge = updateBadges
 
 // ── Service Worker + Push ─────────────────────────────────────────────────────
 async function initPWA() {
@@ -406,8 +421,8 @@ async function launchApp() {
   window.OpaleTheme?.syncFromPrefs(window.api)
 
   // Barre du bas personnalisée (pref serveur par user). Non bloquant : en cas
-  // d'échec on garde les 4 raccourcis par défaut. Rendu avant updateBadge pour
-  // que le badge #m-badge-crit existe si « alertes » est un raccourci.
+  // d'échec on garde les 4 raccourcis par défaut. Rendu avant updateBadges pour
+  // que les badges existent si leurs onglets sont des raccourcis.
   try {
     const prefs = await window.api.getMyPrefs()
     renderBottomNav(sanitizeMobileNav(prefs?.mobile_nav))
@@ -415,8 +430,8 @@ async function launchApp() {
     renderBottomNav([...MOBILE_NAV_DEFAULT])
   }
 
-  updateBadge()
-  setInterval(updateBadge, 5 * 60 * 1000)
+  updateBadges()
+  setInterval(updateBadges, 5 * 60 * 1000)
 
   window.addEventListener('hashchange', router)
   await router()

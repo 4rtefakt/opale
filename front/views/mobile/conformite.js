@@ -17,15 +17,13 @@ const SEV_WEIGHT = { critical: 3, high: 2, medium: 1, low: 0 }
 
 export async function renderConformite(el, ruleId) {
   el.innerHTML = `
-    <div class="m-header">
-      ${ruleId
-        ? `<button class="m-icon-btn" onclick="window.location.hash='#/conformite'"><i class="ti ti-arrow-left"></i></button>`
-        : ''}
-      <h1>${t('mobile.conformite.title')}</h1>
-      <button class="m-icon-btn" onclick="mConfReload()"><i class="ti ti-refresh"></i></button>
+    <div class="m-header big">
+      <button class="m-icon-btn ghost" onclick="window.location.hash='${ruleId ? '#/conformite' : '#/menu'}'"><i class="ti ti-arrow-left"></i></button>
+      <div class="m-head-text"><h1>${t('mobile.conformite.title')}</h1></div>
+      <div class="m-actions"><button class="m-icon-btn" onclick="mConfReload()"><i class="ti ti-refresh"></i></button></div>
     </div>
     <div class="m-scroll" id="m-conf-body">
-      <div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   window.mConfReload = () => renderConformite(el, ruleId)

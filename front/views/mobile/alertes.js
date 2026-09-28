@@ -29,11 +29,9 @@ function complianceStateLabel(state) {
 export async function renderAlertes(el) {
   _filter = 'all'
   el.innerHTML = `
-    <div class="m-header">
-      <h1>${t('mobile.alertes.title')} <span id="m-al-count" style="font-size:12px;font-weight:400;color:var(--text-tertiary)"></span></h1>
-      <button class="m-icon-btn" onclick="mAlLoad()">
-        <i class="ti ti-refresh"></i>
-      </button>
+    <div class="m-header big">
+      <div class="m-head-text"><h1>${t('mobile.alertes.title')}<span id="m-al-count" class="m-count"></span></h1></div>
+      <div class="m-actions"><button class="m-icon-btn" onclick="mAlLoad()" title="${esc(t('mobile.common.retry'))}"><i class="ti ti-refresh"></i></button></div>
     </div>
     <div class="m-filters">
       <button class="m-filter-pill active" data-f="all"          onclick="mAlSetFilter('all',this)">${t('mobile.alertes.filter.all')}</button>
@@ -43,7 +41,7 @@ export async function renderAlertes(el) {
       <button class="m-filter-pill"        data-f="non_compliant" onclick="mAlSetFilter('non_compliant',this)">${t('mobile.alertes.filter.non_compliant')}</button>
     </div>
     <div class="m-scroll-list" id="m-al-list">
-      <div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   window.mAlLoad      = load
@@ -60,7 +58,7 @@ export async function renderAlertes(el) {
 async function load() {
   const list = document.getElementById('m-al-list')
   if (!list) return
-  list.innerHTML = `<div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>`
+  list.innerHTML = `<div class="m-loading-row"><div class="m-spinner"></div></div>`
   try {
     _data = await window.api.getAlerts()
     renderList()
@@ -120,10 +118,10 @@ function renderList() {
 
   if (!filtered.length) {
     list.innerHTML = `
-      <div style="display:flex;flex-direction:column;align-items:center;padding:50px 20px;gap:10px">
-        <i class="ti ti-shield-check" style="font-size:40px;color:var(--green);opacity:.6"></i>
-        <div style="font-size:14px;font-weight:600;color:var(--text-secondary)">${t('mobile.alertes.empty')}</div>
-        <div style="font-size:12px;color:var(--text-tertiary)">${t('mobile.alertes.empty_sub')}</div>
+      <div class="m-empty">
+        <i class="ti ti-shield-check" style="color:var(--green)"></i>
+        <b>${t('mobile.alertes.empty')}</b>
+        <span>${t('mobile.alertes.empty_sub')}</span>
       </div>`
     return
   }

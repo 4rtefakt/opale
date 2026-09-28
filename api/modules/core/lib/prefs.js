@@ -10,7 +10,7 @@
 // rester synchro avec MOBILE_NAV_ITEMS côté front
 // (front/views/mobile/nav-config.js). Le serveur fait foi.
 export const MOBILE_NAV_ROUTES = new Set([
-  'dashboard', 'postes', 'alertes', 'tickets', 'scripts', 'stock',
+  'today', 'dashboard', 'postes', 'alertes', 'tickets', 'scripts', 'stock',
   'onboarding', 'rapports', 'audit', 'packages', 'conformite', 'ask',
 ])
 

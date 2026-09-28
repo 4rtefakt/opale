@@ -6,6 +6,7 @@
 // MOBILE_NAV_ROUTES côté serveur (api/modules/core/lib/prefs.js), qui fait foi.
 
 export const MOBILE_NAV_ITEMS = {
+  today:      { icon: 'ti-sun',              labelKey: 'mobile.nav.route.today' },
   dashboard:  { icon: 'ti-layout-dashboard', labelKey: 'mobile.nav.route.dashboard' },
   postes:     { icon: 'ti-device-laptop',    labelKey: 'mobile.nav.route.postes' },
   alertes:    { icon: 'ti-bell',             labelKey: 'mobile.nav.route.alertes' },
@@ -22,7 +23,7 @@ export const MOBILE_NAV_ITEMS = {
 
 // Les 4 raccourcis par défaut (utilisés tant que l'utilisateur n'a rien choisi
 // ou si la pref serveur est absente/illisible).
-export const MOBILE_NAV_DEFAULT = ['dashboard', 'postes', 'alertes', 'tickets']
+export const MOBILE_NAV_DEFAULT = ['today', 'tickets', 'postes', 'alertes']
 
 // Nettoie une valeur de pref mobile_nav (potentiellement absente/corrompue) :
 // garde les routes connues, sans doublon, max 4 ; retombe sur le défaut si vide.

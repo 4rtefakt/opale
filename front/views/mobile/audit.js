@@ -104,11 +104,9 @@ export async function renderAudit(el) {
   _total  = 0
 
   el.innerHTML = `
-    <div class="m-header">
-      <button class="m-icon-btn" onclick="window.location.hash='#/menu'">
-        <i class="ti ti-arrow-left"></i>
-      </button>
-      <h1>${t('mobile.audit.title')} <span id="m-audit-count" style="font-size:12px;font-weight:400;color:var(--text-tertiary)"></span></h1>
+    <div class="m-header big">
+      <button class="m-icon-btn ghost" onclick="window.location.hash='#/menu'"><i class="ti ti-arrow-left"></i></button>
+      <div class="m-head-text"><h1>${t('mobile.audit.title')}<span id="m-audit-count" class="m-count"></span></h1></div>
     </div>
     <div class="m-filters" style="padding-bottom:6px">
       <button class="m-filter-pill active" data-f="" onclick="mAuditSetFilter('',this)">${t('mobile.audit.filter.all')}</button>
@@ -118,7 +116,7 @@ export async function renderAudit(el) {
       <button class="m-filter-pill" data-f="token_created"  onclick="mAuditSetFilter('token_created',this)">${t('mobile.audit.filter.tokens')}</button>
     </div>
     <div class="m-scroll-list" id="m-audit-list" style="gap:0;padding-top:4px">
-      <div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>
+      <div class="m-loading-row"><div class="m-spinner"></div></div>
     </div>`
 
   window.mAuditSetFilter = (f, btn) => {
@@ -136,7 +134,7 @@ async function loadAudit(action, append) {
   const list = document.getElementById('m-audit-list')
   if (!list) return
   if (!append) {
-    list.innerHTML = `<div style="display:flex;justify-content:center;padding:20px"><div class="m-spinner"></div></div>`
+    list.innerHTML = `<div class="m-loading-row"><div class="m-spinner"></div></div>`
   }
 
   try {
@@ -158,7 +156,7 @@ function renderRows(action, append, newRows) {
   if (countEl) countEl.textContent = `${_rows.length}${_total > _rows.length ? '+' : ''}`
 
   if (!_rows.length) {
-    list.innerHTML = `<div style="text-align:center;color:var(--text-tertiary);padding:30px">${t('mobile.audit.empty')}</div>`
+    list.innerHTML = `<div class="m-empty"><span>${t('mobile.audit.empty')}</span></div>`
     return
   }
 

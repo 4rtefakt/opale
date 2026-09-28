@@ -1,67 +1,48 @@
+// « Plus » — tout ce qui n'est pas dans la barre du bas : compte, accès aux
+// autres écrans (les onglets déjà en raccourci ne sont pas répétés), réglages,
+// déconnexion.
+
+import { MOBILE_NAV_ITEMS } from '/views/mobile/nav-config.js'
+
+// Ordre d'affichage des tuiles ; couleur = repère visuel stable par écran.
+const TILES = [
+  ['today', 'blue'], ['dashboard', 'blue'], ['tickets', 'amber'], ['postes', 'green'], ['alertes', 'red'],
+  ['ask', 'purple'], ['conformite', 'green'], ['scripts', 'amber'], ['packages', 'indigo'],
+  ['onboarding', 'purple'], ['rapports', 'teal'], ['stock', 'orange'], ['audit', 'red'],
+]
+
 export async function renderMenu(el) {
   const user = window.appState?.user
+  const inNav = new Set(window.mNavRoutes?.() || [])
+  const tiles = TILES.filter(([r]) => !inNav.has(r))
 
   el.innerHTML = `
-    <div class="m-header">
-      <h1>Plus</h1>
+    <div class="m-header big">
+      <div class="m-head-text"><h1>${esc(t('mobile.nav.more'))}</h1></div>
+      <div class="m-actions"><button class="m-icon-btn" onclick="window.location.hash='#/search'" title="${esc(t('mobile.dashboard.search_title'))}"><i class="ti ti-search"></i></button></div>
     </div>
-    <div class="m-scroll" style="padding:16px;display:flex;flex-direction:column;gap:16px">
+    <div class="m-scroll">
 
       <!-- Compte -->
-      <div class="m-panel">
-        <div style="display:flex;align-items:center;gap:14px;padding:16px">
-          <div class="m-av" style="width:44px;height:44px;font-size:16px;flex-shrink:0">
-            ${user ? initials(user.displayName) : '?'}
-          </div>
-          <div style="min-width:0">
-            <div style="font-weight:600;font-size:15px">${esc(user?.displayName || '—')}</div>
-            <div style="font-size:12px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(user?.email || '')}</div>
-            ${user?.isAdmin ? `<span class="m-pill m-pill-on" style="margin-top:4px;display:inline-block">Admin</span>` : ''}
-          </div>
+      <button class="m-card tap" style="display:flex;align-items:center;gap:14px;text-align:left" onclick="window.location.hash='#/settings'">
+        <div class="m-av" style="width:44px;height:44px;font-size:16px">${user ? initials(user.displayName) : '?'}</div>
+        <div style="min-width:0;flex:1">
+          <div style="font-weight:600;font-size:15px">${esc(user?.displayName || '—')}</div>
+          <div style="font-size:12px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(user?.email || '')}</div>
         </div>
-      </div>
+        <span class="m-pill m-pill-off"><i class="ti ti-settings" style="font-size:12px"></i> ${esc(t('mobile.settings.title'))}</span>
+      </button>
 
-      <!-- Grille d'accès rapide -->
+      <!-- Écrans -->
       <div class="m-menu-grid">
-        <button class="m-menu-tile blue" onclick="window.location.hash='#/ask'">
-          <i class="ti ti-sparkles"></i>
-          <span>${esc(t('mobile.menu.ask'))}</span>
-        </button>
-        <button class="m-menu-tile green" onclick="window.location.hash='#/conformite'">
-          <i class="ti ti-shield-check"></i>
-          <span>${esc(t('mobile.menu.compliance'))}</span>
-        </button>
-        <button class="m-menu-tile blue" onclick="window.location.hash='#/settings'">
-          <i class="ti ti-settings"></i>
-          <span>Paramètres</span>
-        </button>
-        <button class="m-menu-tile amber" onclick="window.location.hash='#/scripts'">
-          <i class="ti ti-terminal-2"></i>
-          <span>Scripts</span>
-        </button>
+        ${tiles.map(([r, color]) => `
+        <button class="m-menu-tile ${color}" onclick="window.location.hash='#/${r}'">
+          <i class="ti ${MOBILE_NAV_ITEMS[r].icon}"></i>
+          <span>${esc(t(MOBILE_NAV_ITEMS[r].labelKey))}</span>
+        </button>`).join('')}
         <button class="m-menu-tile green" onclick="mSyncIntune(this)">
           <i class="ti ti-refresh"></i>
-          <span>Sync Intune</span>
-        </button>
-        <button class="m-menu-tile purple" onclick="window.location.hash='#/onboarding'">
-          <i class="ti ti-user-plus"></i>
-          <span>Onboarding</span>
-        </button>
-        <button class="m-menu-tile teal" onclick="window.location.hash='#/rapports'">
-          <i class="ti ti-chart-bar"></i>
-          <span>Rapports</span>
-        </button>
-        <button class="m-menu-tile orange" onclick="window.location.hash='#/stock'">
-          <i class="ti ti-package"></i>
-          <span>Stock</span>
-        </button>
-        <button class="m-menu-tile red" onclick="window.location.hash='#/audit'">
-          <i class="ti ti-list-details"></i>
-          <span>Logs</span>
-        </button>
-        <button class="m-menu-tile indigo" onclick="window.location.hash='#/packages'">
-          <i class="ti ti-rocket"></i>
-          <span>Déploiement</span>
+          <span>${esc(t('mobile.dashboard.sync_title'))}</span>
         </button>
       </div>
 
@@ -69,11 +50,11 @@ export async function renderMenu(el) {
       <div class="m-panel">
         <button class="m-menu-row" style="color:var(--red)" onclick="window.auth.logout()">
           <i class="ti ti-logout"></i>
-          <span>Déconnexion</span>
+          <span>${esc(t('mobile.menu.logout'))}</span>
         </button>
       </div>
 
-      <div style="text-align:center;font-size:11px;color:var(--text-tertiary);padding-bottom:8px">
+      <div class="m-muted" style="text-align:center;font-size:11px;padding-bottom:8px">
         ${esc(window.ENV?.BRANDING?.product_name || 'Opale')}
       </div>
     </div>`
@@ -81,8 +62,8 @@ export async function renderMenu(el) {
   window.mSyncIntune = (btn) => withBusy(btn, async () => {
     try {
       await window.api.syncIntune()
-      window.showToast('Sync Intune lancée', 'success')
-    } catch { window.showToast('Erreur', 'error') }
+      window.showToast(t('mobile.dashboard.toast.sync_started'), 'success')
+    } catch { window.showToast(t('mobile.dashboard.toast.error'), 'error') }
   })
 }
 
