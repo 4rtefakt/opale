@@ -1,6 +1,7 @@
 package client
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -134,5 +135,47 @@ func TestClient_NoAuthHeaderWhenTokenEmpty(t *testing.T) {
 	c := New(srv.URL, "")
 	if err := c.Get("/api/foo", &struct{}{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClient_Raw_passesBodyAndReturnsStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PATCH" || r.URL.Path != "/api/tickets/1" {
+			t.Errorf("requête = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer tk" || r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("en-têtes manquants : %v", r.Header)
+		}
+		b := new(strings.Builder)
+		_, _ = io.Copy(b, r.Body)
+		if b.String() != `{"status":"resolved"}` {
+			t.Errorf("corps = %q", b.String())
+		}
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`{"error":"conflit"}`))
+	}))
+	defer srv.Close()
+
+	status, body, err := New(srv.URL, "tk").Raw("PATCH", "/api/tickets/1", []byte(`{"status":"resolved"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusConflict || string(body) != `{"error":"conflit"}` {
+		t.Errorf("status=%d body=%q", status, body)
+	}
+}
+
+func TestClient_Raw_noBodyNoContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "" {
+			t.Errorf("Content-Type inattendu sans corps : %q", r.Header.Get("Content-Type"))
+		}
+		w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	status, body, err := New(srv.URL, "").Raw("GET", "/api/x", nil)
+	if err != nil || status != 200 || string(body) != `[]` {
+		t.Errorf("status=%d body=%q err=%v", status, body, err)
 	}
 }
