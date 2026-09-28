@@ -131,7 +131,7 @@ function alertRow(r, s, alertType, isSnoozed) {
         ${snoozeInfo}
       </span>
       ${actionBtn}
-      <i class="ti ti-chevron-right" style="color:var(--text-tertiary);font-size:12px"></i>
+      <span class="row-act">${esc(t('alertes.open_device'))} →</span>
     </div>`
 }
 

@@ -7,33 +7,23 @@ const _graphData = {}   // { [graphId]: { type, series, pl, gw } }
 export async function renderPosteDetail(container, id) {
   container.innerHTML = `
     <div class="topbar">
-      <div style="display:flex;align-items:center;gap:10px">
-        <a href="#/postes" class="btn btn-sm"><i class="ti ti-arrow-left"></i></a>
-        <h1 class="topbar-title" id="pd-hostname">…</h1>
-        <span id="pd-status-badge"></span>
+      <div class="topbar-left" style="flex-direction:column;align-items:flex-start;gap:2px">
+        <div class="page-kicker"><a href="#/postes" class="nav-link">← ${esc(t('nav.postes'))}</a></div>
+        <div style="display:flex;align-items:center;gap:10px;min-width:0"><h1 class="page-title" id="pd-hostname">…</h1><span id="pd-status-badge"></span></div>
       </div>
       <div class="topbar-actions">
-        ${window.appState?.user?.isAdmin ? `
-        <button class="btn btn-sm" style="color:var(--red)" onclick="deleteDevice()">
-          <i class="ti ti-trash"></i>
-        </button>` : ''}
-        <button class="btn btn-sm" id="btn-force-checkin" onclick="forceCheckin()" title="Forcer un checkin immédiat">
-          <i class="ti ti-refresh"></i> Forcer sync
-        </button>
-        <button class="btn btn-sm" id="btn-sync-intune" onclick="syncIntune()" title="Déclencher une sync Intune">
-          <i class="ti ti-cloud-download"></i> Sync Intune
-        </button>
         ${window.OPALE.moduleEnabled('tickets') ? `
-        <button class="btn btn-sm" onclick="openNewTicketFromDevice()">
+        <button class="btn" onclick="openNewTicketFromDevice()">
           <i class="ti ti-ticket"></i> ${t('tickets.new.title')}
         </button>` : ''}
         ${window.OPALE.moduleEnabled('remote') ? `
-        <button class="btn btn-primary btn-sm" id="btn-ssh" onclick="openSSHMenu(event)">
+        <button class="btn btn-primary" id="btn-ssh" onclick="openSSHMenu(event)">
           <i class="ti ti-terminal"></i> Terminal <i class="ti ti-chevron-down" style="font-size:10px;opacity:.7"></i>
         </button>` : ''}
+        <button class="btn" onclick="pdMoreMenu()" title="${esc(t('poste.more_actions'))}"><i class="ti ti-dots"></i></button>
       </div>
     </div>
-    <div id="pd-body" style="flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px">
+    <div id="pd-body" class="page-body">
       <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
     </div>
     <!-- Terminal SSH -->
@@ -60,6 +50,7 @@ export async function renderPosteDetail(container, id) {
   window.lapsViewPassword        = lapsViewPassword
   window.lapsRequestRotation     = lapsRequestRotation
   window.forceCheckin            = forceCheckin
+  window.pdMoreMenu              = pdMoreMenu
   window.syncIntune              = syncIntune
 
   try {
@@ -89,15 +80,50 @@ function renderBody() {
     `<span id="pd-status-badge" class="badge badge-${statusColor(d.status)}">${t('status.' + d.status)}</span>`
 
   const diskC = (d.disks || []).find(dk => dk.letter === 'C:') || d.disks?.[0]
+  const online  = d.status === 'online' || (!!d.last_seen && (Date.now() - new Date(d.last_seen).getTime()) < 3_600_000)
+  const diskPct = diskC?.used_pct ?? d.disk_used_pct ?? null
+  const hwSummary = [[d.manufacturer, d.model].filter(Boolean).join(' '), d.os].filter(Boolean).join(' · ')
+  // Ce qu'on vient chercher en premier sur une fiche : état, qui, disque,
+  // conformité, agent — en cartes, avant le détail.
+  const factsHtml = `
+    <div class="props props-5">
+      <div class="prop static"><div class="k">${esc(t('poste.facts.status'))}</div><div class="v ${online ? 'ok' : 'dim'}"><span class="dotv"></span>${esc(t('status.' + (online ? 'online' : 'offline')))}</div><div class="s">${esc(t('poste.hw.last_seen'))} · ${esc(formatRelative(d.last_seen))}</div></div>
+      ${d.user
+        ? `<a class="prop" href="#/users/${esc(d.user.entraId || d.user.email)}"><div class="k">${esc(t('poste.facts.user'))}</div><div class="v"><span class="av">${initials(d.user.name)}</span>${esc(d.user.name || d.user.email)}</div><div class="s">${esc(d.user.job_title || d.user.email || '')}</div></a>`
+        : `<div class="prop static"><div class="k">${esc(t('poste.facts.user'))}</div><div class="v dim">${esc(t('poste.facts.unassigned'))}</div><div class="s">&nbsp;</div></div>`}
+      <div class="prop static"><div class="k">${esc(t('poste.facts.disk'))}</div><div class="v ${diskPct >= 90 ? 'crit' : diskPct >= 80 ? 'needs' : ''}">${diskPct != null ? diskPct + '%' : '—'}</div><div class="s">${diskC?.size_gb ? diskC.size_gb + ' Go' : '&nbsp;'}</div></div>
+      <a class="prop" href="#/conformite"><div class="k">${esc(t('poste.facts.compliance'))}</div><div class="v ${d.compliance_state === 'compliant' ? 'ok' : d.compliance_state === 'noncompliant' ? 'crit' : 'dim'}">${d.compliance_state ? complianceBadge(d.compliance_state) : esc(t('poste.facts.no_compliance'))}</div><div class="s">${d.intune_last_sync ? esc(formatRelative(d.intune_last_sync)) : '&nbsp;'}</div></a>
+      <div class="prop static"><div class="k">${esc(t('poste.facts.agent'))}</div><div class="v ${d.agent_version ? '' : 'dim'}">${d.agent_version ? 'v' + esc(d.agent_version) : '—'}</div><div class="s">${esc(d.ip_netbird || '')}&nbsp;</div></div>
+    </div>`
 
   body.innerHTML = `
+    ${factsHtml}
     <!-- Grille principale -->
     <div class="pd-grid">
       <!-- Colonne gauche -->
       <div style="display:flex;flex-direction:column;gap:16px">
-        <!-- Hardware -->
+        ${securityPanel(d)}
+        ${perfPanel(d)}
+        ${batteryHealthPanel(d)}
+        <!-- Disques -->
         <div class="panel">
-          <div class="panel-header">${t('poste.hardware')}</div>
+          <div class="panel-header">${t('poste.disks')}</div>
+          <div style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
+            ${(d.disks || []).map(disk => diskRow(disk)).join('') || '<div class="empty-state" style="padding:1rem"><p>—</p></div>'}
+          </div>
+        </div>
+        <!-- Réseau -->
+        <div class="panel">
+          <div class="panel-header">${t('poste.network')}</div>
+          <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0">
+            ${(d.network || []).map(iface => netifRow(iface)).join('') || '<div class="empty-state" style="padding:1rem"><p>—</p></div>'}
+          </div>
+          ${bwPanel(d.bandwidth)}
+          ${pingPanel(d.ping)}
+        </div>
+        <!-- Hardware -->
+        <details class="panel panel-collapsible">
+          <summary class="panel-header">${t('poste.hardware_summary')} <span class="muted">${esc(hwSummary)}</span></summary>
           <div class="hw-grid">
             ${hwRow('ti-building-factory-2', t('poste.hw.manufacturer'), d.manufacturer)}
             ${hwRow('ti-device-laptop',      t('poste.hw.model'),        d.model)}
@@ -127,29 +153,23 @@ function renderBody() {
             ${d.enrolled_at      ? hwRow('ti-calendar', t('poste.hw.enrolled'),    formatWithDate(d.enrolled_at)) : ''}
             ${d.intune_last_sync ? hwRow('ti-refresh',  t('poste.hw.intune_sync'), formatWithDate(d.intune_last_sync)) : ''}
           </div>
-        </div>
-        ${securityPanel(d)}
-        ${perfPanel(d)}
-        ${batteryHealthPanel(d)}
-        <!-- Disques -->
-        <div class="panel">
-          <div class="panel-header">${t('poste.disks')}</div>
-          <div style="display:flex;flex-direction:column;gap:10px;padding:4px 0">
-            ${(d.disks || []).map(disk => diskRow(disk)).join('') || '<div class="empty-state" style="padding:1rem"><p>—</p></div>'}
-          </div>
-        </div>
-        <!-- Réseau -->
-        <div class="panel">
-          <div class="panel-header">${t('poste.network')}</div>
-          <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0">
-            ${(d.network || []).map(iface => netifRow(iface)).join('') || '<div class="empty-state" style="padding:1rem"><p>—</p></div>'}
-          </div>
-          ${bwPanel(d.bandwidth)}
-          ${pingPanel(d.ping)}
-        </div>
+        </details>
       </div>
       <!-- Colonne droite -->
       <div style="display:flex;flex-direction:column;gap:16px">
+        <!-- Alertes actives -->
+        <div class="panel">
+          <div class="panel-header">${t('poste.alerts')}</div>
+          ${(d.active_alerts || []).length ? d.active_alerts.map(a => `
+            <div class="alert-row">
+              <i class="ti ti-alert-triangle" style="color:var(--red)"></i>
+              <div style="flex:1">
+                <div style="font-size:13px;font-weight:500">${esc(a.message || a.type)}</div>
+                <div style="font-size:11px;color:var(--text-tertiary)">${formatRelative(a.created_at)}</div>
+              </div>
+            </div>`).join('')
+            : `<div class="empty-state" style="padding:1rem"><i class="ti ti-check" style="color:var(--green)"></i><p>${t('poste.no_alerts')}</p></div>`}
+        </div>
         ${d.user ? `
         <div class="panel">
           <div class="panel-header">${t('poste.user')}</div>
@@ -165,19 +185,6 @@ function renderBody() {
         ${threatsPanel(d)}
         ${lapsPanel(d)}
         ${currentUserPanel(d)}
-        <!-- Alertes actives -->
-        <div class="panel">
-          <div class="panel-header">${t('poste.alerts')}</div>
-          ${(d.active_alerts || []).length ? d.active_alerts.map(a => `
-            <div class="alert-row">
-              <i class="ti ti-alert-triangle" style="color:var(--red)"></i>
-              <div style="flex:1">
-                <div style="font-size:13px;font-weight:500">${esc(a.message || a.type)}</div>
-                <div style="font-size:11px;color:var(--text-tertiary)">${formatRelative(a.created_at)}</div>
-              </div>
-            </div>`).join('')
-            : `<div class="empty-state" style="padding:1rem"><i class="ti ti-check" style="color:var(--green)"></i><p>${t('poste.no_alerts')}</p></div>`}
-        </div>
         <!-- Conformité (chargé async via /api/devices/:id/compliance) -->
         <div class="panel" id="panel-conformite">
           <div class="panel-header">
@@ -1817,6 +1824,20 @@ async function runScript() {
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   }
+}
+
+// Actions rares (sync forcée, Intune, suppression) hors de l'en-tête : une
+// seule action principale visible, le reste à un clic.
+function pdMoreMenu() {
+  const admin = window.appState?.user?.isAdmin
+  showModal(`
+    <div class="modal-title">${esc(t('poste.more_actions'))}</div>
+    <div class="status-list">
+      <button class="status-opt" id="btn-force-checkin" onclick="closeModal();forceCheckin()"><i class="ti ti-refresh"></i><span><b>Forcer sync</b><small>Demande un checkin immédiat à l'agent</small></span></button>
+      <button class="status-opt" id="btn-sync-intune" onclick="closeModal();syncIntune()"><i class="ti ti-cloud-download"></i><span><b>Sync Intune</b><small>Déclenche une synchronisation Intune du poste</small></span></button>
+      ${admin ? `<button class="status-opt danger" onclick="closeModal();deleteDevice()"><i class="ti ti-trash"></i><span><b>Supprimer le poste</b><small>Irréversible — l'agent devra être réenrôlé</small></span></button>` : ''}
+    </div>
+    <div class="modal-footer"><button class="btn" onclick="closeModal()">${t('btn.cancel')}</button></div>`)
 }
 
 async function deleteDevice() {

@@ -15,6 +15,7 @@ export async function renderParametres(container) {
           <button class="btn" onclick="reloadSettings()"><i class="ti ti-refresh"></i> ${t('settings.btn.refresh')}</button>
         </div>
       </div>
+      <div class="seg settings-tabs" id="settings-tabs" style="display:none"></div>
       <div id="settings-body" class="stack">
         <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
       </div>
@@ -38,6 +39,7 @@ export async function renderParametres(container) {
   window.showAddAdminModal   = showAddAdminModal
   window.showNewTokenModal   = showNewTokenModal
   window.pickTheme           = pickTheme
+  window.settingsTab         = settingsTab
 
   await reloadSettings()
 }
@@ -58,7 +60,9 @@ function render() {
   setTimeout(paintSettingsMode, 0)
 
   body.style.gap = '20px'
+  renderTabs()
   body.innerHTML = `
+    <section class="settings-tab" data-tab="appearance">
     <!-- Langue -->
     <div class="panel">
       <div class="panel-header">${t('settings.language.title')}</div>
@@ -97,6 +101,8 @@ function render() {
       </div>
     </div>
 
+    </section>
+    <section class="settings-tab" data-tab="instance">
     <!-- Branding (nom, tagline, filtre Graph) -->
     <div class="panel">
       <div class="panel-header">${t('settings.branding.title')}</div>
@@ -214,6 +220,8 @@ function render() {
       </div>
     </div>
 
+    </section>
+    <section class="settings-tab" data-tab="integrations">
     <!-- Sync Intune -->
     <div class="panel">
       <div class="panel-header">${t('settings.intune.title')}</div>
@@ -241,6 +249,8 @@ function render() {
       </div>
     </div>
 
+    </section>
+    <section class="settings-tab" data-tab="security">
     <!-- Clés SSH publiques -->
     <div class="panel">
       <div class="panel-header">
@@ -401,7 +411,30 @@ function render() {
             </button>
           </div>`).join('')
       })()}
-    </div>`
+    </div>
+    </section>`
+  applyTab()
+}
+
+// Onglets : une seule famille de réglages à l'écran à la fois (mémorisé).
+const SETTINGS_TABS = ['appearance', 'instance', 'integrations', 'security']
+let _tab = SETTINGS_TABS.includes(localStorage.getItem('settings-tab')) ? localStorage.getItem('settings-tab') : 'appearance'
+function renderTabs() {
+  const el = document.getElementById('settings-tabs')
+  if (!el) return
+  el.style.display = ''
+  el.innerHTML = SETTINGS_TABS.map(k => `<button class="seg-btn ${k === _tab ? 'active' : ''}" data-tab="${k}" onclick="settingsTab('${k}')">${esc(t('settings.tab.' + k))}</button>`).join('')
+}
+function settingsTab(k) {
+  if (!SETTINGS_TABS.includes(k)) return
+  _tab = k
+  localStorage.setItem('settings-tab', k)
+  document.querySelectorAll('#settings-tabs .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === k))
+  applyTab()
+}
+function applyTab() {
+  document.querySelectorAll('#settings-body .settings-tab').forEach(sec => { sec.style.display = sec.dataset.tab === _tab ? '' : 'none' })
+  document.getElementById('settings-body')?.closest('.page')?.scrollTo({ top: 0 })
 }
 
 async function saveBranding() {

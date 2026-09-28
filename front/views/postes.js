@@ -1,6 +1,10 @@
 let _devices = []
 let _filter  = 'all'
 let _sortBy  = localStorage.getItem('postes-sort') || 'status'
+// Colonnes : « compact » (l'essentiel) par défaut, « full » ajoute modèle,
+// OS, agent et RAM. Moins de colonnes = lecture plus rapide.
+let _cols    = localStorage.getItem('postes-cols') === 'full' ? 'full' : 'compact'
+const colCount = () => _cols === 'full' ? 11 : 7
 let _selected = new Set()
 // Seuils disque tirés des settings serveur (override après loadDevices via
 // data.thresholds). Defaults alignés avec ceux de l'API si le call échoue.
@@ -76,6 +80,7 @@ export async function renderPostes(container) {
         <button class="filter-btn ${_filter==='unassigned'?'active':''}" data-filter="unassigned" onclick="postesSetFilter('unassigned',this)">Non assignés <span id="count-unassigned">—</span></button>
       </div>
       <div class="toolbar-right">
+        <button class="btn" id="btn-cols" onclick="postesToggleCols()" title="${esc(t('postes.cols.hint'))}"><i class="ti ti-columns-3"></i> <span id="btn-cols-label"></span></button>
         <select class="sort-select" onchange="postesSort(this.value)">
           <option value="name"   ${_sortBy==='name'   ?'selected':''}>Trier : Nom</option>
           <option value="disk"   ${_sortBy==='disk'   ?'selected':''}>Trier : Disque</option>
@@ -89,22 +94,8 @@ export async function renderPostes(container) {
     <!-- TABLE -->
     <div class="table-wrap">
       <table id="postes-table">
-        <thead>
-          <tr>
-            <th class="td-check"><input type="checkbox" id="check-all" onchange="postesToggleAll(this)"></th>
-            <th onclick="postesSort('name')">Nom <i class="ti ti-selector sort-icon"></i></th>
-            <th onclick="postesSort('user')">Utilisateur <i class="ti ti-selector sort-icon"></i></th>
-            <th>Modèle</th>
-            <th>OS</th>
-            <th>Agent</th>
-            <th onclick="postesSort('disk')">Disque C: <i class="ti ti-selector sort-icon"></i></th>
-            <th>RAM</th>
-            <th onclick="postesSort('last')">Dernier push <i class="ti ti-selector sort-icon"></i></th>
-            <th onclick="postesSort('status')">Statut <i class="ti ti-selector sort-icon"></i></th>
-            <th style="width:80px"></th>
-          </tr>
-        </thead>
-        <tbody id="postes-tbody"><tr><td colspan="11" style="text-align:center;padding:2rem;color:var(--text-tertiary)"><div class="loading-spinner" style="margin:0 auto"></div></td></tr></tbody>
+        <thead id="postes-thead"></thead>
+        <tbody id="postes-tbody"><tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-tertiary)"><div class="loading-spinner" style="margin:0 auto"></div></td></tr></tbody>
       </table>
     </div>
 
@@ -117,6 +108,8 @@ export async function renderPostes(container) {
   // Exposer les handlers globalement pour les handlers inline
   window.postesFilter       = postesFilter
   window.postesSetFilter    = postesSetFilter
+  window.postesToggleCols   = postesToggleCols
+  renderHead()
   window.postesSort         = postesSort
   window.postesToggleAll    = postesToggleAll
   window.postesToggleRow    = postesToggleRow
@@ -140,7 +133,7 @@ async function loadDevices() {
     renderTable()
   } catch (err) {
     document.getElementById('postes-tbody').innerHTML =
-      `<tr><td colspan="11" style="padding:1rem;color:var(--red)">${esc(err.message)}</td></tr>`
+      `<tr><td colspan="${colCount()}" style="padding:1rem;color:var(--red)">${esc(err.message)}</td></tr>`
   }
 }
 
@@ -194,6 +187,33 @@ function getFiltered() {
   })
 }
 
+function renderHead() {
+  const thead = document.getElementById('postes-thead')
+  if (!thead) return
+  const full = _cols === 'full'
+  thead.innerHTML = `
+    <tr>
+      <th class="td-check"><input type="checkbox" id="check-all" onchange="postesToggleAll(this)"></th>
+      <th onclick="postesSort('name')">Nom <i class="ti ti-selector sort-icon"></i></th>
+      <th onclick="postesSort('user')">Utilisateur <i class="ti ti-selector sort-icon"></i></th>
+      ${full ? '<th>Modèle</th><th>OS</th><th>Agent</th>' : ''}
+      <th onclick="postesSort('disk')">Disque C: <i class="ti ti-selector sort-icon"></i></th>
+      ${full ? '<th>RAM</th>' : ''}
+      <th onclick="postesSort('last')">Dernier contact <i class="ti ti-selector sort-icon"></i></th>
+      <th onclick="postesSort('status')">Statut <i class="ti ti-selector sort-icon"></i></th>
+      <th style="width:60px"></th>
+    </tr>`
+  const lbl = document.getElementById('btn-cols-label')
+  if (lbl) lbl.textContent = full ? t('postes.cols.less') : t('postes.cols.more')
+}
+
+function postesToggleCols() {
+  _cols = _cols === 'full' ? 'compact' : 'full'
+  localStorage.setItem('postes-cols', _cols)
+  renderHead()
+  renderTable()
+}
+
 function renderTable() {
   const tbody = document.getElementById('postes-tbody')
   if (!tbody) return
@@ -203,7 +223,7 @@ function renderTable() {
     `Affichage 1–${devices.length} sur ${devices.length}`
 
   if (devices.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="11"><div class="empty-state" style="padding:2rem"><i class="ti ti-device-laptop"></i><p>Aucun poste trouvé</p></div></td></tr>`
+    tbody.innerHTML = `<tr><td colspan="${colCount()}"><div class="empty-state" style="padding:2rem"><i class="ti ti-device-laptop"></i><p>Aucun poste trouvé</p></div></td></tr>`
     return
   }
 
@@ -242,6 +262,7 @@ function deviceRow(d) {
   const sel    = _selected.has(d.id) ? 'selected' : ''
 
   const ram = d.ram_gb ? `${parseFloat(d.ram_gb).toFixed(0)} Go` : '—'
+  const full = _cols === 'full'
 
   return `
     <tr class="${sel}" onclick="postesRowClick(event,'${d.id}')" data-id="${esc(d.id)}">
@@ -265,16 +286,16 @@ function deviceRow(d) {
           : `<span style="color:var(--text-tertiary);font-size:11px">Non assigné</span>`
         }
       </td>
-      <td style="color:var(--text-secondary);white-space:nowrap">${esc(d.model || '—')}</td>
+      ${full ? `<td style="color:var(--text-secondary);white-space:nowrap">${esc(d.model || '—')}</td>
       <td><span class="os-badge"><i class="ti ti-brand-windows"></i>${esc(d.os || '—')}</span></td>
-      <td style="color:var(--text-tertiary);font-size:11px;font-family:monospace;white-space:nowrap">${d.agent_version ? 'v' + esc(d.agent_version) : '—'}</td>
+      <td style="color:var(--text-tertiary);font-size:11px;font-family:monospace;white-space:nowrap">${d.agent_version ? 'v' + esc(d.agent_version) : '—'}</td>` : ''}
       <td>
         <div class="disk-wrap">
           <div class="disk-bar"><div class="disk-fill ${fill}" style="width:${pct}%"></div></div>
           <span class="disk-pct" ${pctCls}>${pct}%</span>
         </div>
       </td>
-      <td><span class="ram-cell">${ram}</span></td>
+      ${full ? `<td><span class="ram-cell">${ram}</span></td>` : ''}
       <td style="color:var(--text-tertiary);font-size:11px">${formatRelative(d.last_seen)}</td>
       <td>${statusPill(d)}</td>
       <td style="text-align:right">
