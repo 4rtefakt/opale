@@ -206,8 +206,16 @@ class API {
   runScript(id, device_id)        { return this._fetch(`/scripts/${id}/run`, { method: 'POST', body: { device_id } }) }
   getDeviceExecutions(deviceId, offset = 0) { return this._fetch(`/scripts/executions/device/${deviceId}?offset=${offset}`) }
 
-  // Rapports
-  getRapports()           { return this._fetch('/rapports') }
+  // Rapports — days optionnel : fenêtre d'activité (défaut 30j côté serveur ;
+  // la vue Point passe la durée de la période).
+  getRapports(days)       { return this._fetch('/rapports' + (days ? `?days=${days}` : '')) }
+
+  // Points informatiques (revues périodiques — cf. migration 071)
+  getReviews()            { return this._fetch('/reviews') }
+  getReview(id)           { return this._fetch(`/reviews/${id}`) }
+  createReview(body)      { return this._fetch('/reviews', { method: 'POST', body }) }
+  updateReview(id, body)  { return this._fetch(`/reviews/${id}`, { method: 'PATCH', body }) }
+  deleteReview(id)        { return this._fetch(`/reviews/${id}`, { method: 'DELETE' }) }
 
   // Réseau — top consommateurs bande passante.
   // params : { period: '4h'|'24h'|'7d', sort: 'total'|'sent'|'recv', limit: 1..100 }
