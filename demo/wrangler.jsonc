@@ -1,0 +1,19 @@
+{
+  // Démo publique : front statique + API factice en mémoire (voir README.md).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "opale-demo",
+  "main": "worker.js",
+  "compatibility_date": "2025-09-01",
+  "assets": {
+    // Le front tel quel — setup.sh doit avoir vendorisé les polices, icônes
+    // et MSAL dans front/ avant le déploiement (voir README.md).
+    "directory": "../front",
+    "binding": "ASSETS",
+    // Ces chemins passent toujours par le Worker, même si un fichier du même
+    // nom existe dans front/ (env.js et manifest.json sont générés).
+    "run_worker_first": ["/api/*", "/env.js", "/manifest.json", "/branding/*"],
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none"
+  },
+  "observability": { "enabled": true }
+}

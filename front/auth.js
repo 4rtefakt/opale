@@ -5,6 +5,13 @@ class Auth {
   }
 
   async init() {
+    // Démo publique (ENV.DEMO posé par le Worker de démo) : pas de MSAL, un
+    // compte fictif ; l'API factice ignore le jeton.
+    if (window.ENV?.DEMO) {
+      this._demo = true
+      this._account = { localAccountId: 'me', username: 'admin@demo.opale.fr', name: 'Camille Roussel' }
+      return
+    }
     const clientId = window.ENV?.ENTRA_CLIENT_ID
     const tenantId = window.ENV?.ENTRA_TENANT_ID
     if (!clientId || !tenantId) return
@@ -39,6 +46,7 @@ class Auth {
   ready() { return !!this._account }
 
   async login() {
+    if (this._demo) { window.location.reload(); return }
     if (!this._app) throw new Error('MSAL non initialisé')
     await this._app.loginRedirect({
       scopes: [`api://${window.ENV.ENTRA_CLIENT_ID}/access_as_user`]
@@ -46,11 +54,13 @@ class Auth {
   }
 
   async logout() {
+    if (this._demo) { window.location.href = '/'; return }
     if (!this._app) return
     await this._app.logoutRedirect()
   }
 
   async getToken() {
+    if (this._demo) return 'demo'
     if (!this._app || !this._account) throw new Error('Non authentifié')
     const req = {
       account: this._account,

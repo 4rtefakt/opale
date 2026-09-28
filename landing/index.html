@@ -5,6 +5,15 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <meta name="color-scheme" content="dark" />
 <meta name="theme-color" content="#0a0c10" />
+<script>
+  // Démo publique (demo/README.md) : renseigner l'URL du Worker déployé pour
+  // afficher le bouton « Try the live demo ». Vide = bouton masqué.
+  const DEMO_URL = ''
+  document.addEventListener('DOMContentLoaded', () => {
+    const a = document.getElementById('demo-cta')
+    if (a && DEMO_URL) { a.href = DEMO_URL; a.hidden = false }
+  })
+</script>
 <meta name="description" content="Opale — self-hosted RMM, inventory, ticketing, scripts and browser SSH for small organisations. AGPL-3.0, GDPR-native, one VM, one binary." />
 <meta property="og:title" content="Opale — your whole fleet, polished." />
 <meta property="og:description" content="Self-hosted RMM, inventory, ticketing, scripts and browser SSH for small organisations. AGPL-3.0, GDPR-native." />
@@ -1326,6 +1335,9 @@
     <div class="hero-cta">
       <a href="#install" class="btn btn-primary">
         Get started <span class="arrow" aria-hidden="true">→</span>
+      </a>
+      <a id="demo-cta" class="btn btn-ghost" rel="noopener" hidden>
+        Try the live demo <span aria-hidden="true">↗</span>
       </a>
       <a href="https://github.com/4rtefakt/opale" class="btn btn-ghost" rel="noopener">
         View on GitHub <span aria-hidden="true">↗</span>

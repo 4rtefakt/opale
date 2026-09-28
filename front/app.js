@@ -354,9 +354,31 @@ async function updateProposalsBadge() {
   } catch {}
 }
 
+
+// ── Démo publique ─────────────────────────────────────────────────────────────
+// Bandeau au-dessus de l'application quand le serveur annonce ENV.DEMO :
+// données fictives, bouton pour repartir d'un jeu neuf.
+function showDemoBanner() {
+  if (!window.ENV?.DEMO || document.getElementById('demo-banner')) return
+  const el = document.createElement('div')
+  el.id = 'demo-banner'
+  el.className = 'demo-banner'
+  el.innerHTML = `<i class="ti ti-flask"></i><span class="demo-banner-text">${esc(t('demo.banner'))}</span>
+    <button class="demo-banner-btn" onclick="demoReset()"><i class="ti ti-refresh"></i> ${esc(t('demo.reset'))}</button>
+    <a class="demo-banner-btn" href="https://github.com/4rtefakt/opale#quick-start" target="_blank" rel="noopener"><i class="ti ti-download"></i> ${esc(t('demo.install'))}</a>`
+  document.body.prepend(el)
+  document.documentElement.classList.add('has-demo-banner')
+}
+window.demoReset = async () => {
+  try { await window.api._fetch('/demo/reset', { method: 'POST', body: {} }) } catch {}
+  try { sessionStorage.clear() } catch {}
+  window.location.reload()
+}
+
 // ─── Init ───
 async function init() {
   await initI18n()
+  showDemoBanner()
 
   // Redirection vers l'interface mobile sur petits écrans
   if (window.innerWidth < 768 && !window.location.pathname.endsWith('/mobile.html')) {

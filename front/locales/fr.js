@@ -1595,4 +1595,9 @@ export default {
   'mobile.time.months':                 '{n} mois',
   'mobile.time.days_short':             '{n} j',
   'mobile.time.and':                    ' et ',
+
+  // ── Démo publique ──
+  'demo.banner':  'Démo — données fictives, remises à zéro régulièrement. Rien n\'est enregistré.',
+  'demo.reset':   'Réinitialiser',
+  'demo.install': 'Installer Opale',
 }

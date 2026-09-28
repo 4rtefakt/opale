@@ -1,0 +1,14 @@
+{
+  "name": "opale-demo",
+  "private": true,
+  "type": "module",
+  "description": "Démo publique d'Opale : front statique + API factice sur Cloudflare Workers",
+  "scripts": {
+    "dev": "wrangler dev --port 8788",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.43.0"
+  }
+}

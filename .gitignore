@@ -45,3 +45,6 @@ front/branding/login-bg.svg
 # Installeurs générés par scripts/bulk-build-intune-installers.sh
 # (chacun contient un token agent en clair embarqué — ne JAMAIS committer)
 intune-installers/
+
+# Démo Cloudflare (cache local de wrangler dev)
+demo/.wrangler/

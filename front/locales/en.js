@@ -1590,4 +1590,9 @@ export default {
   'mobile.time.months':                 '{n} mo',
   'mobile.time.days_short':             '{n} d',
   'mobile.time.and':                    ' and ',
+
+  // ── Public demo ──
+  'demo.banner':  'Demo — fictional data, reset regularly. Nothing is saved.',
+  'demo.reset':   'Reset',
+  'demo.install': 'Install Opale',
 }

@@ -13,6 +13,13 @@
 
 ---
 
+## Try it
+
+A public demo with fictional data runs on a Cloudflare Worker: the real
+front-end, a fake in-memory API, no account needed and nothing saved. See
+[`demo/README.md`](demo/README.md) to run it locally (`cd demo && npm run dev`)
+or to deploy your own copy.
+
 ## Quick start
 
 One-liner (interactive — asks for domain + Entra credentials, generates
