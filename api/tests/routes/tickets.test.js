@@ -1457,3 +1457,35 @@ test('awaiting_reply — requester non-admin : notes internes / suggestions IA i
   assert.equal((await get(me.token, `/api/tickets/${id}`)).json().awaiting_reply, true)
   assert.equal((await get(me.token, '/api/tickets/')).json().find(t => t.id === id).awaiting_reply, true)
 })
+
+// ─── GET /count — awaiting_reply compté côté serveur ───────────────────────
+// Le badge Tickets s'appuie dessus : il doit compter tous les tickets en
+// attente de ma réponse, pas seulement ceux d'une page de la liste.
+
+test("GET /count — awaiting_reply : dernier message hors system d'un autre, sur open/in_progress", { skip: SKIP }, async () => {
+  const admin = await adminAuth('oid-tk-count-admin', 'Count Admin')
+  const count = async () => (await fastify.inject({
+    method: 'GET', url: '/api/tickets/count', headers: { authorization: `Bearer ${admin.token}` },
+  })).json()
+  const before = (await count()).awaiting_reply
+
+  const mk = async (title) => (await createTicketAs(admin.token, { title })).json().id
+  const waiting = await mk('Count — en attente')
+  const answered = await mk('Count — déjà répondu')
+  const onlySystem = await mk('Count — système après la question')
+  const closed = await mk('Count — fermé')
+  await db.query(`
+    INSERT INTO ticket_messages (ticket_id, type, author, content, created_at) VALUES
+      ($1, 'comment', 'Someone Else', 'Question',   now() - interval '2 minutes'),
+      ($2, 'comment', 'Someone Else', 'Question',   now() - interval '2 minutes'),
+      ($2, 'comment', 'Count Admin',  'Réponse',    now() - interval '1 minute'),
+      ($3, 'comment', 'Someone Else', 'Question',   now() - interval '2 minutes'),
+      ($3, 'system',  'Opale',        'Pris en charge', now() - interval '1 minute'),
+      ($4, 'comment', 'Someone Else', 'Question',   now() - interval '2 minutes')
+  `, [waiting, answered, onlySystem, closed])
+  await db.query(`UPDATE tickets SET status = 'closed' WHERE id = $1`, [closed])
+
+  const after = await count()
+  assert.equal(after.awaiting_reply, before + 2, 'en attente + système ignoré ; répondu et fermé exclus')
+  assert.equal(typeof after.open, 'number', 'le compteur existant reste servi')
+})

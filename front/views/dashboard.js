@@ -49,10 +49,6 @@ function renderDashboardData(data, scripts = []) {
     const b = document.getElementById('badge-alertes')
     if (b) { b.textContent = k.alerts_active; b.style.display = '' }
   }
-  if (k.tickets_open > 0) {
-    const b = document.getElementById('badge-tickets')
-    if (b) { b.textContent = k.tickets_open; b.style.display = '' }
-  }
 
   // Zone 1 : visible UNIQUEMENT si au moins une carte est non-nulle. Évite
   // un bandeau de zéros bruyant quand tout est nominal.

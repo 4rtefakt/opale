@@ -311,16 +311,18 @@ window.setTicketsBadge = (n) => {
   badge.textContent = n
   badge.style.display = n > 0 ? '' : 'none'
 }
+// Fils à trier (comme la liste « À trier », pas les mails un par un) +
+// tickets en attente de ma réponse, comptés côté serveur sur tous les tickets.
 async function updateTicketsBadge() {
   try {
     const [inbox, tickets] = await Promise.all([
-      window.api.getInboxCount().catch(() => ({ pending: 0 })),
-      window.api.getTickets({ limit: 200 }).catch(() => []),
+      window.api.getInboxCount().catch(() => ({})),
+      window.api.getTicketsCount().catch(() => ({})),
     ])
-    const awaiting = tickets.filter(tk => tk.awaiting_reply && ['open', 'in_progress'].includes(tk.status)).length
-    window.setTicketsBadge((inbox.pending || 0) + awaiting)
+    window.setTicketsBadge((inbox.threads ?? inbox.pending ?? 0) + (tickets.awaiting_reply || 0))
   } catch {}
 }
+window.updateTicketsBadge = updateTicketsBadge
 
 // ─── Badge mails à trier ───
 // Mis à jour au boot (toutes les 5 min) et par la vue Tickets elle-même.

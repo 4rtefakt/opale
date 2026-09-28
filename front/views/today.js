@@ -38,11 +38,13 @@ export async function renderToday(container) {
 }
 
 async function load() {
-  const [inbox, tickets, alerts, dash] = await Promise.all([
+  const [inbox, tickets, alerts, dash, inboxCount, ticketsCount] = await Promise.all([
     window.api.getInbox({ limit: 200 }).catch(() => []),
     window.api.getTickets({ limit: 200 }).catch(() => []),
     window.api.getAlerts().catch(() => null),
     window.api.getDashboard().catch(() => null),
+    window.api.getInboxCount().catch(() => ({})),
+    window.api.getTicketsCount().catch(() => ({})),
   ])
   const me = window.appState?.user?.entraId
   const live = tickets.filter(tk => ['open', 'in_progress'].includes(tk.status))
@@ -55,21 +57,25 @@ async function load() {
 
   _data = { inbox, needs, critical, unassigned, mineQuiet, alerts, dash }
 
-  const total = inbox.length + needs.length + critical.length
+  // Compteurs serveur (fils à trier, tickets en attente de réponse) : les
+  // listes ci-dessus sont bornées à 200 et comptent les mails un par un.
+  const nInbox = inboxCount.threads ?? inbox.length
+  const nNeeds = ticketsCount.awaiting_reply ?? needs.length
+  const total = nInbox + nNeeds + critical.length
   const sub = document.getElementById('today-sub')
   if (sub) sub.textContent = total === 0 ? t('today.nothing') : t('today.count', { n: total })
-  window.setTicketsBadge?.(inbox.length + needs.length)
+  window.setTicketsBadge?.(nInbox + nNeeds)
 
   const cards = document.getElementById('today-cards')
   if (cards) cards.innerHTML = `
-    <a class="today-card ${inbox.length ? 'hot' : ''}" href="#/tickets?folder=inbox">
+    <a class="today-card ${nInbox ? 'hot' : ''}" href="#/tickets?folder=inbox">
       <span class="lbl">${esc(t('today.card.inbox'))}</span>
-      <span class="num">${inbox.length}</span>
+      <span class="num">${nInbox}</span>
       <span class="sub">${esc(oldestMail ? t('today.card.inbox_oldest', { age: formatRelative(oldestMail.received_at) }) : t('today.card.inbox_empty'))}</span>
     </a>
-    <a class="today-card ${needs.length ? 'needs' : 'ok'}" href="#/tickets?folder=needs">
+    <a class="today-card ${nNeeds ? 'needs' : 'ok'}" href="#/tickets?folder=needs">
       <span class="lbl">${esc(t('today.card.needs'))}</span>
-      <span class="num">${needs.length}</span>
+      <span class="num">${nNeeds}</span>
       <span class="sub">${esc(needs.length ? needs.slice(0, 3).map(tk => shortName(tk.requester_name) || tk.hostname || '?').join(' · ') : t('today.card.needs_empty'))}</span>
     </a>
     <a class="today-card ${alertCrit ? 'crit' : 'ok'}" href="#/alertes">

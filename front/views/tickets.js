@@ -131,6 +131,9 @@ async function loadAll() {
   _tickets = tickets
   _closed = closed
   _inbox = inbox
+  // Après un tri (→ ticket, ignorer, rattacher) : le badge suit sans attendre
+  // le rafraîchissement périodique.
+  window.updateTicketsBadge?.()
 }
 
 // ── Dossiers ────────────────────────────────────────────────────────────────
