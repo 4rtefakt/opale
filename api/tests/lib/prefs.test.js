@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { validateMobileNav, validatePrefsPatch, MOBILE_NAV_ROUTES, validateUiTheme, validateUiMode } from '../../modules/core/lib/prefs.js'
+import { validateMobileNav, validatePrefsPatch, MOBILE_NAV_ROUTES, validateUiTheme, validateUiMode, validateUiMotion } from '../../modules/core/lib/prefs.js'
 
 test('validateMobileNav — accepte 1 à 4 routes autorisées distinctes', () => {
   for (const v of [['dashboard'], ['dashboard', 'postes', 'alertes', 'tickets']]) {
@@ -75,6 +75,10 @@ test('validatePrefsPatch — propage l\'erreur du validateur de clé', () => {
 
 test('ui_theme / ui_mode — ensembles fermés, acceptés dans un patch', () => {
   assert.equal(validateUiTheme('sable').ok, true)
+  assert.equal(validateUiTheme('craie').ok, true)
+  assert.equal(validateUiMotion('reduced').ok, true)
+  assert.equal(validateUiMotion('off').ok, false)
+  assert.equal(validatePrefsPatch({ ui_motion: 'full' }).ok, true)
   assert.equal(validateUiTheme('neon').ok, false)
   assert.equal(validateUiTheme(3).ok, false)
   assert.equal(validateUiMode('dark').ok, true)

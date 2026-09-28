@@ -82,6 +82,14 @@ function render() {
           </div>
           <span style="font-size:11px;color:var(--text-tertiary)">${t('settings.appearance.sync_note')}</span>
         </div>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--text-secondary)">${t('settings.appearance.motion')}</span>
+          <div class="seg" id="settings-motion-seg">
+            <button class="seg-btn" data-motion="full" onclick="setThemeMotion('full')"><i class="ti ti-sparkles"></i> ${t('settings.appearance.motion.full')}</button>
+            <button class="seg-btn" data-motion="reduced" onclick="setThemeMotion('reduced')"><i class="ti ti-eye-off"></i> ${t('settings.appearance.motion.reduced')}</button>
+          </div>
+          <span style="font-size:11px;color:var(--text-tertiary)">${t('settings.appearance.motion_hint')}</span>
+        </div>
       </div>
     </div>
 
@@ -698,7 +706,7 @@ function renderThemeCards() {
     const p = th[scheme] || th.light
     return `
       <button class="theme-card ${id === current ? 'active' : ''}" onclick="pickTheme('${id}')" type="button">
-        <div class="theme-preview" style="background:${p['bg-primary']}">
+        <div class="theme-preview" style="background:${th.preview ? th.preview : p['bg-primary']}">
           <div class="tp-side" style="background:${p['sidebar-bg']}">
             <i style="background:${p['primary']};opacity:1"></i><i style="background:${p['text-tertiary']}"></i><i style="background:${p['text-tertiary']}"></i>
           </div>
@@ -716,8 +724,9 @@ function renderThemeCards() {
 }
 
 function paintSettingsMode() {
-  const mode = window.OpaleTheme?.get().mode
-  document.querySelectorAll('#settings-mode-seg .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode))
+  const cur = window.OpaleTheme?.get() || {}
+  document.querySelectorAll('#settings-mode-seg .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === cur.mode))
+  document.querySelectorAll('#settings-motion-seg .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.motion === cur.motion))
   const grid = document.getElementById('theme-grid')
   if (grid) grid.innerHTML = renderThemeCards()
 }
@@ -727,3 +736,4 @@ function pickTheme(id) {
   window.OpaleTheme?.save(window.api, { theme: id })
   showToast(t('settings.appearance.toast'), 'success')
 }
+window.setThemeMotion = (motion) => { window.OpaleTheme?.save(window.api, { motion }); paintSettingsMode() }

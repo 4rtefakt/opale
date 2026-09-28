@@ -18,6 +18,7 @@ window.navigateTo = (hash) => { window.location.hash = hash }
 // de menu disparaît au boot (applyModuleVisibility) et le router redirige
 // toute tentative d'accès direct vers le dashboard.
 const ROUTE_MODULE = {
+  today:      'core',
   dashboard:  'core',
   alertes:    'monitoring',
   tickets:    'tickets',
@@ -80,6 +81,11 @@ function openAsk() {
 }
 
 document.addEventListener('keydown', (e) => {
+  const tag = (e.target?.tagName || '').toLowerCase()
+  const typing = ['input', 'textarea', 'select'].includes(tag) || e.target?.isContentEditable
+  if (!typing && !e.metaKey && !e.ctrlKey && !e.altKey && e.key === 'n' && document.getElementById('modal-overlay')?.classList.contains('hidden')) {
+    if (window.OPALE?.moduleEnabled('tickets')) { e.preventDefault(); window.openQuickTicket() }
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
     e.preventDefault()
     openAsk()
@@ -123,7 +129,7 @@ window.formatRelative = (iso) => {
 
 // ─── Router ───
 const VIEWS = [
-  'dashboard','alertes','tickets','postes','conformite','stock',
+  'today','dashboard','alertes','tickets','postes','conformite','stock',
   'users','groupes','scripts','onboarding','rapports','audit','parametres','packages','reseau'
 ]
 
@@ -136,17 +142,31 @@ function hideAllViews() {
 }
 
 function setActiveNav(route) {
-  document.querySelectorAll('.nav-item').forEach(item => {
-    const href = item.getAttribute('href')
-    item.classList.toggle('active', href === `#/${route}`)
+  document.querySelectorAll('.topnav-link[data-route]').forEach(item => {
+    item.classList.toggle('active', item.dataset.route === route)
   })
+  // Une vue du menu « Plus » : le bouton Plus est actif.
+  const inMore = !!document.querySelector(`#more-menu .more-item[href="#/${route}"]`)
+  document.querySelector('#topnav-more > .topnav-link')?.classList.toggle('active', inMore)
+  document.getElementById('more-menu')?.classList.add('hidden')
 }
 
+window.toggleMoreMenu = (e) => {
+  e?.stopPropagation()
+  const m = document.getElementById('more-menu')
+  const open = m.classList.toggle('hidden')
+  document.querySelector('#topnav-more > .topnav-link')?.setAttribute('aria-expanded', String(!open))
+}
+document.addEventListener('click', (e) => {
+  const m = document.getElementById('more-menu')
+  if (m && !m.classList.contains('hidden') && !e.target.closest('#topnav-more')) m.classList.add('hidden')
+})
+
 async function router() {
-  const hash  = window.location.hash || '#/dashboard'
+  const hash  = window.location.hash || '#/today'
   const [pathPart] = hash.slice(1).split('?')
   const parts = pathPart.split('/').filter(Boolean)
-  const route = parts[0] || 'dashboard'
+  const route = parts[0] || 'today'
 
   hideAllViews()
   setActiveNav(route)
@@ -155,7 +175,7 @@ async function router() {
   // laisser l'utilisateur sur une vue qui n'existe plus dans la sidebar.
   if (!window.OPALE.routeEnabled(route)) {
     showToast(`Module "${ROUTE_MODULE[route]}" désactivé`, 'info')
-    window.location.hash = '#/dashboard'
+    window.location.hash = '#/today'
     return
   }
 
@@ -178,6 +198,9 @@ async function router() {
   if (route === 'alertes') {
     const { renderAlertes } = await import('/views/alertes.js')
     renderAlertes(container)
+  } else if (route === 'today') {
+    const { renderToday } = await import('/views/today.js')
+    renderToday(container)
   } else if (route === 'dashboard') {
     const { renderDashboard } = await import('/views/dashboard.js')
     renderDashboard(container)
@@ -191,10 +214,18 @@ async function router() {
       renderPostes(container)
     }
   } else if (route === 'tickets') {
-    // `#/tickets/<id>` ouvre directement ce ticket (lien partageable).
-    const ticketId = parts[1]
-    const { renderTickets } = await import('/views/tickets.js')
-    renderTickets(container, { ticketId })
+    // `#/tickets/<id>` : page focus du ticket ; `#/tickets/mail/<id>` :
+    // page focus d'un fil de mails pas encore ticket ; sinon la liste.
+    if (parts[1] === 'mail' && parts[2]) {
+      const { renderMailFocus } = await import('/views/ticket.js')
+      renderMailFocus(container, parts[2])
+    } else if (parts[1]) {
+      const { renderTicketFocus } = await import('/views/ticket.js')
+      renderTicketFocus(container, parts[1])
+    } else {
+      const { renderTickets } = await import('/views/tickets.js')
+      renderTickets(container)
+    }
   } else if (route === 'conformite') {
     const ruleId = parts[1]
     const { renderConformite } = await import('/views/conformite.js')
@@ -262,18 +293,27 @@ async function updateAlertBadge() {
   } catch {}
 }
 
-// ─── Badge tickets (ouverts non assignés) ───
+// ─── Badge tickets : ce qui a besoin de moi (à trier + à répondre) ───
+// Capture rapide d'un ticket depuis n'importe quelle page (touche n, bouton
+// « Nouveau ticket ») : la modale s'ouvre sans quitter l'écran en cours.
+window.openQuickTicket = async (opts) => {
+  const { openQuickTicket } = await import('/views/tickets.js')
+  return openQuickTicket(opts || {})
+}
+window.setTicketsBadge = (n) => {
+  const badge = document.getElementById('badge-tickets')
+  if (!badge) return
+  badge.textContent = n
+  badge.style.display = n > 0 ? '' : 'none'
+}
 async function updateTicketsBadge() {
   try {
-    const { open } = await window.api.getTicketsCount()
-    const badge = document.getElementById('badge-tickets')
-    if (!badge) return
-    if (open > 0) {
-      badge.textContent = open
-      badge.style.display = ''
-    } else {
-      badge.style.display = 'none'
-    }
+    const [inbox, tickets] = await Promise.all([
+      window.api.getInboxCount().catch(() => ({ pending: 0 })),
+      window.api.getTickets({ limit: 200 }).catch(() => []),
+    ])
+    const awaiting = tickets.filter(tk => tk.awaiting_reply && ['open', 'in_progress'].includes(tk.status)).length
+    window.setTicketsBadge((inbox.pending || 0) + awaiting)
   } catch {}
 }
 
@@ -361,13 +401,15 @@ async function init() {
     document.getElementById('sidebar-avatar').textContent = initials
     document.getElementById('sidebar-name').textContent   = u.displayName || u.email
     if (user.jobTitle) document.getElementById('sidebar-role').textContent = user.jobTitle
+    // Libellés de navigation traduits (le HTML porte le français par défaut).
+    document.querySelectorAll('[data-i18n]').forEach(el => { const k = el.getAttribute('data-i18n'); if (t(k) !== k) el.textContent = t(k) })
   } catch (err) {
     console.error('sync-me échoué', err)
     window.appState = { user: null }
   }
 
   loading.style.display  = 'none'
-  appEl.style.display    = 'grid'
+  appEl.style.display    = 'flex'
 
   // Retire du DOM les entrées de menu des modules désactivés avant tout render
   applyModuleVisibility()

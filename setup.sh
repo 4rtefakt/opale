@@ -74,5 +74,38 @@ fetch "https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" \
   "$FRONT/chart.umd.min.js" \
   48444a82d4edcb5bec0f1965faacdde18d9c17db3063d042abada2f705c9f54a
 
+echo "→ Polices Sora 5.2.5 + IBM Plex Sans 5.2.5 (titres / texte de l'interface)..."
+mkdir -p "$FRONT/fonts"
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/sora@5.2.5/files/sora-latin-500-normal.woff2" \
+  "$FRONT/fonts/sora-latin-500-normal.woff2" \
+  8e29157348ea6531762835921c419e420f70606fbbfe59ddccb55a0731546312
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/sora@5.2.5/files/sora-latin-600-normal.woff2" \
+  "$FRONT/fonts/sora-latin-600-normal.woff2" \
+  a068aaaec2436ee0f9b8e2a149deb8c8d8fadf9e540ace092ebc56f42ea85451
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/sora@5.2.5/files/sora-latin-ext-500-normal.woff2" \
+  "$FRONT/fonts/sora-latin-ext-500-normal.woff2" \
+  1942503336050894ae7d741cb9ef9cc46419f09c709f62c614b0ce558a9c1592
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/sora@5.2.5/files/sora-latin-ext-600-normal.woff2" \
+  "$FRONT/fonts/sora-latin-ext-600-normal.woff2" \
+  9488aed079d9ab9373ca2beaa235fdb6dbbc4d22d1968ef3452d2a85e53115e7
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.2.5/files/ibm-plex-sans-latin-400-normal.woff2" \
+  "$FRONT/fonts/ibm-plex-sans-latin-400-normal.woff2" \
+  3b646991d30055a93a4ecc499713d4347953a74a947ecab435ab72070cbdab0e
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.2.5/files/ibm-plex-sans-latin-500-normal.woff2" \
+  "$FRONT/fonts/ibm-plex-sans-latin-500-normal.woff2" \
+  0717336fb31fcdcde4b8deb3675bb4a0f7f6d484864afcd6751ac29975962203
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.2.5/files/ibm-plex-sans-latin-600-normal.woff2" \
+  "$FRONT/fonts/ibm-plex-sans-latin-600-normal.woff2" \
+  8960851d691c054ed38e259bdcf1a6190d157b4203ed5bb32c632a863fb8ec2f
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.2.5/files/ibm-plex-sans-latin-ext-400-normal.woff2" \
+  "$FRONT/fonts/ibm-plex-sans-latin-ext-400-normal.woff2" \
+  c93d2a12aaa280f68b9ab7b726ff8dfedda67c99ef9abed047c1847a1cc6d583
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.2.5/files/ibm-plex-sans-latin-ext-500-normal.woff2" \
+  "$FRONT/fonts/ibm-plex-sans-latin-ext-500-normal.woff2" \
+  2846035d85100f84c79393f80f1442d4ee720129ab8b3ffa8969aae281db8c6c
+fetch "https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans@5.2.5/files/ibm-plex-sans-latin-ext-600-normal.woff2" \
+  "$FRONT/fonts/ibm-plex-sans-latin-ext-600-normal.woff2" \
+  b25dfd4f979e442ae1e25cd0894463434cf01ba21ac1a35d39f4a82bd4cc060e
+
 echo ""
 echo "✓ Bibliothèques téléchargées et vérifiées dans $FRONT/"

@@ -37,7 +37,8 @@ export function validateMobileNav(value) {
 }
 
 // Thème d'interface : ensembles FERMÉS, synchro avec front/theme.js (THEMES / MODES).
-export const UI_THEMES = new Set(['opale', 'aurore', 'sable', 'ardoise', 'foret'])
+export const UI_THEMES = new Set(['opale', 'craie', 'aurore', 'sable', 'ardoise', 'foret'])
+export const UI_MOTIONS = new Set(['full', 'reduced'])
 export const UI_MODES  = new Set(['system', 'light', 'dark'])
 
 export function validateUiTheme(value) {
@@ -50,12 +51,18 @@ export function validateUiMode(value) {
     ? { ok: true, value }
     : { ok: false, error: `ui_mode : valeur invalide « ${value} »` }
 }
+export function validateUiMotion(value) {
+  return typeof value === 'string' && UI_MOTIONS.has(value)
+    ? { ok: true, value }
+    : { ok: false, error: `ui_motion : valeur invalide « ${value} »` }
+}
 
 // Registre des prefs connues → validateur.
 const PREF_VALIDATORS = {
   mobile_nav: validateMobileNav,
   ui_theme:   validateUiTheme,
   ui_mode:    validateUiMode,
+  ui_motion:  validateUiMotion,
 }
 
 // Valide un patch de prefs (merge superficiel). Rejette tout corps non-objet,

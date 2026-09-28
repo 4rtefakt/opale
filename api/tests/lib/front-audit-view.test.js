@@ -135,7 +135,9 @@ test('tickets : diagnostic mail → ligne rouge pour une boîte bloquée, champs
   })
   vm.runInContext(escSrc, ctx)
   ctx.esc = ctx.window.esc
-  vm.runInContext(ticketsSrc.replace(/^export /gm, ''), ctx)
+  // tickets.js importe des helpers partagés (ticket-shared.js) que ce test
+  // n'exerce pas : on retire les `import` et `export` pour l'évaluer en vm.
+  vm.runInContext(ticketsSrc.replace(/^import[\s\S]*?from\s+'[^']+'\s*\n/gm, '').replace(/^export /gm, ''), ctx)
 
   const status = { mailboxes: [
     { address: 'a@example.com', cursor: '2026-05-10T09:00:00Z', total_ingested: 3,

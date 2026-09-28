@@ -10,6 +10,7 @@ front/msal-browser.min.js
 front/xterm.js
 front/chart.umd.min.js
 front/tabler-icons-webfont/
+front/fonts/
 
 # Fichiers de travail / mockups
 mockups/

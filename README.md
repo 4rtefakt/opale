@@ -47,18 +47,31 @@ Intune sync layered on top (compliance, enrollment, last-sync date).
 Computed on the fly from device state. Web-Push notifications to admins
 on critical changes.
 
-**Tickets** — full workflow (open / in progress / resolved / merged),
-tags, Kanban view, multiple involved people and devices per ticket,
-two-way mail integration: incoming mails land in a "to sort" view
-where an admin turns a whole mail thread into a ticket (every mail of the
-conversation, including older ones still in the mailbox, becomes a message),
-attaches it to an existing ticket, or dismisses it; replies are appended to
-the existing thread automatically, and the composer answers the requester
-by mail in one click. Tickets can be renamed and re-described at any time.
+**Tickets** — the desktop app opens on a *Today* page: three counters
+(mails to sort, awaiting your reply, critical alerts), an ordered "up next"
+queue with one obvious action per row, and a *Start* button that walks the
+queue ticket after ticket ("Done & next"). The ticket list is organised in
+folders (to sort, needs reply, mine, unassigned, all open, resolved,
+archives, tags), grouped by what needs you first, with j/k/Enter keyboard
+navigation, a Kanban view, and a quick capture (`n`) available from every
+page. A ticket opens as a full-width focus page: title editable inline,
+next step / priority / assignee / requester as clickable properties, the
+conversation in the middle, a composer that answers the requester by mail
+or writes an internal note, and everything else (people, devices, tags,
+attachments, description, merge) in a side drawer. Two-way mail
+integration: incoming mails land in the *to sort* folder as whole threads;
+opening one shows every mail of the conversation and offers three choices:
+create a ticket (every mail of the thread, including older ones still in
+the mailbox, becomes a message), attach to an existing ticket, or dismiss;
+replying from there creates the ticket and sends the answer in the same
+mail thread. Later replies are appended automatically. Tickets can be
+renamed and re-described at any time.
 
-**Themes** — five colour themes (Opale, Aurore, Sable, Ardoise, Forêt),
-each with light and dark variants, selectable per user in Settings and
-synced between the desktop and mobile interfaces.
+**Themes** — six themes: *Opale* (the signature look: aurora background,
+glass top bar, subtle animations; the default), *Craie* (neutral), *Aurore*,
+*Sable*, *Ardoise*, *Forêt*. Each has light / dark / system modes and a
+"reduced motion" switch; the choice is per user, stored in the browser and
+in the account, so the desktop and mobile interfaces stay in sync.
 
 **Remote SSH** — terminal in the browser via WebSocket + xterm.js, over
 your existing mesh VPN (e.g. Netbird, Tailscale, ZeroTier).

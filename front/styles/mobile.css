@@ -611,5 +611,29 @@ textarea.m-input { font-family: inherit; }
 .m-theme-swatch { height: 34px; border-radius: 6px; display: flex; gap: 4px; padding: 5px; margin-bottom: 6px; border: 0.5px solid rgba(0,0,0,0.15); }
 .m-theme-swatch i { flex: 1; border-radius: 4px; }
 .m-theme-name { font-size: 12px; font-weight: 600; }
-.m-mode-row { display: flex; gap: 6px; padding: 0 16px 14px; }
-.m-mode-row .m-filter-pill { flex: 1; justify-content: center; min-height: 40px; }
+.m-mode-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 14px; }
+.m-mode-row .m-filter-pill { flex: 1 1 calc(50% - 3px); justify-content: center; min-height: 40px; }
+
+/* ── Thème Opale (aurore) sur mobile ── */
+#opal-bg { display: none; }
+html[data-effects="opal"] body { background: var(--bg-base, var(--bg-primary)); }
+html[data-effects="opal"] #opal-bg { display: block; position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; background: radial-gradient(ellipse at 50% -10%, #0f1a22 0%, var(--bg-base, #0a0c10) 55%); }
+html[data-effects="opal"] #m-app, html[data-effects="opal"] #m-login, html[data-effects="opal"] #m-sheet-overlay, html[data-effects="opal"] #m-toast { position: relative; z-index: 1; }
+html[data-effects="opal"] #m-sheet-overlay, html[data-effects="opal"] #m-toast { position: fixed; }
+html[data-effects="opal"] .m-screen, html[data-effects="opal"] #m-app { background: transparent; }
+html[data-effects="opal"] .m-header, html[data-effects="opal"] #m-bottom-nav { background: color-mix(in srgb, var(--bg-primary) 78%, transparent); backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%); }
+html[data-effects="opal"] .m-panel, html[data-effects="opal"] .m-ticket-card, html[data-effects="opal"] .m-device-card, html[data-effects="opal"] .m-stat-card, html[data-effects="opal"] .m-alert-card { background: color-mix(in srgb, var(--bg-secondary) 88%, transparent); }
+#opal-bg .opal-conic, #opal-bg .opal-conic-2 { position: absolute; inset: -30%; border-radius: 50%; mix-blend-mode: screen; will-change: transform; }
+#opal-bg .opal-conic { background: conic-gradient(from 0deg at 40% 50%, #0c4c3c, #1D9E75 40deg, #22d3ee 95deg, #7dd3fc 145deg, #a78bfa 195deg, #f0abfc 240deg, #fbbf24 290deg, #1D9E75 335deg, #0c4c3c); filter: blur(90px) saturate(1.15); opacity: 0.32; animation: opal-rotate 48s linear infinite; }
+#opal-bg .opal-conic-2 { inset: -40%; background: conic-gradient(from 0deg at 65% 60%, transparent, #22d3ee 30deg, transparent 90deg, #a78bfa 150deg, transparent 220deg, #fbbf24 280deg, transparent 340deg); filter: blur(110px) saturate(1.3); opacity: 0.18; animation: opal-rotate-back 70s linear infinite; }
+html[data-scheme="light"][data-effects="opal"] #opal-bg { background: radial-gradient(ellipse at 50% -10%, #E3F1EC 0%, var(--bg-base, #EEF4F5) 60%); }
+html[data-scheme="light"][data-effects="opal"] #opal-bg .opal-conic, html[data-scheme="light"][data-effects="opal"] #opal-bg .opal-conic-2 { mix-blend-mode: normal; opacity: 0.18; }
+#opal-bg .opal-grain, #opal-bg .opal-vignette { position: absolute; inset: 0; }
+#opal-bg .opal-vignette { background: radial-gradient(ellipse at 50% 35%, transparent 30%, rgba(0,0,0,0.5) 90%); }
+html[data-scheme="light"][data-effects="opal"] #opal-bg .opal-vignette { background: none; }
+@keyframes opal-rotate      { to { transform: rotate(360deg); } }
+@keyframes opal-rotate-back { to { transform: rotate(-360deg); } }
+html[data-motion="reduced"] #opal-bg .opal-conic, html[data-motion="reduced"] #opal-bg .opal-conic-2 { animation: none; }
+@media (prefers-reduced-motion: reduce) { #opal-bg .opal-conic, #opal-bg .opal-conic-2 { animation: none; } }
+html[data-effects="opal"] .m-btn-primary, html[data-effects="opal"] .m-nav-item.active { text-shadow: none; }
+html[data-effects="opal"] .m-btn-primary { background: linear-gradient(135deg, var(--blue), color-mix(in srgb, var(--blue) 70%, #22d3ee)); box-shadow: 0 8px 20px -10px var(--glow, rgba(29,158,117,.35)); }

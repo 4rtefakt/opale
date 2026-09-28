@@ -7,6 +7,8 @@
 | `tabler-icons-webfont/`     | 3.19.0  | Fonts associées aux icônes Tabler |
 | `xterm.js`, `styles/xterm.css` | 5.5.0 | https://www.npmjs.com/package/@xterm/xterm |
 | `chart.umd.min.js`          | 4.5.1   | https://www.npmjs.com/package/chart.js |
+| `fonts/sora-*.woff2`        | 5.2.5   | https://www.npmjs.com/package/@fontsource/sora (titres, OFL) |
+| `fonts/ibm-plex-sans-*.woff2` | 5.2.5 | https://www.npmjs.com/package/@fontsource/ibm-plex-sans (texte, OFL) |
 
 ## Téléchargement (via setup.sh)
 

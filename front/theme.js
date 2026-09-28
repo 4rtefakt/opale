@@ -27,6 +27,7 @@
     'orange':'#C2410C', 'gray': '#888780',
     'shadow-sm': '0 1px 2px rgba(0,0,0,0.06)', 'shadow-md': '0 6px 20px rgba(0,0,0,0.10)',
     'bg-hover': 'rgba(0,0,0,0.04)',
+    'primary-fg': '#FFFFFF',
   }
   const SEM_DARK = {
     'green': '#2FB58A', 'green-bg': '#0B3A30', 'green-text': '#9FE1CB',
@@ -37,13 +38,38 @@
     'orange':'#F97316', 'gray': '#8B8A84',
     'shadow-sm': '0 1px 2px rgba(0,0,0,0.45)', 'shadow-md': '0 6px 20px rgba(0,0,0,0.5)',
     'bg-hover': 'rgba(255,255,255,0.06)',
+    'primary-fg': '#FFFFFF',
   }
 
   // Palette neutre + accent d'un thème. `primary` = couleur d'action
   // (boutons, sélection, indicateur de navigation).
   const THEMES = {
+    // Le vrai Opale : base nuit profonde, éclats d'opale (émeraude, cyan,
+    // violet, rose, or) en aurore lente derrière l'interface, verre dépoli
+    // sur la barre. Même palette que la page de présentation (landing/).
     opale: {
-      label: 'Opale', desc: 'Défaut — neutres chauds, accent émeraude',
+      label: 'Opale', desc: 'Défaut — nuit et éclats d\'opale, aurore animée',
+      effects: 'opal',
+      preview: 'conic-gradient(from 210deg, #0c4c3c, #1D9E75, #22d3ee, #7dd3fc, #a78bfa, #f0abfc, #fbbf24, #1D9E75, #0c4c3c)',
+      light: {
+        'bg-primary': '#FBFCFD', 'bg-secondary': '#F1F5F6', 'bg-tertiary': '#E4ECEE',
+        'sidebar-bg': 'rgba(255,255,255,0.62)', 'bg-base': '#EEF4F5',
+        'text-primary': '#0F1A22', 'text-secondary': '#4A5A63', 'text-tertiary': '#7E8C93',
+        'border': 'rgba(15,26,34,0.10)', 'border-md': 'rgba(15,26,34,0.20)',
+        'primary': '#128A66', 'primary-hover': '#0F7556', 'primary-bg': '#D9F2E8', 'primary-text': '#0A5C44',
+        'glow': 'rgba(29,158,117,0.22)',
+      },
+      dark: {
+        'bg-primary': '#11141C', 'bg-secondary': '#161A25', 'bg-tertiary': '#1D2230',
+        'sidebar-bg': 'rgba(10,12,16,0.58)', 'bg-base': '#0A0C10',
+        'text-primary': '#F1EFE9', 'text-secondary': '#B4B2A9', 'text-tertiary': '#7F7D75',
+        'border': 'rgba(255,255,255,0.08)', 'border-md': 'rgba(255,255,255,0.16)',
+        'primary': '#1D9E75', 'primary-hover': '#25B888', 'primary-bg': 'rgba(29,158,117,0.18)', 'primary-text': '#9FE1CB',
+        'glow': 'rgba(29,158,117,0.35)',
+      },
+    },
+    craie: {
+      label: 'Craie', desc: 'Calme — neutres chauds, accent émeraude, sans effets',
       light: {
         'bg-primary': '#FFFFFF', 'bg-secondary': '#F6F6F3', 'bg-tertiary': '#ECECE7',
         'sidebar-bg': '#F3F3EF',
@@ -74,6 +100,7 @@
         'text-primary': '#ECEDF5', 'text-secondary': '#AEB2C8', 'text-tertiary': '#7D819A',
         'border': 'rgba(255,255,255,0.09)', 'border-md': 'rgba(255,255,255,0.17)',
         'primary': '#8B8BF0', 'primary-hover': '#9D9DF5', 'primary-bg': '#26285C', 'primary-text': '#CBCBFA',
+        'primary-fg': '#15172B',
       },
     },
     sable: {
@@ -129,8 +156,10 @@
     },
   }
   const MODES = ['system', 'light', 'dark']
+  const MOTIONS = ['full', 'reduced']
   const DEFAULT_THEME = 'opale'
   const DEFAULT_MODE  = IS_MOBILE ? 'dark' : 'system'
+  const STORAGE_MOTION = 'opale.motion'
 
   const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
 
@@ -142,6 +171,18 @@
   }
   let _theme = read(STORAGE_THEME, DEFAULT_THEME, v => !!THEMES[v])
   let _mode  = read(STORAGE_MODE,  DEFAULT_MODE,  v => MODES.includes(v))
+  let _motion = read(STORAGE_MOTION, 'full', v => MOTIONS.includes(v))
+
+  // Couche d'aurore du thème Opale : insérée une fois dans <body>, affichée
+  // par CSS uniquement quand html[data-theme="opale"]. Purement décorative.
+  function ensureEffectsLayer() {
+    if (!document.body || document.getElementById('opal-bg')) return
+    const el = document.createElement('div')
+    el.id = 'opal-bg'
+    el.setAttribute('aria-hidden', 'true')
+    el.innerHTML = '<div class="opal-conic"></div><div class="opal-conic-2"></div><div class="opal-grain"></div><div class="opal-vignette"></div>'
+    document.body.prepend(el)
+  }
 
   function resolvedScheme(mode) {
     if (mode === 'light' || mode === 'dark') return mode
@@ -151,9 +192,15 @@
   function apply() {
     const theme  = THEMES[_theme] || THEMES[DEFAULT_THEME]
     const scheme = resolvedScheme(_mode)
-    const pal    = Object.assign({}, scheme === 'dark' ? SEM_DARK : SEM_LIGHT, theme[scheme])
+    const pal    = Object.assign({ 'bg-base': (theme[scheme] || {})['bg-primary'], 'glow': 'transparent' }, scheme === 'dark' ? SEM_DARK : SEM_LIGHT, theme[scheme])
     const root   = document.documentElement
     for (const k in pal) root.style.setProperty('--' + k, pal[k])
+    root.setAttribute('data-effects', theme.effects || 'none')
+    root.setAttribute('data-motion', _motion)
+    if (theme.effects) {
+      if (document.body) ensureEffectsLayer()
+      else document.addEventListener('DOMContentLoaded', ensureEffectsLayer, { once: true })
+    }
     // Mobile : la couleur d'accent historique est --blue (nav active,
     // boutons principaux) → suit l'accent du thème.
     if (IS_MOBILE) {
@@ -169,11 +216,12 @@
     window.dispatchEvent(new CustomEvent('themechange', { detail: { theme: _theme, mode: _mode, scheme } }))
   }
 
-  function set({ theme, mode } = {}, { persist = true } = {}) {
+  function set({ theme, mode, motion } = {}, { persist = true } = {}) {
     if (theme && THEMES[theme]) _theme = theme
     if (mode && MODES.includes(mode)) _mode = mode
+    if (motion && MOTIONS.includes(motion)) _motion = motion
     if (persist) {
-      try { localStorage.setItem(STORAGE_THEME, _theme); localStorage.setItem(STORAGE_MODE, _mode) } catch {}
+      try { localStorage.setItem(STORAGE_THEME, _theme); localStorage.setItem(STORAGE_MODE, _mode); localStorage.setItem(STORAGE_MOTION, _motion) } catch {}
     }
     apply()
   }
@@ -185,17 +233,17 @@
     if (!api?.getMyPrefs) return
     try {
       const prefs = await api.getMyPrefs()
-      const hasServer = prefs && (THEMES[prefs.ui_theme] || MODES.includes(prefs.ui_mode))
+      const hasServer = prefs && (THEMES[prefs.ui_theme] || MODES.includes(prefs.ui_mode) || MOTIONS.includes(prefs.ui_motion))
       if (hasServer) {
-        set({ theme: prefs.ui_theme, mode: prefs.ui_mode })
+        set({ theme: prefs.ui_theme, mode: prefs.ui_mode, motion: prefs.ui_motion })
       }
     } catch {}
   }
 
   // Enregistre côté serveur (appelé par les écrans de réglages).
-  async function save(api, { theme, mode } = {}) {
-    set({ theme, mode })
-    try { await api?.updateMyPrefs?.({ ui_theme: _theme, ui_mode: _mode }) } catch {}
+  async function save(api, { theme, mode, motion } = {}) {
+    set({ theme, mode, motion })
+    try { await api?.updateMyPrefs?.({ ui_theme: _theme, ui_mode: _mode, ui_motion: _motion }) } catch {}
   }
 
   if (mq) {
@@ -207,8 +255,8 @@
   apply()
 
   window.OpaleTheme = {
-    THEMES, MODES, DEFAULT_THEME, DEFAULT_MODE,
-    get: () => ({ theme: _theme, mode: _mode, scheme: resolvedScheme(_mode) }),
+    THEMES, MODES, MOTIONS, DEFAULT_THEME, DEFAULT_MODE,
+    get: () => ({ theme: _theme, mode: _mode, motion: _motion, scheme: resolvedScheme(_mode) }),
     set, save, syncFromPrefs, apply,
   }
 })()

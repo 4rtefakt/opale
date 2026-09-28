@@ -326,14 +326,16 @@ function renderAppearance() {
   grid.innerHTML = Object.entries(T.THEMES).map(([id, th]) => {
     const p = th[scheme] || th.dark
     return `<button class="m-theme-card ${id === theme ? 'active' : ''}" onclick="mPickTheme('${id}')">
-      <div class="m-theme-swatch" style="background:${p['bg-primary']}">
-        <i style="background:${p['sidebar-bg']}"></i><i style="background:${p['bg-tertiary']}"></i><i style="background:${p['primary']}"></i>
+      <div class="m-theme-swatch" style="background:${th.preview || p['bg-primary']}">
+        <i style="background:${p['bg-secondary']}"></i><i style="background:${p['bg-tertiary']}"></i><i style="background:${p['primary']}"></i>
       </div>
       <div class="m-theme-name">${esc(th.label)}</div>
     </button>`
   }).join('')
   row.innerHTML = [['system', 'ti-device-mobile', t('settings.appearance.mode.system')], ['light', 'ti-sun', t('settings.appearance.mode.light')], ['dark', 'ti-moon', t('settings.appearance.mode.dark')]]
     .map(([m, icon, label]) => `<button class="m-filter-pill ${m === mode ? 'active' : ''}" onclick="mPickMode('${m}')"><i class="ti ${icon}"></i>&nbsp;${esc(label)}</button>`).join('')
+    + `<button class="m-filter-pill ${T.get().motion === 'reduced' ? 'active' : ''}" onclick="mPickMotion()" title="${esc(t('settings.appearance.motion_hint'))}"><i class="ti ti-eye-off"></i>&nbsp;${esc(t('settings.appearance.motion.reduced'))}</button>`
 }
+window.mPickMotion = () => { const T = window.OpaleTheme; T?.save(window.api, { motion: T.get().motion === 'reduced' ? 'full' : 'reduced' }); renderAppearance() }
 window.mPickTheme = (id) => { window.OpaleTheme?.save(window.api, { theme: id }); renderAppearance() }
 window.mPickMode  = (m)  => { window.OpaleTheme?.save(window.api, { mode: m });  renderAppearance() }
