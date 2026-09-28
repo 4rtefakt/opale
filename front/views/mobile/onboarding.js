@@ -260,7 +260,7 @@ async function mObRunAuto(obId, checkId, btn) {
           ${warning ? `<div style="color:var(--red);margin-bottom:4px">${esc(warning)}</div>
           <div>Id : <code style="user-select:all;word-break:break-all">${esc(created.id || '')}</code></div>` : ''}
           <div>${esc(created.userPrincipalName || '')}</div>
-          <div style="margin-top:4px;color:var(--text-secondary)">Mot de passe temporaire — affiché une seule fois, non conservé :</div>
+          <div style="margin-top:4px;color:var(--text-secondary)">${esc(t('mobile.onboarding.temp_password'))}</div>
           <code style="display:block;margin-top:6px;font-size:15px;user-select:all;word-break:break-all">${esc(created.temporaryPassword)}</code>
         </div>`)
     }

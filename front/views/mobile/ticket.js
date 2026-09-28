@@ -24,9 +24,9 @@ const M_TK_TAG_COLOR_KEYS = TAG_COLOR_KEYS
 
 function formatBytes(n) {
   if (n == null) return ''
-  if (n < 1024) return `${n} o`
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} Ko`
-  return `${(n / (1024 * 1024)).toFixed(1)} Mo`
+  if (n < 1024) return `${n} ${t('mobile.units.b')}`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} ${t('mobile.units.kb')}`
+  return `${(n / (1024 * 1024)).toFixed(1)} ${t('mobile.units.mb')}`
 }
 
 export async function renderTicket(el, id) {

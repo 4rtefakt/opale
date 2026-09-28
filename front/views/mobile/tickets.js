@@ -39,7 +39,7 @@ function writeHash() {
 
 function displayWhen(tk) {
   if (!tk.updated_at || tk.updated_at === tk.created_at) return formatRelative(tk.created_at)
-  return `MAJ ${formatRelative(tk.updated_at)}`
+  return t('mobile.tickets.updated', { when: formatRelative(tk.updated_at) })
 }
 
 export async function renderTickets(el) {

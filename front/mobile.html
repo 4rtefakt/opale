@@ -37,7 +37,7 @@
   <div class="m-login-logo" data-brand="product_name">Opale</div>
   <div class="m-login-sub" data-brand="org_name">Your Organization</div>
   <button class="m-login-btn" id="m-btn-login">
-    <i class="ti ti-brand-azure"></i> Se connecter avec Microsoft 365
+    <i class="ti ti-brand-azure"></i> <span data-i18n="mobile.login.microsoft">Se connecter avec Microsoft 365</span>
   </button>
 </div>
 
@@ -45,11 +45,11 @@
 <div id="m-bio-lock" style="display:none;flex-direction:column;align-items:center;justify-content:center;height:100dvh;gap:16px;background:var(--bg-primary)">
   <i class="ti ti-fingerprint" style="font-size:64px;color:var(--blue)"></i>
   <div class="m-login-logo" data-brand="product_name">Opale</div>
-  <div style="font-size:13px;color:var(--text-secondary)">Vérification requise</div>
+  <div style="font-size:13px;color:var(--text-secondary)" data-i18n="mobile.login.bio_required">Vérification requise</div>
   <button id="m-bio-unlock-btn" class="m-login-btn" style="margin-top:8px">
-    <i class="ti ti-fingerprint"></i> Déverrouiller
+    <i class="ti ti-fingerprint"></i> <span data-i18n="mobile.login.unlock">Déverrouiller</span>
   </button>
-  <button onclick="window.auth.logout()" style="background:none;border:none;color:var(--text-tertiary);font-size:12px;cursor:pointer;padding:8px">
+  <button onclick="window.auth.logout()" style="background:none;border:none;color:var(--text-tertiary);font-size:12px;cursor:pointer;padding:8px" data-i18n="mobile.menu.logout">
     Déconnexion
   </button>
 </div>

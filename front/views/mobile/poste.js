@@ -1,4 +1,7 @@
+import { getLocale } from '/i18n.js'
+
 let _device = null
+const LOC = () => getLocale() === 'en' ? 'en-GB' : 'fr-FR'
 
 export async function renderPoste(el, id) {
   el.innerHTML = `
@@ -403,7 +406,7 @@ async function loadExecHistory(deviceId, offset = 0) {
   try {
     const { rows, total, limit } = await window.api.getDeviceExecutions(deviceId, offset)
     if (!rows.length && offset === 0) {
-      el.innerHTML = `<div style="text-align:center;padding:16px;font-size:12px;color:var(--text-tertiary)">Aucune exécution</div>`
+      el.innerHTML = `<div style="text-align:center;padding:16px;font-size:12px;color:var(--text-tertiary)">${esc(t('mobile.poste.exec.empty'))}</div>`
       return
     }
     const rowsHtml = rows.map(e => {
@@ -432,7 +435,7 @@ async function loadExecHistory(deviceId, offset = 0) {
     const moreHtml = hasMore ? `
       <div id="m-exec-more" style="padding:12px 16px;text-align:center">
         <button class="m-btn-primary" style="font-size:12px;padding:8px" onclick="mLoadMoreExec('${deviceId}',${offset + limit})">
-          Voir plus (${total - offset - limit} restantes)
+          ${esc(t('mobile.poste.exec.more', { n: total - offset - limit }))}
         </button>
       </div>` : ''
 
@@ -477,7 +480,7 @@ function mSecurityPanel(d) {
   if (bl.enabled !== undefined) {
     rows.push(hwRowRaw(
       bl.enabled ? 'ti-lock' : 'ti-lock-open', 'BitLocker',
-      `<span style="color:var(--${bl.enabled ? 'green' : 'red'})">${bl.enabled ? 'Activé' : 'Désactivé'}</span>${bl.encryption_method ? ' · ' + esc(bl.encryption_method) : ''}`
+      `<span style="color:var(--${bl.enabled ? 'green' : 'red'})">${esc(t(bl.enabled ? 'mobile.poste.sec.enabled' : 'mobile.poste.sec.disabled'))}</span>${bl.encryption_method ? ' · ' + esc(bl.encryption_method) : ''}`
     ))
   }
   if ([def.antivirus_enabled, def.realtime_protection, def.antispyware_enabled].some(v => v !== undefined)) {
@@ -486,22 +489,22 @@ function mSecurityPanel(d) {
     ))
   }
   if (fw.domain_enabled !== undefined) {
-    rows.push(hwRowRaw('ti-wall', 'Pare-feu',
+    rows.push(hwRowRaw('ti-wall', esc(t('mobile.poste.sec.firewall')),
       `${chk(fw.domain_enabled)} Dom · ${chk(fw.private_enabled)} Priv · ${chk(fw.public_enabled)} Pub`
     ))
   }
   if (hs.tpm_present !== undefined) {
-    rows.push(hwRow('ti-microchip', 'TPM', hs.tpm_present ? 'Présent' : 'Absent'))
+    rows.push(hwRow('ti-microchip', 'TPM', t(hs.tpm_present ? 'mobile.poste.sec.present' : 'mobile.poste.sec.absent')))
   }
   if (hs.pending_reboot) {
-    rows.push(hwRowRaw('ti-refresh-alert', 'Redémarrage', '<span style="color:var(--amber);font-weight:500">En attente</span>'))
+    rows.push(hwRowRaw('ti-refresh-alert', esc(t('mobile.poste.sec.reboot')), `<span style="color:var(--amber);font-weight:500">${esc(t('mobile.poste.sec.reboot_pending'))}</span>`))
   }
 
   if (!rows.length) return ''
 
   return `
     <div class="m-panel">
-      <div class="m-panel-header"><i class="ti ti-shield-lock"></i> Sécurité</div>
+      <div class="m-panel-header"><i class="ti ti-shield-lock"></i> ${esc(t('mobile.poste.sec.title'))}</div>
       ${rows.join('')}
     </div>`
 }
@@ -534,7 +537,7 @@ function mPerfPanel(d) {
         <div style="padding:8px 16px;border-bottom:0.5px solid var(--border)">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
             <i class="ti ti-activity" style="font-size:14px;color:var(--text-tertiary);width:16px;text-align:center;flex-shrink:0"></i>
-            <span style="font-size:12px;color:var(--text-secondary);width:90px;flex-shrink:0">CPU moyen</span>
+            <span style="font-size:12px;color:var(--text-secondary);width:90px;flex-shrink:0">${esc(t('mobile.poste.perf.cpu_avg'))}</span>
             <span style="font-size:12px;font-weight:500">${esc(String(sp.cpu_avg_pct))}%</span>
             ${sp.cpu_max_pct != null ? `<span style="font-size:10px;color:var(--text-tertiary);margin-left:auto">max ${esc(String(sp.cpu_max_pct))}%</span>` : ''}
           </div>
@@ -544,7 +547,7 @@ function mPerfPanel(d) {
     if (sp.uptime_seconds != null) {
       const days  = Math.floor(sp.uptime_seconds / 86400)
       const hours = Math.floor((sp.uptime_seconds % 86400) / 3600)
-      rows.push(hwRow('ti-clock-hour-3', 'Uptime', days > 0 ? `${days}j ${hours}h` : `${hours}h`))
+      rows.push(hwRow('ti-clock-hour-3', esc(t('mobile.poste.perf.uptime')), days > 0 ? `${days}j ${hours}h` : `${hours}h`))
     }
     if (sp.battery_pct != null) {
       const stat = sp.battery_status || ''
@@ -552,17 +555,17 @@ function mPerfPanel(d) {
                    stat === 'charging' ? 'ti-battery-charging' :
                    sp.battery_pct < 20 ? 'ti-battery-1' : 'ti-battery'
       const statLabel = stat ? batteryStatusLabel(stat) : ''
-      rows.push(hwRow(icon, 'Batterie', `${sp.battery_pct}%${statLabel ? ' · ' + statLabel : ''}`))
+      rows.push(hwRow(icon, esc(t('mobile.poste.perf.battery')), `${sp.battery_pct}%${statLabel ? ' · ' + statLabel : ''}`))
     }
   }
 
-  if (si?.current_user) rows.push(hwRow('ti-user', 'Connecté', si.current_user))
+  if (si?.current_user) rows.push(hwRow('ti-user', esc(t('mobile.poste.perf.logged_in')), si.current_user))
 
   if (!rows.length) return ''
 
   return `
     <div class="m-panel">
-      <div class="m-panel-header"><i class="ti ti-activity"></i> Performances</div>
+      <div class="m-panel-header"><i class="ti ti-activity"></i> ${esc(t('mobile.poste.perf.title'))}</div>
       ${rows.join('')}
     </div>`
 }
@@ -584,14 +587,14 @@ function hwRowRaw(icon, label, html) {
 
 function complianceBadge(state) {
   const map = {
-    compliant:     { text: '✓ Conforme',     color: 'var(--green)' },
-    noncompliant:  { text: '✗ Non conforme', color: 'var(--red)'   },
-    unknown:       { text: '? Inconnu',       color: 'var(--text-tertiary)' },
-    configManager: { text: 'Config Manager',  color: 'var(--blue)'  },
+    compliant:     { mark: '✓', color: 'var(--green)' },
+    noncompliant:  { mark: '✗', color: 'var(--red)'   },
+    unknown:       { mark: '?', color: 'var(--text-tertiary)' },
+    configManager: { mark: '',  color: 'var(--blue-text)' },
   }
   const m = map[state]
   if (!m) return esc(state)
-  return `<span style="color:${m.color}">${m.text}</span>`
+  return `<span style="color:${m.color}">${m.mark ? m.mark + ' ' : ''}${esc(t('compliance.state.' + state))}</span>`
 }
 
 function batteryStatusLabel(stat) {
@@ -601,17 +604,12 @@ function batteryStatusLabel(stat) {
 }
 
 function formatJoinType(jt) {
-  const map = {
-    azureADJoined:       'Azure AD Joint',
-    hybridAzureADJoined: 'Hybrid Azure AD',
-    azureADRegistered:   'Azure AD Enregistré',
-  }
-  return map[jt] || jt
+  return ['azureADJoined', 'hybridAzureADJoined', 'azureADRegistered'].includes(jt) ? t('mobile.poste.join.' + jt) : jt
 }
 
 function fmtDate(iso) {
   if (!iso) return null
-  return new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  return new Date(iso).toLocaleDateString(LOC(), { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
 function initials(str) {
@@ -656,8 +654,8 @@ function mBwPanel(bw) {
     }
     const linePath = key =>
       series.map((p, i) => `${i === 0 ? 'M' : 'L'}${cx(p.t).toFixed(1)},${cy(p[key] || 0).toFixed(1)}`).join(' ')
-    const t0 = new Date(series[0].t).toLocaleString('fr-FR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-    const t1 = new Date(series[series.length - 1].t).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    const t0 = new Date(series[0].t).toLocaleString(LOC(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    const t1 = new Date(series[series.length - 1].t).toLocaleString(LOC(), { hour: '2-digit', minute: '2-digit' })
     graphHtml = `
       <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;display:block">
         ${yAxis}
@@ -669,8 +667,8 @@ function mBwPanel(bw) {
       <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-tertiary);margin-top:2px;padding:0 ${PR}px 0 ${PL}px">
         <span>${t0}</span>
         <span style="display:flex;gap:8px">
-          <span style="color:var(--green)">↓ recv</span>
-          <span style="color:var(--blue)">↑ sent</span>
+          <span style="color:var(--green)">↓ ${esc(t('mobile.poste.bw.recv'))}</span>
+          <span style="color:var(--blue)">↑ ${esc(t('mobile.poste.bw.sent'))}</span>
         </span>
         <span>${t1}</span>
       </div>`
@@ -696,7 +694,7 @@ function mBwPanel(bw) {
 
   return `
     <div class="m-panel">
-      <div class="m-panel-header"><i class="ti ti-chart-bar"></i> Bande passante</div>
+      <div class="m-panel-header"><i class="ti ti-chart-bar"></i> ${esc(t('mobile.poste.bandwidth'))}</div>
       <div style="padding:10px 12px 12px">
         ${graphHtml}
         ${cardsHtml}
@@ -735,8 +733,8 @@ function mPingPanel(pings) {
       if (y === null) return ''
       return `<circle cx="${cx(p.t).toFixed(1)}" cy="${y.toFixed(1)}" r="2" fill="var(--blue)" opacity=".5"/>`
     }).join('')
-    const t0 = new Date(series[0].t).toLocaleString('fr-FR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-    const t1 = new Date(series[series.length - 1].t).toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    const t0 = new Date(series[0].t).toLocaleString(LOC(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    const t1 = new Date(series[series.length - 1].t).toLocaleString(LOC(), { hour: '2-digit', minute: '2-digit' })
 
     const sum = ping.summary || {}
     const periods = [
@@ -756,7 +754,7 @@ function mPingPanel(pings) {
           </svg>
           <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-tertiary);margin-top:2px;padding:0 ${PR}px 0 ${PL}px">
             <span>${t0}</span>
-            <span style="color:var(--red);font-size:9px">● perte</span>
+            <span style="color:var(--red);font-size:9px">● ${esc(t('mobile.poste.ping.loss'))}</span>
             <span>${t1}</span>
           </div>
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px">

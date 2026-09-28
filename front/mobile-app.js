@@ -14,24 +14,24 @@ window.t = t
 // définis dans escape.js : esc() ne protège PAS une chaîne JS dans un handler.
 
 window.formatRelative = (iso) => {
-  if (!iso) return 'jamais'
+  if (!iso) return t('mobile.time.never')
   const diff = Date.now() - new Date(iso).getTime()
   const min = Math.floor(diff / 60_000)
   const h   = Math.floor(diff / 3_600_000)
   const d   = Math.floor(diff / 86_400_000)
-  if (min < 2)  return 'à l\'instant'
-  if (min < 60) return `il y a ${min} min`
-  if (h < 24)   return `il y a ${h}h`
-  if (d === 1)  return 'hier'
-  if (d < 30)   return `il y a ${d} j`
+  if (min < 2)  return t('mobile.time.now')
+  if (min < 60) return t('mobile.time.minutes', { n: min })
+  if (h < 24)   return t('mobile.time.hours', { n: h })
+  if (d === 1)  return t('mobile.time.yesterday')
+  if (d < 30)   return t('mobile.time.days', { n: d })
   const years  = Math.floor(d / 365)
   const months = Math.floor((d % 365) / 30)
   const days   = d % 30
   const parts  = []
-  if (years)  parts.push(`${years} an${years > 1 ? 's' : ''}`)
-  if (months) parts.push(`${months} mois`)
-  if (days)   parts.push(`${days} j`)
-  return `il y a ${parts.join(', ').replace(/,([^,]*)$/, ' et$1')}`
+  if (years)  parts.push(t(years > 1 ? 'mobile.time.years' : 'mobile.time.year', { n: years }))
+  if (months) parts.push(t('mobile.time.months', { n: months }))
+  if (days)   parts.push(t('mobile.time.days_short', { n: days }))
+  return t('mobile.time.ago', { parts: parts.join(', ').replace(/,([^,]*)$/, t('mobile.time.and') + '$1') })
 }
 
 window.appState = { user: null }
@@ -349,8 +349,15 @@ function urlB64ToUint8Array(base64String) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+// Textes statiques de mobile.html (connexion, verrou biométrique) : traduits
+// une fois les locales chargées.
+function translateStatic() {
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.getAttribute('data-i18n')) })
+}
+
 async function init() {
   await initI18n()
+  translateStatic()
   await window.auth.init()
 
   const loading = document.getElementById('m-loading')
@@ -375,7 +382,7 @@ async function init() {
         lockEl.style.display = 'none'
         await launchApp()
       } else {
-        window.showToast('Échec de la vérification', 'error')
+        window.showToast(t('mobile.login.bio_failed'), 'error')
       }
     }
 
@@ -403,10 +410,10 @@ async function launchApp() {
       loginEl.innerHTML = `
         <div class="m-login-logo">${esc(productName)}</div>
         <p style="font-size:13px;color:var(--text-secondary);text-align:center;line-height:1.6">
-          Votre compte <strong>${esc(user.email || '')}</strong><br>n'a pas accès au RMM.
+          ${t('mobile.login.no_access', { email: `<strong>${esc(user.email || '')}</strong>` })}
         </p>
         <button class="m-login-btn" onclick="window.auth.logout()">
-          <i class="ti ti-logout"></i> Déconnexion
+          <i class="ti ti-logout"></i> ${esc(t('mobile.menu.logout'))}
         </button>`
       return
     }
@@ -452,7 +459,7 @@ async function launchApp() {
           lockEl.style.display = 'none'
           bio.touch()
         } else {
-          window.showToast('Échec de la vérification', 'error')
+          window.showToast(t('mobile.login.bio_failed'), 'error')
         }
       }
     }

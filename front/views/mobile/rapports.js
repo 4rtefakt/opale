@@ -1,3 +1,5 @@
+import { getLocale } from '/i18n.js'
+
 // Vue mobile Rapports — version condensée du desktop, focus sur les KPIs
 // agrégés et la posture sécurité. Pas de chart Chart.js (trop coûteux mobile).
 
@@ -37,7 +39,7 @@ function render(d) {
         ${formatHours(k.time_saved.minutes)}
       </div>
       <div style="font-size:12px;color:var(--green-text);margin-top:4px">
-        ≈ ${k.time_saved.eur.toLocaleString('fr-FR')} € · ${k.actions_count.toLocaleString('fr-FR')} actions
+        ${esc(t('rapports.kpi.time_saved_sub', { eur: k.time_saved.eur.toLocaleString(getLocale() === 'en' ? 'en-GB' : 'fr-FR') }))}
       </div>
     </div>
 
@@ -45,15 +47,15 @@ function render(d) {
     <div class="m-stat-row">
       <div class="m-stat-card">
         <div class="m-stat-val">${k.parc.active_7d}<span style="font-size:14px;font-weight:400;color:var(--text-tertiary)">/${totalParc}</span></div>
-        <div class="m-stat-lbl">Parc actif</div>
+        <div class="m-stat-lbl">${esc(t('rapports.kpi.parc'))}</div>
       </div>
       <div class="m-stat-card">
         <div class="m-stat-val" style="color:${scoreColor(score)}">${score == null ? '—' : score + ' %'}</div>
-        <div class="m-stat-lbl">Sécurité</div>
+        <div class="m-stat-lbl">${esc(t('rapports.kpi.security'))}</div>
       </div>
       <div class="m-stat-card">
         <div class="m-stat-val">${k.actions_count}</div>
-        <div class="m-stat-lbl">Actions 30j</div>
+        <div class="m-stat-lbl">${esc(t('rapports.kpi.actions'))}</div>
       </div>
     </div>
 

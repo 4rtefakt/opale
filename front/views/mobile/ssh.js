@@ -31,10 +31,10 @@ export function renderSSH(el, id) {
         <i class="ti ti-x"></i>
       </button>
       <div style="flex:1;min-width:0">
-        <span id="m-ssh-status" class="m-ssh-status">Connexion…</span>
+        <span id="m-ssh-status" class="m-ssh-status">${esc(t('mobile.ssh.connecting'))}</span>
         <span id="m-ssh-host" style="font-size:10px;color:#555;margin-left:8px"></span>
       </div>
-      <button class="m-ssh-key-btn" onclick="mSSHShowHistory()" title="Historique">
+      <button class="m-ssh-key-btn" onclick="mSSHShowHistory()" title="${esc(t('mobile.ssh.history'))}">
         <i class="ti ti-history"></i>
       </button>
     </div>
@@ -52,7 +52,7 @@ export function renderSSH(el, id) {
       <button class="m-ssh-key-btn" onclick="mSSHSendRaw('\t')">Tab</button>
       <button class="m-ssh-key-btn" onclick="mSSHSendRaw('\x03')">^C</button>
       <input class="m-ssh-input" id="m-ssh-in" autocomplete="off" autocorrect="off"
-        autocapitalize="none" spellcheck="false" placeholder="Commande…"
+        autocapitalize="none" spellcheck="false" placeholder="${esc(t('mobile.ssh.command_ph'))}"
         onkeydown="mSSHKeyDown(event)">
       <button class="m-ssh-send-btn" onclick="mSSHSend()">
         <i class="ti ti-arrow-up"></i>
@@ -102,8 +102,8 @@ async function connectSSH(id) {
   try {
     ({ nonce } = await window.api.requestSshGrant(id, reason))
   } catch (err) {
-    setStatus('Erreur autorisation', false)
-    appendOutput('\n⚠ ' + (err.message || 'Refus autorisation SSH') + '\n')
+    setStatus(t('mobile.ssh.auth_error'), false)
+    appendOutput('\n⚠ ' + (err.message || t('mobile.ssh.auth_refused')) + '\n')
     return
   }
   if (!onThisScreen()) return
@@ -111,7 +111,7 @@ async function connectSSH(id) {
   const wsUrl   = `${wsProto}://${location.host}/api/ssh/${encodeURIComponent(id)}?nonce=${encodeURIComponent(nonce)}`
 
   _ws = new WebSocket(wsUrl)
-  _ws.onopen    = () => setStatus('Connecté', true)
+  _ws.onopen    = () => setStatus(t('mobile.ssh.connected'), true)
   _ws.onmessage = (e) => {
     const msg = JSON.parse(e.data)
     if (msg.type === 'data') {
@@ -123,11 +123,11 @@ async function connectSSH(id) {
       if (el) el.textContent = msg.data
     } else if (msg.type === 'error') {
       appendOutput('\n⚠ ' + msg.data + '\n')
-      setStatus('Erreur', false)
+      setStatus(t('mobile.ssh.error'), false)
     }
   }
-  _ws.onclose = () => { setStatus('Déconnecté', false); appendOutput('\n[Connexion fermée]\n') }
-  _ws.onerror = () => setStatus('Erreur WebSocket', false)
+  _ws.onclose = () => { setStatus(t('mobile.ssh.disconnected'), false); appendOutput('\n' + t('mobile.ssh.closed') + '\n') }
+  _ws.onerror = () => setStatus(t('mobile.ssh.ws_error'), false)
 }
 
 // Saisie du motif d'ouverture de session : même contrat, mêmes libellés et
@@ -248,9 +248,9 @@ function mSSHKeyDown(e) {
 
 function mSSHShowHistory() {
   const hist = getHistory().slice().reverse()
-  if (!hist.length) { window.showToast('Aucun historique', 'info'); return }
+  if (!hist.length) { window.showToast(t('mobile.ssh.no_history'), 'info'); return }
   window.mShowSheet(`
-    <div class="m-sheet-title"><i class="ti ti-history"></i> Historique de commandes</div>
+    <div class="m-sheet-title"><i class="ti ti-history"></i> ${esc(t('mobile.ssh.history_title'))}</div>
     <div style="display:flex;flex-direction:column">
       ${hist.map((cmd, i) => `
         <button onclick="mSSHInsertFromHistory(${i})"
@@ -260,7 +260,7 @@ function mSSHShowHistory() {
         </button>`).join('')}
       <button onclick="mSSHClearHistory()"
         style="padding:12px 16px;border:none;background:none;color:var(--red);font-size:13px;cursor:pointer;margin-top:4px">
-        <i class="ti ti-trash"></i> Effacer l'historique
+        <i class="ti ti-trash"></i> ${esc(t('mobile.ssh.clear_history'))}
       </button>
     </div>`)
 
@@ -272,7 +272,7 @@ function mSSHShowHistory() {
   window.mSSHClearHistory = () => {
     if (_deviceId) localStorage.removeItem(HISTORY_KEY(_deviceId))
     window.mCloseSheet()
-    window.showToast('Historique effacé', 'success')
+    window.showToast(t('mobile.ssh.history_cleared'), 'success')
   }
 }
 
