@@ -34,6 +34,7 @@ export async function renderParametres(container) {
   window.revokeAdmin         = revokeAdmin
   window.showAddAdminModal   = showAddAdminModal
   window.showNewTokenModal   = showNewTokenModal
+  window.pickTheme           = pickTheme
 
   await reloadSettings()
 }
@@ -51,6 +52,7 @@ async function reloadSettings() {
 function render() {
   const body = document.getElementById('settings-body')
   const s    = _data.settings
+  setTimeout(paintSettingsMode, 0)
 
   body.innerHTML = `<div style="display:flex;flex-direction:column;gap:24px">
     <!-- Langue -->
@@ -61,6 +63,24 @@ function render() {
         <div style="display:flex;gap:8px;margin-left:auto">
           <button class="btn ${getLocale()==='fr' ? 'btn-primary' : ''}" onclick="setLocale('fr')">🇫🇷 Français</button>
           <button class="btn ${getLocale()==='en' ? 'btn-primary' : ''}" onclick="setLocale('en')">🇬🇧 English</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Apparence : thème + mode clair/sombre (préférence par utilisateur) -->
+    <div class="panel">
+      <div class="panel-header">${t('settings.appearance.title')}</div>
+      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:14px">
+        <p style="font-size:12px;color:var(--text-tertiary);margin:0">${t('settings.appearance.desc')}</p>
+        <div class="theme-grid" id="theme-grid">${renderThemeCards()}</div>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--text-secondary)">${t('settings.appearance.mode')}</span>
+          <div class="seg" id="settings-mode-seg">
+            <button class="seg-btn" data-mode="system" onclick="setThemeMode('system')"><i class="ti ti-device-desktop"></i> ${t('settings.appearance.mode.system')}</button>
+            <button class="seg-btn" data-mode="light"  onclick="setThemeMode('light')"><i class="ti ti-sun"></i> ${t('settings.appearance.mode.light')}</button>
+            <button class="seg-btn" data-mode="dark"   onclick="setThemeMode('dark')"><i class="ti ti-moon"></i> ${t('settings.appearance.mode.dark')}</button>
+          </div>
+          <span style="font-size:11px;color:var(--text-tertiary)">${t('settings.appearance.sync_note')}</span>
         </div>
       </div>
     </div>
@@ -668,3 +688,42 @@ async function showAddAdminModal() {
   }
 }
 
+// ── Apparence ────────────────────────────────────────────────────────────────
+
+function renderThemeCards() {
+  const T = window.OpaleTheme
+  if (!T) return ''
+  const { theme: current, scheme } = T.get()
+  return Object.entries(T.THEMES).map(([id, th]) => {
+    const p = th[scheme] || th.light
+    return `
+      <button class="theme-card ${id === current ? 'active' : ''}" onclick="pickTheme('${id}')" type="button">
+        <div class="theme-preview" style="background:${p['bg-primary']}">
+          <div class="tp-side" style="background:${p['sidebar-bg']}">
+            <i style="background:${p['primary']};opacity:1"></i><i style="background:${p['text-tertiary']}"></i><i style="background:${p['text-tertiary']}"></i>
+          </div>
+          <div class="tp-main">
+            <i style="background:${p['text-primary']};width:60%"></i>
+            <i style="background:${p['bg-tertiary']};width:85%"></i>
+            <i style="background:${p['bg-tertiary']};width:70%"></i>
+            <span class="tp-btn" style="background:${p['primary']}"></span>
+          </div>
+        </div>
+        <div class="theme-name">${esc(th.label)}</div>
+        <div class="theme-desc">${esc(th.desc)}</div>
+      </button>`
+  }).join('')
+}
+
+function paintSettingsMode() {
+  const mode = window.OpaleTheme?.get().mode
+  document.querySelectorAll('#settings-mode-seg .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode))
+  const grid = document.getElementById('theme-grid')
+  if (grid) grid.innerHTML = renderThemeCards()
+}
+window.addEventListener('themechange', paintSettingsMode)
+
+function pickTheme(id) {
+  window.OpaleTheme?.save(window.api, { theme: id })
+  showToast(t('settings.appearance.toast'), 'success')
+}

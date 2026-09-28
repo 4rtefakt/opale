@@ -59,6 +59,13 @@ function renderBody() {
   body.innerHTML = `
     <div style="padding:16px;display:flex;flex-direction:column;gap:16px">
 
+      <!-- Apparence -->
+      <div class="m-panel">
+        <div class="m-panel-header"><i class="ti ti-palette"></i> ${t('settings.appearance.title')}</div>
+        <div class="m-theme-grid" id="m-theme-grid"></div>
+        <div class="m-mode-row" id="m-mode-row"></div>
+      </div>
+
       <!-- Barre du bas -->
       <div class="m-panel">
         <div class="m-panel-header"><i class="ti ti-layout-navbar"></i> ${t('mobile.settings.nav.title')}</div>
@@ -129,6 +136,7 @@ function renderBody() {
     </div>`
 
   renderNavPref()
+  renderAppearance()
 
   window.mShowAddSSHKey = () => {
     window.mShowSheet(`
@@ -307,3 +315,25 @@ async function mNavSave(btn) {
     } catch (err) { window.showToast(err.message || t('mobile.settings.toast.error'), 'error') }
   })
 }
+
+// ── Apparence (thème + mode) ────────────────────────────────────────────────
+function renderAppearance() {
+  const T = window.OpaleTheme
+  const grid = document.getElementById('m-theme-grid')
+  const row  = document.getElementById('m-mode-row')
+  if (!T || !grid || !row) return
+  const { theme, mode, scheme } = T.get()
+  grid.innerHTML = Object.entries(T.THEMES).map(([id, th]) => {
+    const p = th[scheme] || th.dark
+    return `<button class="m-theme-card ${id === theme ? 'active' : ''}" onclick="mPickTheme('${id}')">
+      <div class="m-theme-swatch" style="background:${p['bg-primary']}">
+        <i style="background:${p['sidebar-bg']}"></i><i style="background:${p['bg-tertiary']}"></i><i style="background:${p['primary']}"></i>
+      </div>
+      <div class="m-theme-name">${esc(th.label)}</div>
+    </button>`
+  }).join('')
+  row.innerHTML = [['system', 'ti-device-mobile', t('settings.appearance.mode.system')], ['light', 'ti-sun', t('settings.appearance.mode.light')], ['dark', 'ti-moon', t('settings.appearance.mode.dark')]]
+    .map(([m, icon, label]) => `<button class="m-filter-pill ${m === mode ? 'active' : ''}" onclick="mPickMode('${m}')"><i class="ti ${icon}"></i>&nbsp;${esc(label)}</button>`).join('')
+}
+window.mPickTheme = (id) => { window.OpaleTheme?.save(window.api, { theme: id }); renderAppearance() }
+window.mPickMode  = (m)  => { window.OpaleTheme?.save(window.api, { mode: m });  renderAppearance() }

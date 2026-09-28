@@ -1,4 +1,5 @@
-// Vue Tickets — split layout liste / détail
+// Vue Tickets — trois modes : liste (split liste / détail), Kanban, et
+// « À trier » (mails entrants à transformer en tickets).
 // Filtres avancés (priorité, tags, assigné, dates) persistés dans le hash URL.
 
 const TAG_PALETTE = {
@@ -24,30 +25,32 @@ function shortName(name) {
   return parts[0] + ' ' + parts[parts.length - 1][0].toUpperCase() + '.'
 }
 
-// Liens cliquables vers les fiches device / user. On utilise des <a href="#/...">
-// pour permettre clic milieu + ctrl+clic en plus du clic standard. event.
-// stopPropagation() évite que le clic remonte au row parent qui ouvrirait
-// le ticket — on veut juste naviguer vers la fiche.
-function deviceLink(deviceId, hostname, { extraStyle = '' } = {}) {
-  if (!hostname) return ''
-  if (!deviceId) return esc(hostname)  // fallback texte si pas d'id
-  return `<a href="#/postes/${esc(deviceId)}" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor;${extraStyle}">${esc(hostname)}</a>`
+function initialsOf(name) {
+  return (name || '?').split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)
 }
 
-function userLink(entraId, displayName, { extraStyle = '' } = {}) {
+// Référence courte d'un ticket : 8 premiers hex de l'UUID, en majuscules —
+// c'est le tag [Opale #XXXXXXXX] posé dans le sujet des mails sortants
+// (cf. api email-bridge/lib/thread-headers.js). Recherchable dans Outlook.
+function ticketRef(id) {
+  return String(id || '').replace(/-/g, '').slice(0, 8).toUpperCase()
+}
+
+// Liens cliquables vers les fiches device / user (clic milieu + ctrl+clic ok).
+function deviceLink(deviceId, hostname) {
+  if (!hostname) return ''
+  if (!deviceId) return esc(hostname)
+  return `<a href="#/postes/${esc(deviceId)}" onclick="event.stopPropagation()">${esc(hostname)}</a>`
+}
+
+function userLink(entraId, displayName) {
   if (!displayName) return ''
   if (!entraId) return esc(displayName)
-  return `<a href="#/users/${esc(entraId)}" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor;${extraStyle}">${esc(displayName)}</a>`
+  return `<a href="#/users/${esc(entraId)}" onclick="event.stopPropagation()">${esc(displayName)}</a>`
 }
 
 // Nettoie au rendu les descriptions HTML des tickets créés avant le fix
-// htmlToText (issue #8 — case-sensitive bug sur contentType). Détection
-// heuristique : présence de balises HTML caractéristiques d'Outlook. Sans
-// match, retourne le texte intact (cas normal des tickets manuels).
-//
-// Pas de sanitisation des nouveaux tickets (ceux générés post-fix) — leur
-// description est déjà du texte propre. `esc()` côté caller protège
-// quoi qu'il arrive l'injection XSS.
+// htmlToText (issue #8). Sans balise Outlook caractéristique, texte intact.
 function cleanLegacyHtml(text) {
   if (!text) return text
   const s = String(text)
@@ -76,33 +79,86 @@ function cleanLegacyHtml(text) {
     .trim()
 }
 
+// Date absolue courte, localisée : « 12 mars, 14:05 » (année si différente).
+function fmtDateShort(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d)) return ''
+  const loc = (window.getLocale?.() || 'fr') === 'en' ? 'en-GB' : 'fr-FR'
+  const sameYear = d.getFullYear() === new Date().getFullYear()
+  return d.toLocaleDateString(loc, { day: 'numeric', month: 'short', ...(sameYear ? {} : { year: 'numeric' }) })
+    + ', ' + d.toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' })
+}
+function fmtDateFull(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const loc = (window.getLocale?.() || 'fr') === 'en' ? 'en-GB' : 'fr-FR'
+  return d.toLocaleDateString(loc, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    + ' ' + d.toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' })
+}
+// Relatif si récent (< 24 h), sinon date courte. Le title porte la date complète.
+function whenHtml(iso) {
+  if (!iso) return ''
+  const age = Date.now() - new Date(iso).getTime()
+  const txt = age < 86_400_000 ? formatRelative(iso) : fmtDateShort(iso)
+  return `<span title="${esc(fmtDateFull(iso))}">${esc(txt)}</span>`
+}
+function dayKey(iso) {
+  const d = new Date(iso)
+  return isNaN(d) ? '' : d.toISOString().slice(0, 10)
+}
+function dayLabel(iso) {
+  const d = new Date(iso)
+  const today = new Date(); const yest = new Date(Date.now() - 86_400_000)
+  if (d.toDateString() === today.toDateString()) return t('tickets.day.today')
+  if (d.toDateString() === yest.toDateString())  return t('tickets.day.yesterday')
+  const loc = (window.getLocale?.() || 'fr') === 'en' ? 'en-GB' : 'fr-FR'
+  return d.toLocaleDateString(loc, { weekday: 'short', day: 'numeric', month: 'long', ...(d.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' }) })
+}
+
 // Affiche updated_at si différent de created_at (mode hybride), sinon created_at.
 function displayWhen(tk) {
-  if (!tk.updated_at || tk.updated_at === tk.created_at) {
-    return formatRelative(tk.created_at)
-  }
+  if (!tk.updated_at || tk.updated_at === tk.created_at) return formatRelative(tk.created_at)
   return `${t('tickets.maj_prefix')} ${formatRelative(tk.updated_at)}`
 }
 
-// Petit point rouge devant un élément quand awaiting_reply est true
+// Point rouge : le dernier message n'est pas de moi → réponse attendue.
 function awaitingDot(tk) {
   if (!tk.awaiting_reply) return ''
-  return `<span title="${esc(t('tickets.awaiting_reply'))}" style="display:inline-block;width:8px;height:8px;background:var(--red);border-radius:50%;margin-right:6px;flex-shrink:0;vertical-align:middle"></span>`
+  return `<span class="tk-unread" title="${esc(t('tickets.awaiting_reply'))}"></span>`
 }
 
-let _tickets       = []
-let _activeId      = null
-let _allTags       = []          // référentiel complet
-let _filters       = defaultFilters()
-let _showAdvanced  = false
-let _localQ        = ''          // recherche locale (titre/hostname)
-let _view          = 'list'      // 'list' | 'kanban'
+function statusPill(status) {
+  const known = ['open', 'in_progress', 'resolved', 'closed', 'merged'].includes(status)
+  return `<span class="st-pill ${known ? 'st-' + status : 'st-closed'}">${statusLabel(status)}</span>`
+}
+function prioPill(p, { clickable = false, ticketId = null } = {}) {
+  const cls = ['critical', 'high', 'normal', 'low'].includes(p) ? `prio-${p}-c` : 'prio-normal-c'
+  const onclick = clickable && ticketId ? ` onclick="tkOpenPriorityPicker('${ticketId}')" style="cursor:pointer" title="${esc(t('tickets.priority.change'))}"` : ''
+  return `<span class="prio-pill ${cls}"${onclick}><span class="prio-dot"></span>${prioLabel(p)}</span>`
+}
+function sourceChip(tk) {
+  if (tk.source === 'email' || tk.has_inbound_mail) return `<span class="badge badge-green"><i class="ti ti-mail"></i> ${esc(t('tickets.source.email'))}</span>`
+  if (tk.is_auto || tk.source === 'auto' || tk.source === 'alert' || tk.source === 'script') return `<span class="badge badge-purple"><i class="ti ti-robot"></i> ${esc(t('tickets.source.auto'))}</span>`
+  return ''
+}
+
+let _tickets        = []
+let _activeId       = null
+let _allTags        = []          // référentiel complet
+let _filters        = defaultFilters()
+let _showAdvanced   = false
+let _localQ         = ''          // recherche locale (titre/hostname)
+let _view           = 'list'      // 'list' | 'kanban' | 'inbox'
 let _proposalsCount = 0
 let _inboxCount     = 0
+let _composerMode   = 'note'      // 'note' | 'mail' — mémorisé entre deux tickets
+let _currentTk      = null        // ticket affiché dans le détail
 
 const KANBAN_COL_CAP = 30
 const KANBAN_COLS    = ['open', 'in_progress', 'resolved']
 const VIEW_LS_KEY    = 'opale.tickets.view'
+const VIEWS          = ['list', 'kanban', 'inbox']
 
 // ─── View persistence : hash > localStorage > 'list' ────────────────────────
 
@@ -111,18 +167,17 @@ function readView() {
   const qIdx = hash.indexOf('?')
   if (qIdx !== -1) {
     const v = new URLSearchParams(hash.slice(qIdx + 1)).get('view')
-    if (v === 'kanban' || v === 'list') return v
+    if (VIEWS.includes(v)) return v
   }
   try {
     const v = localStorage.getItem(VIEW_LS_KEY)
-    if (v === 'kanban' || v === 'list') return v
+    if (VIEWS.includes(v)) return v
   } catch {}
   return 'list'
 }
 
 function writeView(v) {
   try { localStorage.setItem(VIEW_LS_KEY, v) } catch {}
-  // Reflète aussi dans le hash pour bookmark/partage
   const hash = window.location.hash || '#/tickets'
   const qIdx = hash.indexOf('?')
   const sp   = new URLSearchParams(qIdx === -1 ? '' : hash.slice(qIdx + 1))
@@ -136,11 +191,11 @@ function writeView(v) {
 
 function defaultFilters() {
   return {
-    status: 'all',          // all | open | in_progress | auto | resolved
-    priority: [],           // csv
-    tag: [],                // csv tag_ids
+    status: 'all',          // all | open | in_progress | auto | resolved | closed
+    priority: [],
+    tag: [],
     assigned_to: '',        // entra_id | 'me' | 'unassigned' | ''
-    assigned_label: '',     // libellé picker (affichage)
+    assigned_label: '',
     created_from: '',
     created_to: '',
   }
@@ -155,7 +210,6 @@ const HASH_PRIORITIES = ['low', 'normal', 'high', 'critical']
 const UUID_RE         = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const DATE_RE         = /^\d{4}-\d{2}-\d{2}$/
 
-// AAAA-MM-JJ et date réelle : l'aller-retour par Date rejette 2026-02-30.
 function isValidDay(s) {
   if (!DATE_RE.test(s || '')) return false
   const d = new Date(s + 'T00:00:00Z')
@@ -187,6 +241,7 @@ function writeFiltersToHash() {
   if (_filters.assigned_label)     sp.set('assigned_label', _filters.assigned_label)
   if (_filters.created_from)       sp.set('created_from', _filters.created_from)
   if (_filters.created_to)         sp.set('created_to',   _filters.created_to)
+  if (_view !== 'list')            sp.set('view', _view)
 
   const hash    = window.location.hash || '#/tickets'
   const pathPart = hash.split('?')[0]
@@ -195,7 +250,6 @@ function writeFiltersToHash() {
   if (newHash !== hash) history.replaceState(null, '', newHash)
 }
 
-// Construit les paramètres pour l'API à partir des filtres
 function filtersToParams() {
   const p = {}
   if (_filters.status === 'auto') {
@@ -208,10 +262,6 @@ function filtersToParams() {
   if (_filters.assigned_to)        p.assigned_to = _filters.assigned_to
   if (_filters.created_from)       p.created_from = _filters.created_from
   if (_filters.created_to)         p.created_to   = _filters.created_to
-  // Recherche fulltext (titre + description + messages + personnes concernées)
-  // déléguée au backend pour pouvoir trouver dans tous les tickets, pas
-  // seulement la page chargée. Le filtre local de fallback (kanban, list)
-  // continue de matcher sur title/hostname pour réactivité immédiate.
   if (_localQ?.trim())             p.q = _localQ.trim()
   return p
 }
@@ -219,59 +269,54 @@ function filtersToParams() {
 // ─── Render principal ────────────────────────────────────────────────────────
 
 export async function renderTickets(container, opts = {}) {
-  // Capture l'intent du deep-link `?new=true&device=<id>` AVANT toute
-  // logique de render. Sinon, si `_activeId` était set par une visite
-  // précédente (module-scoped), `selectTicket` se déclenche pendant
-  // `renderMain` et réécrit `window.location.hash` via replaceState
-  // — on perd le `?…` avant d'avoir pu le parser.
+  // Deep-link `?new=true&device=<id>` capturé AVANT tout render (un
+  // replaceState de selectTicket effacerait le `?…`).
   let pendingNewModal = null
   const initialQs = (window.location.hash || '').split('?')[1]
   if (initialQs) {
     const params = new URLSearchParams(initialQs)
     if (params.get('new') === 'true') {
       pendingNewModal = { deviceId: params.get('device') }
-      // Reset : on ne veut pas ouvrir un ticket en arrière-plan derrière
-      // la modale de création.
       _activeId = null
     }
   }
 
   // Deep-link : `#/tickets/<id>` ouvre directement ce ticket (partageable).
-  // Cf. router app.js qui passe parts[1] en `ticketId`.
   if (opts.ticketId) _activeId = opts.ticketId
 
   _filters      = readFiltersFromHash()
   _showAdvanced = hasActiveAdvanced()
   _view         = readView()
+  // Un deep-link vers un ticket depuis le mode « À trier » n'a pas de sens :
+  // on retombe en liste pour l'afficher.
+  if (opts.ticketId && _view === 'inbox') _view = 'list'
 
   container.innerHTML = `
     <div class="topbar">
-      <h1 class="topbar-title">${t('tickets.title')}</h1>
+      <div class="topbar-left">
+        <span class="page-title">${t('tickets.title')}</span>
+        <span class="topbar-sub" id="tk-subtitle"></span>
+      </div>
       <div class="topbar-actions">
-        <div class="btn-group" style="display:inline-flex;border-radius:6px;overflow:hidden">
-          <button class="btn btn-sm ${_view==='list'?'btn-primary':''}"   onclick="tkSetView('list')"   title="${t('tickets.view.list')}"><i class="ti ti-list"></i></button>
-          <button class="btn btn-sm ${_view==='kanban'?'btn-primary':''}" onclick="tkSetView('kanban')" title="${t('tickets.view.kanban')}"><i class="ti ti-layout-kanban"></i></button>
+        <div class="seg" id="tk-seg">
+          <button class="seg-btn ${_view==='list'?'active':''}"   onclick="tkSetView('list')"   title="${t('tickets.view.list')}"><i class="ti ti-list"></i> ${t('tickets.view.list_short')}</button>
+          <button class="seg-btn ${_view==='kanban'?'active':''}" onclick="tkSetView('kanban')" title="${t('tickets.view.kanban')}"><i class="ti ti-layout-kanban"></i> ${t('tickets.view.kanban_short')}</button>
+          <button class="seg-btn ${_view==='inbox'?'active':''}"  onclick="tkSetView('inbox')"  title="${t('tickets.inbox.title')}"><i class="ti ti-mail-opened"></i> ${t('tickets.inbox.short')} <span class="seg-count" id="tk-inbox-count" style="display:none"></span></button>
         </div>
-        <button class="btn" id="tk-inbox-btn" style="display:none" onclick="openInboxModal()" title="${t('tickets.inbox.title')}">
-          <i class="ti ti-mail-opened"></i> ${t('tickets.inbox.title')}
-          <span id="tk-inbox-count" class="badge" style="margin-left:6px;background:var(--accent);color:#fff;padding:0 6px;border-radius:10px;font-size:11px"></span>
-        </button>
         <button class="btn" id="tk-proposals-btn" style="display:none" onclick="openProposalsModal()" title="${t('tickets.proposals.title')}">
           <i class="ti ti-bulb"></i> ${t('tickets.proposals.title')}
-          <span id="tk-proposals-count" class="badge" style="margin-left:6px;background:var(--red);color:#fff;padding:0 6px;border-radius:10px;font-size:11px"></span>
+          <span class="seg-count hot" id="tk-proposals-count"></span>
         </button>
         <button class="btn" onclick="openTagsModal()" title="${t('tickets.tags.manage')}">
-          <i class="ti ti-tags"></i> ${t('tickets.tags.manage')}
+          <i class="ti ti-tags"></i>
         </button>
-        <button class="btn btn-primary" onclick="openNewTicketModal()">
+        <button class="btn btn-primary" onclick="openNewTicketModal()" title="${t('tickets.new.shortcut_hint')}">
           <i class="ti ti-plus"></i> ${t('btn.new_ticket')}
         </button>
       </div>
     </div>
-    <!-- Bandeau stats du pont mail (issue #8). Caché si l'API renvoie 0 :
-         ça évite d'afficher du vide quand le pont est désactivé.
-         Clickable → modale diagnostic (liste mails, erreurs, conf Ollama). -->
-    <div id="tk-mail-stats" onclick="openMailDiagnosticModal()" style="display:none;padding:6px 16px;font-size:12px;color:var(--text-secondary);border-bottom:0.5px solid var(--border);background:var(--bg-secondary);cursor:pointer" title="Cliquer pour le détail"></div>
+    <!-- Bandeau stats du pont mail. Caché si l'API renvoie 0. Clic → diagnostic. -->
+    <div id="tk-mail-stats" onclick="openMailDiagnosticModal()" style="display:none;padding:6px 20px;font-size:12px;color:var(--text-secondary);border-bottom:0.5px solid var(--border);background:var(--bg-secondary);cursor:pointer" title="${esc(t('tickets.mail_stats.hint'))}"></div>
     <div id="tk-main" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>`
 
   ensureKanbanStyles()
@@ -319,9 +364,6 @@ export async function renderTickets(container, opts = {}) {
   window.tkOpenDevicePicker    = tkOpenDevicePicker
   window.tkClearDevice         = tkClearDevice
   window.openProposalsModal    = openProposalsModal
-  window.openInboxModal        = openInboxModal
-  window.tkInboxToTicket       = tkInboxToTicket
-  window.tkInboxDismiss        = tkInboxDismiss
   window.tkAcceptProposal      = tkAcceptProposal
   window.tkRejectProposal      = tkRejectProposal
   window.tkSetView            = tkSetView
@@ -332,14 +374,29 @@ export async function renderTickets(container, opts = {}) {
   window.tkKanbanDragLeave    = tkKanbanDragLeave
   window.tkKanbanDrop         = tkKanbanDrop
   window.tkKanbanGotoList     = tkKanbanGotoList
+  window.tkSetComposerMode    = tkSetComposerMode
+  window.tkComposerKey        = tkComposerKey
+  window.tkEditTitle          = tkEditTitle
+  window.tkSaveTitle          = tkSaveTitle
+  window.tkCancelEditTitle    = tkCancelEditTitle
+  window.tkEditDescription    = tkEditDescription
+  window.tkSaveDescription    = tkSaveDescription
+  window.tkToggleMsg          = tkToggleMsg
+  window.tkCopyRef            = tkCopyRef
+  window.tkOpenStatusMenu     = tkOpenStatusMenu
+  window.tkSetStatus          = tkSetStatus
+  window.tkCopyLink           = tkCopyLink
+  window.inboxSelect          = inboxSelect
+  window.inboxToTicket        = inboxToTicket
+  window.inboxOpenAttach      = inboxOpenAttach
+  window.inboxDismiss         = inboxDismiss
+  window.inboxReload          = inboxReload
+  window.inboxFilter          = inboxFilter
+  window.inboxToggleRaw       = inboxToggleRaw
 
-  // Précharge le référentiel tags en parallèle de la liste
   await Promise.all([loadTags(), loadTickets(), loadProposalsCount(), loadInboxCount(), loadEmailStats()])
   renderMain()
 
-  // Deep-link create : ouvrir la modale moderne avec le device pré-rempli.
-  // L'intent a été capturé au tout début de renderTickets (cf. plus haut)
-  // pour ne pas se faire écraser par un replaceState éventuel de selectTicket.
   if (pendingNewModal) {
     let prefillDevice = null
     if (pendingNewModal.deviceId) {
@@ -348,10 +405,33 @@ export async function renderTickets(container, opts = {}) {
         if (dev?.id) prefillDevice = { id: dev.id, hostname: dev.hostname }
       } catch {}
     }
-    // Nettoie l'URL pour éviter la réouverture au refresh.
     history.replaceState(null, '', '#/tickets')
     openNewTicketModal({ prefillDevice })
   }
+
+  // Raccourcis clavier (hors champ de saisie) : n = nouveau ticket,
+  // j / k = ticket suivant / précédent, e = renommer, r = focus réponse.
+  if (!window._tkKeysBound) {
+    window._tkKeysBound = true
+    document.addEventListener('keydown', tkGlobalKeys)
+  }
+}
+
+function tkGlobalKeys(e) {
+  if (!document.getElementById('tk-main')) return
+  if (e.metaKey || e.ctrlKey || e.altKey) return
+  const tag = (e.target?.tagName || '').toLowerCase()
+  if (['input', 'textarea', 'select'].includes(tag) || e.target?.isContentEditable) return
+  if (!document.getElementById('modal-overlay')?.classList.contains('hidden')) return
+  if (e.key === 'n') { e.preventDefault(); openNewTicketModal() }
+  else if ((e.key === 'j' || e.key === 'k') && _view === 'list') {
+    const ids = applyLocalSearch(_tickets, _localQ).map(x => x.id)
+    if (!ids.length) return
+    const i = ids.indexOf(_activeId)
+    const next = e.key === 'j' ? Math.min(ids.length - 1, i + 1) : Math.max(0, i - 1)
+    if (ids[next] && ids[next] !== _activeId) selectTicket(ids[next])
+  } else if (e.key === 'e' && _currentTk) { e.preventDefault(); tkEditTitle(_currentTk.id) }
+  else if (e.key === 'r' && _currentTk) { e.preventDefault(); document.getElementById('reply-input')?.focus() }
 }
 
 async function loadProposalsCount() {
@@ -371,22 +451,24 @@ async function loadInboxCount() {
 }
 
 function updateInboxBadge() {
-  const btn = document.getElementById('tk-inbox-btn')
   const cnt = document.getElementById('tk-inbox-count')
-  if (!btn || !cnt) return
-  if (_inboxCount > 0) {
-    btn.style.display = ''
+  if (cnt) {
+    cnt.style.display = _inboxCount > 0 ? '' : 'none'
     cnt.textContent = _inboxCount
-  } else {
-    btn.style.display = 'none'
-    cnt.textContent = ''
+    cnt.classList.toggle('hot', _inboxCount > 0 && _view !== 'inbox')
   }
+  window.updateInboxSidebarBadge?.(_inboxCount)
 }
 
-// Stats du pont mail sur 7 jours (issue #8). Affiche un bandeau ambiant
-// en haut de la vue Tickets. Caché si total=0 — évite du vide quand le
-// pont est inactif. Erreur silencieuse : le badge ne s'affiche pas, mais
-// la vue Tickets reste fonctionnelle.
+function updateProposalsBadge() {
+  const btn = document.getElementById('tk-proposals-btn')
+  const cnt = document.getElementById('tk-proposals-count')
+  if (!btn || !cnt) return
+  btn.style.display = _proposalsCount > 0 ? '' : 'none'
+  cnt.textContent = _proposalsCount || ''
+}
+
+// Stats du pont mail sur 7 jours. Bandeau ambiant, caché si total=0.
 async function loadEmailStats() {
   const bar = document.getElementById('tk-mail-stats')
   if (!bar) return
@@ -395,33 +477,17 @@ async function loadEmailStats() {
   if (!stats || !stats.total) { bar.style.display = 'none'; return }
 
   const a = stats.by_action || {}
-  // Phase 3 : 'pending_review' remplace les 'proposal_created' auto. On
-  // garde un total "proposals" pour les mappings legacy encore vivants
-  // dans la fenêtre temporelle.
   const propTotal = (a.proposal_created || 0) + (a.proposal_created_no_match || 0)
   const parts = []
   parts.push(`<i class="ti ti-mail" style="font-size:12px;vertical-align:-1px"></i> ${t('tickets.mail_stats.ingested', { n: stats.total })}`)
-  if (a.pending_review)     parts.push(`<span style="color:var(--accent)">${t('tickets.mail_stats.pending_review', { n: a.pending_review })}</span>`)
+  if (a.pending_review)     parts.push(`<span style="color:var(--accent);font-weight:500">${t('tickets.mail_stats.pending_review', { n: a.pending_review })}</span>`)
   if (propTotal)            parts.push(t('tickets.mail_stats.proposals',     { n: propTotal }))
   if (a.message_appended)   parts.push(t('tickets.mail_stats.appended',      { n: a.message_appended }))
   if (a.skipped_other)      parts.push(t('tickets.mail_stats.skipped_other', { n: a.skipped_other }))
   if (a.in_queue)           parts.push(`<span style="color:var(--accent)">${t('tickets.mail_stats.in_queue', { n: a.in_queue })}</span>`)
   if (a.skipped_error)      parts.push(`<span style="color:var(--red)">${t('tickets.mail_stats.errors', { n: a.skipped_error })}</span>`)
-  bar.innerHTML = parts.join(' · ')
+  bar.innerHTML = parts.join(' <span style="opacity:0.4">·</span> ')
   bar.style.display = ''
-}
-
-function updateProposalsBadge() {
-  const btn = document.getElementById('tk-proposals-btn')
-  const cnt = document.getElementById('tk-proposals-count')
-  if (!btn || !cnt) return
-  if (_proposalsCount > 0) {
-    btn.style.display = ''
-    cnt.textContent = _proposalsCount
-  } else {
-    btn.style.display = 'none'
-    cnt.textContent = ''
-  }
 }
 
 // ─── Render principal selon _view ───────────────────────────────────────────
@@ -429,29 +495,38 @@ function updateProposalsBadge() {
 function renderMain() {
   const main = document.getElementById('tk-main')
   if (!main) return
-  if (_view === 'kanban') {
-    renderKanbanLayout(main)
-  } else {
-    renderListLayout(main)
-  }
+  if (_view === 'kanban')     renderKanbanLayout(main)
+  else if (_view === 'inbox') renderInboxLayout(main)
+  else                        renderListLayout(main)
   renderAdvancedPanel()
   renderActiveChips()
+  updateInboxBadge()
+}
+
+function updateSubtitle() {
+  const el = document.getElementById('tk-subtitle')
+  if (!el) return
+  if (_view === 'inbox') { el.textContent = _inboxCount ? t('tickets.inbox.subtitle', { n: _inboxCount }) : ''; return }
+  const n = applyLocalSearch(_tickets, _localQ).length
+  el.textContent = n ? t('tickets.subtitle_count', { n }) : ''
 }
 
 function renderListLayout(main) {
   main.innerHTML = `
     <div class="view-split" style="flex:1;min-height:0">
       <div class="ticket-list-col">
-        <div class="toolbar" style="padding:8px 10px;gap:6px;border-bottom:0.5px solid var(--border)">
-          <input class="search-input" id="tk-q" placeholder="${t('tickets.search')}"
-            oninput="filterTickets(this.value)" style="flex:1;min-width:0" value="${esc(_localQ)}">
-          <button class="btn btn-sm" id="tk-adv-toggle" onclick="toggleAdvanced()" title="${t('tickets.filters.advanced')}">
-            <i class="ti ti-filter"></i>
+        <div class="toolbar" style="padding:8px 10px;gap:6px">
+          <div class="search-bar" style="max-width:none;padding:5px 9px">
+            <i class="ti ti-search"></i>
+            <input id="tk-q" placeholder="${t('tickets.search')}" oninput="filterTickets(this.value)" value="${esc(_localQ)}">
+          </div>
+          <button class="btn btn-sm ${_showAdvanced || hasActiveAdvanced() ? 'btn-primary' : ''}" id="tk-adv-toggle" onclick="toggleAdvanced()" title="${t('tickets.filters.advanced')}">
+            <i class="ti ti-adjustments-horizontal"></i>
           </button>
         </div>
-        <div class="toolbar" style="padding:6px 10px;border-bottom:0.5px solid var(--border);gap:4px;flex-wrap:nowrap">
+        <div class="tk-tabs">
           ${['all','open','in_progress','auto','resolved','closed'].map(s => `
-            <button class="btn btn-sm ${_filters.status===s?'btn-primary':''}" id="tf-${s}"
+            <button class="tk-tab ${_filters.status===s?'active':''}" id="tf-${s}"
               onclick="setStatusFilter('${s}')">${t('tickets.filter.'+s)}</button>
           `).join('')}
         </div>
@@ -463,22 +538,24 @@ function renderListLayout(main) {
         <div class="ticket-detail-empty">
           <i class="ti ti-ticket" style="font-size:32px"></i>
           <span>${t('tickets.select_hint')}</span>
+          <span style="font-size:11.5px;color:var(--text-tertiary)">${esc(t('tickets.keys_hint'))}</span>
         </div>
       </div>
     </div>`
   renderList()
-  // Si un ticket était actif (par ex. après fermeture du drawer Kanban), le re-charger
   if (_activeId) selectTicket(_activeId)
 }
 
 function renderKanbanLayout(main) {
   main.innerHTML = `
     <div class="view-kanban" style="display:flex;flex-direction:column;flex:1;min-height:0">
-      <div class="toolbar" style="padding:8px 12px;gap:6px;border-bottom:0.5px solid var(--border)">
-        <input class="search-input" id="tk-q" placeholder="${t('tickets.search')}"
-          oninput="filterTickets(this.value)" style="flex:1;min-width:0;max-width:360px" value="${esc(_localQ)}">
-        <button class="btn btn-sm" id="tk-adv-toggle" onclick="toggleAdvanced()" title="${t('tickets.filters.advanced')}">
-          <i class="ti ti-filter"></i>
+      <div class="toolbar" style="padding:8px 12px;gap:6px">
+        <div class="search-bar" style="padding:5px 9px">
+          <i class="ti ti-search"></i>
+          <input id="tk-q" placeholder="${t('tickets.search')}" oninput="filterTickets(this.value)" value="${esc(_localQ)}">
+        </div>
+        <button class="btn btn-sm ${_showAdvanced || hasActiveAdvanced() ? 'btn-primary' : ''}" id="tk-adv-toggle" onclick="toggleAdvanced()" title="${t('tickets.filters.advanced')}">
+          <i class="ti ti-adjustments-horizontal"></i>
         </button>
       </div>
       <div id="tk-adv-panel" style="display:${_showAdvanced?'block':'none'};border-bottom:0.5px solid var(--border);padding:8px 12px;background:var(--bg-secondary)"></div>
@@ -499,41 +576,30 @@ function renderKanbanLayout(main) {
       </div>
     </div>`
   renderKanbanCards()
-  // Deep-link sur kanban : si on arrive sur `/tickets/<id>`, ouvrir le drawer.
   if (_activeId) tkOpenDrawer(_activeId)
 }
 
-// Filtre local pour réactivité immédiate pendant la frappe (avant que le
-// debounce ne déclenche loadTickets). Match sur les champs présents dans
-// le payload list : title, hostname, requester_name.
-//
-// Cas limite : le backend cherche aussi dans description, contenu des
-// messages, et involved users — ces critères ne sont pas dans le payload
-// list. Donc si l'utilisateur cherche par exemple un involved et que le
-// filtre local renvoie 0 alors que `_tickets` (fraîchement chargé par le
-// backend filtré) en a, on garde la liste backend telle quelle. Sinon le
-// filtre local masquerait le résultat backend correct.
+// Filtre local pour réactivité immédiate pendant la frappe. Si le filtre
+// local ne trouve rien alors que le backend (qui cherche aussi dans les
+// messages / personnes) a renvoyé des tickets, on garde la liste backend.
 function applyLocalSearch(tickets, q) {
   if (!q?.trim()) return tickets
   const lower = q.toLowerCase()
   const matched = tickets.filter(tk =>
     tk.title.toLowerCase().includes(lower) ||
     (tk.hostname || '').toLowerCase().includes(lower) ||
-    (tk.requester_name || '').toLowerCase().includes(lower)
+    (tk.requester_name || '').toLowerCase().includes(lower) ||
+    ticketRef(tk.id).toLowerCase() === lower.replace(/^#/, '')
   )
   return (matched.length === 0 && tickets.length > 0) ? tickets : matched
 }
 
-// ─── Kanban : remplit les colonnes ───────────────────────────────────────────
+// ─── Kanban ──────────────────────────────────────────────────────────────────
 
 function renderKanbanCards() {
   const visible = applyLocalSearch(_tickets, _localQ)
-
   const groups = { open: [], in_progress: [], resolved: [] }
-  for (const tk of visible) {
-    if (groups[tk.status]) groups[tk.status].push(tk)
-    // les statuts hors-norme (proposed, etc.) sont ignorés en Kanban
-  }
+  for (const tk of visible) if (groups[tk.status]) groups[tk.status].push(tk)
 
   for (const s of KANBAN_COLS) {
     const body  = document.getElementById('kc-body-' + s)
@@ -549,20 +615,19 @@ function renderKanbanCards() {
             <button class="btn btn-sm" onclick="tkKanbanGotoList('${s}')">${t('tickets.kanban.see_all')}</button>
            </div>`
         : '')
-    if (!list.length) {
-      body.innerHTML = `<div class="kanban-empty">${t('tickets.kanban.empty')}</div>`
-    }
+    if (!list.length) body.innerHTML = `<div class="kanban-empty">${t('tickets.kanban.empty')}</div>`
   }
+  updateSubtitle()
 }
 
 function kanbanCard(tk) {
-  const prioColor = tk.priority === 'critical' ? '#dc2626'
-                  : tk.priority === 'high'     ? '#d97706'
-                  : tk.priority === 'low'      ? '#64748b'
+  const prioColor = tk.priority === 'critical' ? 'var(--red)'
+                  : tk.priority === 'high'     ? 'var(--amber)'
+                  : tk.priority === 'low'      ? 'var(--text-tertiary)'
                   : '#0d9488'
   const tags = (tk.tags || []).slice(0, 4).map(g => tagChip(g, { compact: true })).join('')
   return `
-    <div class="kanban-card" draggable="true"
+    <div class="kanban-card ${_activeId === tk.id ? 'kc-active' : ''}" draggable="true"
          ondragstart="tkKanbanDragStart(event,'${tk.id}')"
          onclick="tkOpenDrawer('${tk.id}')">
       <div class="kc-prio" style="background:${prioColor}"></div>
@@ -571,17 +636,15 @@ function kanbanCard(tk) {
         ${tags ? `<div class="kc-tags">${tags}</div>` : ''}
         <div class="kc-meta">
           ${tk.is_auto ? `<span class="kc-badge kc-badge-auto" title="Auto"><i class="ti ti-robot" style="font-size:10px"></i></span>` : ''}
-          ${tk.requester_name ? `<span class="kc-badge" title="${esc(t('tickets.info.requester'))}: ${esc(tk.requester_name)}"><i class="ti ti-user" style="font-size:10px"></i> ${userLink(tk.user_id, shortName(tk.requester_name))}</span>` : ''}
-          ${tk.assigned_to_name ? `<span class="kc-badge" title="${esc(t('tickets.info.assignee'))}: ${esc(tk.assigned_to_name)}"><i class="ti ti-user-check" style="font-size:10px"></i> ${userLink(tk.assigned_to_entra_id, shortName(tk.assigned_to_name))}</span>` : (!['resolved'].includes(tk.status) ? `<span class="kc-badge kc-badge-unassigned"><i class="ti ti-user-off" style="font-size:10px"></i> ${esc(t('tickets.unassigned'))}</span>` : '')}
-          ${tk.hostname ? `<span class="kc-badge" title="Poste"><i class="ti ti-device-laptop" style="font-size:10px"></i> ${deviceLink(tk.device_id, tk.hostname)}</span>` : ''}
+          ${tk.requester_name ? `<span class="kc-badge" title="${esc(t('tickets.info.requester'))}: ${esc(tk.requester_name)}"><i class="ti ti-user" style="font-size:10px"></i> ${esc(shortName(tk.requester_name))}</span>` : ''}
+          ${tk.assigned_to_name ? `<span class="kc-badge" title="${esc(t('tickets.info.assignee'))}: ${esc(tk.assigned_to_name)}"><i class="ti ti-user-check" style="font-size:10px"></i> ${esc(shortName(tk.assigned_to_name))}</span>` : (!['resolved'].includes(tk.status) ? `<span class="kc-badge kc-badge-unassigned"><i class="ti ti-user-off" style="font-size:10px"></i> ${esc(t('tickets.unassigned'))}</span>` : '')}
+          ${tk.hostname ? `<span class="kc-badge" title="Poste"><i class="ti ti-device-laptop" style="font-size:10px"></i> ${esc(tk.hostname)}</span>` : ''}
         </div>
         <div class="kc-time">${displayWhen(tk)}</div>
       </div>
     </div>`
 }
 
-// Valeur inconnue : échappée (status/priority sont du texte libre côté API,
-// modifiable par tout utilisateur authentifié sur ses tickets).
 function kanbanColLabel(s) {
   return s === 'open'        ? t('tickets.status.open')
        : s === 'in_progress' ? t('tickets.status.in_progress')
@@ -592,28 +655,24 @@ function kanbanColLabel(s) {
 // ─── Toggle vue ─────────────────────────────────────────────────────────────
 
 async function tkSetView(v) {
-  if (v === _view) return
+  if (v === _view || !VIEWS.includes(v)) return
   _view = v
   writeView(v)
-  // Re-render uniquement la zone main (pas de re-fetch)
-  // Mettre à jour les boutons toggle
-  document.querySelectorAll('.topbar-actions .btn-group .btn').forEach((btn, i) => {
-    const target = i === 0 ? 'list' : 'kanban'
-    btn.classList.toggle('btn-primary', target === v)
+  document.querySelectorAll('#tk-seg .seg-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', VIEWS[i] === v)
   })
-  if (v !== 'kanban') tkCloseDrawer()
+  if (v !== 'kanban') tkCloseDrawer({ keepActive: true })
+  if (v === 'inbox') { _currentTk = null }
   renderMain()
 }
 
-// "Voir tout" depuis une colonne Kanban → bascule liste avec ce statut filtré
 async function tkKanbanGotoList(status) {
   _filters.status = status
-  writeFiltersToHash()
   _view = 'list'
   writeView('list')
-  document.querySelectorAll('.topbar-actions .btn-group .btn').forEach((btn, i) => {
-    btn.classList.toggle('btn-primary', i === 0)
-  })
+  writeFiltersToHash()
+  document.querySelectorAll('#tk-seg .seg-btn').forEach((btn, i) => btn.classList.toggle('active', i === 0))
+  await loadTickets()
   renderMain()
 }
 
@@ -624,20 +683,14 @@ function tkKanbanDragStart(e, ticketId) {
   e.dataTransfer.effectAllowed = 'move'
   e.currentTarget?.classList.add('kc-dragging')
 }
-
 function tkKanbanDragOver(e) {
   e.preventDefault()
   e.dataTransfer.dropEffect = 'move'
-  const col = e.currentTarget
-  if (col?.classList && !col.classList.contains('kanban-col-hover')) {
-    col.classList.add('kanban-col-hover')
-  }
+  e.currentTarget?.classList?.add('kanban-col-hover')
 }
-
 function tkKanbanDragLeave(e) {
   e.currentTarget?.classList.remove('kanban-col-hover')
 }
-
 async function tkKanbanDrop(e, newStatus) {
   e.preventDefault()
   e.currentTarget?.classList.remove('kanban-col-hover')
@@ -649,16 +702,13 @@ async function tkKanbanDrop(e, newStatus) {
   if (!tk || tk.status === newStatus) return
 
   const oldStatus = tk.status
-  // Optimistic update : on déplace en mémoire et on re-render
   tk.status = newStatus
   if (newStatus === 'resolved') tk.resolved_at = new Date().toISOString()
   renderKanbanCards()
-
   try {
     const updated = await window.api.updateTicket(ticketId, { status: newStatus })
-    Object.assign(tk, updated, { tags: tk.tags })  // garde les tags chargés
+    Object.assign(tk, updated, { tags: tk.tags })
   } catch {
-    // Rollback
     tk.status = oldStatus
     if (oldStatus !== 'resolved') tk.resolved_at = null
     renderKanbanCards()
@@ -666,11 +716,10 @@ async function tkKanbanDrop(e, newStatus) {
   }
 }
 
-// ─── Drawer latéral droit ────────────────────────────────────────────────────
+// ─── Drawer latéral (Kanban) ────────────────────────────────────────────────
 
 async function tkOpenDrawer(ticketId) {
   _activeId = ticketId
-  // Cohérence avec selectTicket : URL partageable même en mode kanban.
   const expected = `#/tickets/${ticketId}`
   if (window.location.hash !== expected) {
     try { history.replaceState(null, '', expected) } catch {}
@@ -681,45 +730,45 @@ async function tkOpenDrawer(ticketId) {
     drawer.id = 'ticket-drawer'
     drawer.innerHTML = `
       <div class="td-header">
-        <button class="btn btn-sm" onclick="tkCloseDrawer()" title="${t('btn.cancel')}">
-          <i class="ti ti-x"></i>
-        </button>
+        <span>${esc(t('tickets.drawer.hint'))}</span>
+        <button class="btn btn-sm" onclick="tkCloseDrawer()" title="${t('btn.close')}"><i class="ti ti-x"></i> ${t('btn.close')}</button>
       </div>
       <div class="td-content" id="ticket-drawer-content">
         <div class="ticket-detail-empty"><i class="ti ti-loader-2" style="font-size:24px;animation:spin 1s linear infinite"></i></div>
       </div>`
     document.body.appendChild(drawer)
-    // Click hors drawer → ferme
     document.addEventListener('click', drawerOutsideClick, true)
     document.addEventListener('keydown', drawerEscHandler)
   }
   drawer.classList.add('open')
-
+  document.querySelectorAll('.kanban-card').forEach(c => c.classList.remove('kc-active'))
   try {
     const tk = await window.api.getTicket(ticketId)
     renderDetail(tk, document.getElementById('ticket-drawer-content'))
+    renderKanbanCards()
   } catch {
     showToast(t('error.generic'), 'error')
   }
 }
 
-function tkCloseDrawer() {
+function tkCloseDrawer({ keepActive = false } = {}) {
   const drawer = document.getElementById('ticket-drawer')
   if (drawer) drawer.classList.remove('open')
-  _activeId = null
-  // Nettoie l'URL si on était arrivé par un deep-link `/tickets/<id>`.
-  if (window.location.hash !== '#/tickets') {
-    try { history.replaceState(null, '', '#/tickets') } catch {}
+  if (!keepActive) {
+    _activeId = null
+    _currentTk = null
+    if (window.location.hash.startsWith('#/tickets/')) {
+      try { history.replaceState(null, '', '#/tickets' + (_view !== 'list' ? `?view=${_view}` : '')) } catch {}
+    }
+    if (_view === 'kanban') renderKanbanCards()
   }
 }
 
 function drawerOutsideClick(e) {
   const drawer = document.getElementById('ticket-drawer')
   if (!drawer || !drawer.classList.contains('open')) return
-  // Ne pas fermer si click dans le drawer ou dans une modal qui chevauche
   if (drawer.contains(e.target)) return
   if (e.target.closest('#modal-overlay')) return
-  // Ne pas fermer si click sur une carte Kanban (qui ouvrirait un autre ticket)
   if (e.target.closest('.kanban-card')) return
   tkCloseDrawer()
 }
@@ -727,30 +776,27 @@ function drawerOutsideClick(e) {
 function drawerEscHandler(e) {
   if (e.key === 'Escape') {
     const drawer = document.getElementById('ticket-drawer')
-    if (drawer?.classList.contains('open')) tkCloseDrawer()
+    if (drawer?.classList.contains('open') && document.getElementById('modal-overlay')?.classList.contains('hidden')) tkCloseDrawer()
   }
 }
 
-// ─── Styles Kanban + Drawer (injectés une fois) ──────────────────────────────
+// ─── Styles Kanban (injectés une fois) ──────────────────────────────────────
 
 function ensureKanbanStyles() {
   if (document.getElementById('kanban-styles')) return
   const s = document.createElement('style')
   s.id = 'kanban-styles'
   s.textContent = `
-    .kanban-col { display:flex; flex-direction:column; background:var(--bg-secondary); border:0.5px solid var(--border); border-radius:8px; min-height:0; overflow:hidden; transition: background 0.15s; }
+    .kanban-col { display:flex; flex-direction:column; background:var(--bg-secondary); border:0.5px solid var(--border); border-radius:var(--radius-md); min-height:0; overflow:hidden; transition: background 0.15s; }
     .kanban-col-hover { background:var(--bg-tertiary); outline:2px dashed var(--blue); outline-offset:-4px; }
-    .kanban-col-header { padding:8px 12px; border-bottom:0.5px solid var(--border); display:flex; justify-content:space-between; align-items:center; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); background:var(--bg-primary); }
+    .kanban-col-header { padding:8px 12px; border-bottom:0.5px solid var(--border); display:flex; justify-content:space-between; align-items:center; font-size:11.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--text-secondary); background:var(--bg-primary); }
     .kanban-col-count { background:var(--bg-tertiary); color:var(--text-secondary); padding:1px 8px; border-radius:10px; font-size:11px; font-weight:500; }
     .kanban-col-body { flex:1; overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:6px; }
     .kanban-empty { color:var(--text-tertiary); font-size:12px; text-align:center; padding:20px 8px; }
     .kanban-overflow { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:6px 8px; font-size:11px; color:var(--text-tertiary); }
-    /* flex-shrink:0 : sans ça, les cards en flex children de .kanban-col-body
-       se compressent verticalement quand la colonne contient plus de cards
-       que de place visible. Avec, chaque card garde sa hauteur naturelle et
-       la colonne devient vraiment scrollable (overflow-y:auto déjà posé). */
-    .kanban-card { background:var(--bg-primary); border:0.5px solid var(--border); border-radius:6px; cursor:pointer; display:flex; overflow:hidden; transition: box-shadow 0.15s; flex-shrink:0; }
-    .kanban-card:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.08); border-color: var(--blue); }
+    .kanban-card { background:var(--bg-primary); border:0.5px solid var(--border); border-radius:var(--radius-md); cursor:pointer; display:flex; overflow:hidden; transition: box-shadow 0.15s, border-color 0.15s; flex-shrink:0; }
+    .kanban-card:hover { box-shadow: var(--shadow-sm); border-color: var(--blue); }
+    .kanban-card.kc-active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
     .kanban-card.kc-dragging { opacity:0.4; }
     .kc-prio { width:3px; flex-shrink:0; }
     .kc-body { flex:1; padding:8px 10px; display:flex; flex-direction:column; gap:4px; min-width:0; }
@@ -761,15 +807,6 @@ function ensureKanbanStyles() {
     .kc-badge-auto { color:var(--blue); }
     .kc-badge-unassigned { color:var(--text-tertiary); font-style:italic; }
     .kc-time { font-size:10px; color:var(--text-tertiary); }
-
-    #ticket-drawer { position:fixed; top:0; right:0; bottom:0; width:min(460px, 92vw); background:var(--bg-primary); border-left:0.5px solid var(--border); box-shadow:-4px 0 16px rgba(0,0,0,0.08); transform:translateX(100%); transition: transform 0.18s ease-out; z-index:50; display:flex; flex-direction:column; }
-    #ticket-drawer.open { transform:translateX(0); }
-    #ticket-drawer .td-header { padding:8px 12px; border-bottom:0.5px solid var(--border); display:flex; justify-content:flex-end; align-items:center; flex-shrink:0; }
-    #ticket-drawer .td-content { flex:1; overflow:hidden; display:flex; flex-direction:column; }
-    /* Override du body-grid (2 cols → 1 col empilée) pour tenir dans 460px */
-    #ticket-drawer .ticket-body-grid { display:flex !important; flex-direction:column; flex:1; min-height:0; overflow:hidden; }
-    #ticket-drawer .ticket-thread-col { order:2; border-right:none; border-top:0.5px solid var(--border); flex:1; min-height:0; }
-    #ticket-drawer .ticket-info-col   { order:1; flex-shrink:0; max-height:40vh; overflow-y:auto; padding:12px 16px; }
   `
   document.head.appendChild(s)
 }
@@ -788,49 +825,46 @@ async function loadTickets() {
 }
 
 function renderListOrKanban() {
-  if (_view === 'kanban') renderKanbanCards()
-  else                    renderList()
+  if (_view === 'kanban')     renderKanbanCards()
+  else if (_view === 'list')  renderList()
 }
 
 // ─── Liste ───────────────────────────────────────────────────────────────────
 
 function renderList() {
   const el = document.getElementById('ticket-list')
+  updateSubtitle()
   if (!el) return
   const filtered = applyLocalSearch(_tickets, _localQ)
-
   if (!filtered.length) {
     el.innerHTML = `<div class="empty-state" style="padding:2rem"><i class="ti ti-ticket"></i><p>${t('tickets.empty')}</p></div>`
     return
   }
   el.innerHTML = filtered.map(tk => ticketItem(tk)).join('')
+  el.querySelector('.ticket-item.active')?.scrollIntoView({ block: 'nearest' })
 }
 
 function ticketItem(tk) {
-  const status = statusLabel(tk.status)
-  const prio   = prioLabel(tk.priority)
   const active = _activeId === tk.id ? ' active' : ''
   const tagsHtml = (tk.tags || []).slice(0, 4).map(g => tagChip(g, { compact: true })).join('')
-  // Bordure gauche colorée selon la priorité — visible d'un coup d'œil sur
-  // la liste, plus parlant qu'un mot "Critique" perdu dans la meta.
-  const prioBorder = tk.priority === 'critical' ? '#dc2626'
-                   : tk.priority === 'high'     ? '#d97706'
-                   : ''
-  const prioStyle  = prioBorder ? `border-left:3px solid ${prioBorder}` : ''
+  const prioCls = tk.priority === 'critical' || tk.priority === 'high' ? ` prio-${tk.priority}` : ''
   return `
-    <div class="ticket-item${active}" style="${prioStyle}" onclick="selectTicket('${tk.id}')">
+    <div class="ticket-item${active}${prioCls}" onclick="selectTicket('${tk.id}')" data-id="${tk.id}">
       <div class="tk-header">
         <span class="tk-title">${awaitingDot(tk)}${esc(tk.title)}</span>
-        <span class="badge badge-${tk.status==='resolved'?'green':tk.status==='in_progress'?'blue':'orange'}">${status}</span>
+        <span class="tk-time">${displayWhen(tk)}</span>
       </div>
       <div class="tk-meta">
-        <span style="${tk.priority==='critical' ? 'color:#dc2626;font-weight:600' : tk.priority==='high' ? 'color:#d97706;font-weight:500' : ''}">${prio}</span>
-        ${tk.hostname ? `<span>· ${deviceLink(tk.device_id, tk.hostname)}</span>` : ''}
-        ${tk.requester_name ? `<span title="${esc(t('tickets.info.requester'))}: ${esc(tk.requester_name)}">· <i class="ti ti-user" style="font-size:11px;opacity:0.7"></i> ${userLink(tk.user_id, shortName(tk.requester_name))}</span>` : ''}
-        ${tk.assigned_to_name ? `<span title="${esc(t('tickets.info.assignee'))}: ${esc(tk.assigned_to_name)}">· <i class="ti ti-user-check" style="font-size:11px;opacity:0.7"></i> ${userLink(tk.assigned_to_entra_id, shortName(tk.assigned_to_name))}</span>` : ''}
-        <span>· ${displayWhen(tk)}</span>
+        ${statusPill(tk.status)}
+        ${prioPill(tk.priority)}
+        ${tk.requester_name ? `<span title="${esc(t('tickets.info.requester'))}: ${esc(tk.requester_name)}"><i class="ti ti-user"></i>${esc(shortName(tk.requester_name))}</span>` : ''}
+        ${tk.hostname ? `<span title="${esc(t('tickets.info.device'))}"><i class="ti ti-device-laptop"></i>${esc(tk.hostname)}</span>` : ''}
+        ${tk.assigned_to_name
+          ? `<span title="${esc(t('tickets.info.assignee'))}: ${esc(tk.assigned_to_name)}"><i class="ti ti-user-check"></i>${esc(shortName(tk.assigned_to_name))}</span>`
+          : (tk.status === 'open' ? `<span style="color:var(--text-tertiary);font-style:italic"><i class="ti ti-user-off"></i>${esc(t('tickets.unassigned'))}</span>` : '')}
+        ${tk.is_auto ? `<span title="Auto"><i class="ti ti-robot"></i></span>` : ''}
       </div>
-      ${tagsHtml ? `<div class="tk-tags" style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${tagsHtml}</div>` : ''}
+      ${tagsHtml ? `<div class="tk-tags">${tagsHtml}</div>` : ''}
     </div>`
 }
 
@@ -849,23 +883,21 @@ function tagChip(tag, opts = {}) {
 
 async function selectTicket(id) {
   _activeId = id
-  // Met à jour l'URL pour partage (#/tickets/<id>). replaceState ne
-  // déclenche pas hashchange — pas de re-render du router.
   const expected = `#/tickets/${id}`
   if (window.location.hash !== expected) {
     try { history.replaceState(null, '', expected) } catch {}
   }
   renderList()
   const detail = document.getElementById('ticket-detail')
-  detail.innerHTML = `<div class="ticket-detail-empty"><i class="ti ti-loader-2" style="font-size:24px;animation:spin 1s linear infinite"></i></div>`
+  if (detail) detail.innerHTML = `<div class="ticket-detail-empty"><i class="ti ti-loader-2" style="font-size:24px;animation:spin 1s linear infinite"></i></div>`
   try {
     const tk = await window.api.getTicket(id)
-    // Phase 2 : ticket fusionné → redirige vers le ticket cible avec toast.
-    // On ne montre jamais le ticket source merged (état zombie côté UX).
+    // Ticket fusionné → redirige vers la cible.
     if (tk.merged_into) {
-      showToast(t('tickets.merge.redirected').replace('{target}', tk.merged_into.slice(0, 8)), 'info')
+      showToast(t('tickets.merge.redirected').replace('{target}', ticketRef(tk.merged_into)), 'info')
       return selectTicket(tk.merged_into)
     }
+    if (_activeId !== id) return   // l'utilisateur a cliqué ailleurs entre-temps
     renderDetail(tk)
   } catch {
     showToast(t('error.generic'), 'error')
@@ -877,151 +909,195 @@ function getDetailContainer() {
   return document.getElementById('ticket-detail')
 }
 
+function clearDetail() {
+  _currentTk = null
+  const detail = getDetailContainer()
+  if (detail) detail.innerHTML = `<div class="ticket-detail-empty"><i class="ti ti-ticket" style="font-size:32px"></i><span>${t('tickets.select_hint')}</span></div>`
+  if (_view === 'kanban') tkCloseDrawer()
+}
+
+// Un message « comment » dont l'auteur est un expéditeur de mail entrant du
+// ticket a été REÇU par mail ; les autres comments ont été envoyés par mail.
+function isInboundMail(m, tk) {
+  if (m.type !== 'comment') return false
+  const authors = tk.mail_authors || []
+  if (authors.includes(m.author)) return true
+  if (tk.requester_name && m.author === tk.requester_name) return true
+  if ((tk.related_users || []).some(u => u.display_name === m.author && u.entra_id !== tk.assigned_to_entra_id)) return true
+  return /@/.test(m.author || '') || m.author === 'Email'
+}
+
 function renderDetail(tk, container) {
   const detail = container || getDetailContainer()
   if (!detail) return
+  _currentTk = tk
   const open     = tk.status === 'open'
   const resolved = tk.status === 'resolved'
   const closed   = tk.status === 'closed'
+  const canMail  = !!tk.has_inbound_mail
+  const mode     = canMail && _composerMode === 'mail' ? 'mail' : 'note'
 
-  // 4 états → jeux d'actions :
-  //   open          → "Prendre en charge" + "Résoudre"
-  //   in_progress   → "Résoudre"
-  //   resolved      → "Rouvrir" + "Archiver"
-  //   closed        → "Désarchiver"
+  // Actions principales selon l'état :
+  //   open        → Prendre en charge + Résoudre
+  //   in_progress → Résoudre
+  //   resolved    → Rouvrir + Archiver
+  //   closed      → Désarchiver
   let actions = ''
   if (closed) {
-    actions = `<button class="btn btn-sm" onclick="unarchiveTicket('${tk.id}')">${t('tickets.unarchive')}</button>`
+    actions = `<button class="btn btn-sm" onclick="unarchiveTicket('${tk.id}')"><i class="ti ti-archive-off"></i> ${t('tickets.unarchive')}</button>`
   } else if (resolved) {
     actions = `
-      <button class="btn btn-sm" onclick="reopenTicket('${tk.id}')">${t('tickets.reopen')}</button>
-      <button class="btn btn-sm" onclick="archiveTicket('${tk.id}')">${t('tickets.archive')}</button>`
+      <button class="btn btn-sm" onclick="reopenTicket('${tk.id}')"><i class="ti ti-refresh"></i> ${t('tickets.reopen')}</button>
+      <button class="btn btn-sm" onclick="archiveTicket('${tk.id}')"><i class="ti ti-archive"></i> ${t('tickets.archive')}</button>`
   } else if (open) {
     actions = `
-      <button class="btn btn-sm" onclick="takeInProgressTicket('${tk.id}')">${t('tickets.take_in_progress')}</button>
-      <button class="btn btn-sm btn-primary" onclick="resolveTicket('${tk.id}')">${t('tickets.resolve')}</button>`
+      <button class="btn btn-sm" onclick="takeInProgressTicket('${tk.id}')"><i class="ti ti-player-play"></i> ${t('tickets.take_in_progress')}</button>
+      <button class="btn btn-sm btn-primary" onclick="resolveTicket('${tk.id}')"><i class="ti ti-check"></i> ${t('tickets.resolve')}</button>`
   } else {
-    // in_progress
-    actions = `<button class="btn btn-sm btn-primary" onclick="resolveTicket('${tk.id}')">${t('tickets.resolve')}</button>`
+    actions = `<button class="btn btn-sm btn-primary" onclick="resolveTicket('${tk.id}')"><i class="ti ti-check"></i> ${t('tickets.resolve')}</button>`
   }
+
+  const requesterProp = tk.requester_name
+    ? `<span class="td-prop clickable" onclick="tkOpenRequesterPicker('${tk.id}')" title="${esc(t('tickets.info.requester'))}"><i class="ti ti-user"></i>${userLink(tk.user_id, tk.requester_name)}${tk.requester_email ? `<span class="lbl">${esc(tk.requester_email)}</span>` : ''}</span>`
+    : `<span class="td-prop clickable empty" onclick="tkOpenRequesterPicker('${tk.id}')"><i class="ti ti-user-plus"></i>${esc(t('tickets.no_requester'))}</span>`
+  const assigneeProp = tk.assigned_to_name
+    ? `<span class="td-prop clickable" onclick="tkOpenAssigneePickerOnTicket('${tk.id}')" title="${esc(t('tickets.info.assignee'))}"><span class="av">${esc(initialsOf(tk.assigned_to_name))}</span>${userLink(tk.assigned_to_entra_id, tk.assigned_to_name)}</span>`
+    : `<span class="td-prop clickable empty" onclick="tkAssignSelf('${tk.id}')" title="${esc(t('tickets.assign_self'))}"><i class="ti ti-user-check"></i>${esc(t('tickets.unassigned'))} · ${esc(t('tickets.assign_self'))}</span>`
+  const deviceProp = tk.hostname
+    ? `<span class="td-prop" title="${esc(t('tickets.info.device'))}"><i class="ti ti-device-laptop"></i>${deviceLink(tk.device_id, tk.hostname)}</span>`
+    : (window.OPALE.moduleEnabled('inventory') ? `<span class="td-prop clickable empty" onclick="tkOpenDevicePicker('${tk.id}')"><i class="ti ti-device-laptop"></i>${esc(t('tickets.no_device'))}</span>` : '')
+
+  const messages = tk.messages || []
+  let lastDay = ''
+  const threadHtml = messages.map(m => {
+    const k = dayKey(m.created_at)
+    const sep = k && k !== lastDay ? `<div class="msg-daysep">${esc(dayLabel(m.created_at))}</div>` : ''
+    lastDay = k || lastDay
+    return sep + renderMsg(m, tk)
+  }).join('')
+
+  const desc = tk.description ? cleanLegacyHtml(tk.description) : ''
+  const descLong = desc.length > 600
 
   detail.innerHTML = `
     <div class="ticket-detail-header">
-      <div style="flex:1;min-width:0">
-        <div class="ticket-detail-title">${esc(tk.title)}</div>
-        <div class="ticket-detail-tags">
-          <span class="badge badge-${tk.status==='resolved'?'green':tk.status==='in_progress'?'blue':tk.status==='closed'?'gray':'orange'}">${statusLabel(tk.status)}</span>
-          <span class="badge" style="cursor:pointer;border-left:3px solid ${tk.priority==='critical'?'#dc2626':tk.priority==='high'?'#d97706':tk.priority==='low'?'#64748b':'#0d9488'}" onclick="tkOpenPriorityPicker('${tk.id}')" title="${esc(t('tickets.priority.change'))}">${prioLabel(tk.priority)} <i class="ti ti-edit" style="font-size:10px;opacity:0.6"></i></span>
-          ${tk.is_auto ? `<span class="badge">Auto</span>` : ''}
-          ${tk.hostname ? `<span class="badge">${deviceLink(tk.device_id, tk.hostname)}</span>` : ''}
-        </div>
+      <div class="td-topline">
+        <span class="td-ref" onclick="tkCopyRef('${tk.id}')" title="${esc(t('tickets.ref.copy_hint'))}">#${ticketRef(tk.id)}</span>
+        ${sourceChip(tk)}
+        <span>${esc(t('tickets.info.created'))} ${whenHtml(tk.created_at)}${tk.created_by_name ? ` · ${esc(tk.created_by_name)}` : ''}</span>
+        ${tk.updated_at && tk.updated_at !== tk.created_at ? `<span>· ${esc(t('tickets.info.updated'))} ${whenHtml(tk.updated_at)}</span>` : ''}
+        <span style="margin-left:auto;display:inline-flex;gap:4px">
+          <button class="btn btn-sm btn-ghost" onclick="tkCopyLink('${tk.id}')" title="${esc(t('tickets.link.copy'))}"><i class="ti ti-link"></i></button>
+          <button class="btn btn-sm btn-ghost" onclick="tkOpenMergeModal('${tk.id}')" title="${esc(t('tickets.merge.action'))}"><i class="ti ti-arrows-join"></i></button>
+        </span>
       </div>
-      <div class="ticket-detail-actions">
-        ${actions}
+      <div class="td-titlerow" id="td-titlerow">
+        <h2 class="ticket-detail-title" id="td-title" ondblclick="tkEditTitle('${tk.id}')" title="${esc(t('tickets.title.edit_hint'))}">${esc(tk.title)}
+          <button class="btn btn-sm btn-ghost" style="vertical-align:middle;padding:1px 5px" onclick="tkEditTitle('${tk.id}')" title="${esc(t('tickets.title.edit'))}"><i class="ti ti-pencil"></i></button>
+        </h2>
+        <div class="ticket-detail-actions">${actions}</div>
+      </div>
+      <div class="td-props">
+        <span class="td-prop clickable" onclick="tkOpenStatusMenu('${tk.id}')" title="${esc(t('tickets.status.change'))}">${statusPill(tk.status)}<i class="ti ti-chevron-down" style="font-size:11px"></i></span>
+        <span class="td-prop clickable" onclick="tkOpenPriorityPicker('${tk.id}')" title="${esc(t('tickets.priority.change'))}">${prioPill(tk.priority)}<i class="ti ti-chevron-down" style="font-size:11px"></i></span>
+        ${requesterProp}
+        ${assigneeProp}
+        ${deviceProp}
       </div>
     </div>
     <div class="ticket-body-grid">
       <div class="ticket-thread-col">
-        ${tk.description ? `<div class="desc-box" style="white-space:pre-wrap;line-height:1.5;max-height:300px;overflow-y:auto">${esc(cleanLegacyHtml(tk.description))}</div>` : ''}
-        <div class="messages" id="msg-thread">
-          ${tk.messages.map(m => renderMsg(m, tk)).join('')}
+        <div class="desc-box" id="td-desc" ${desc ? '' : 'style="display:none"'}>
+          <div class="desc-label" style="display:flex;align-items:center;justify-content:space-between">
+            <span>${esc(t('tickets.description'))}</span>
+            <button class="btn btn-sm btn-ghost" style="padding:0 4px;font-size:11px" onclick="tkEditDescription('${tk.id}')"><i class="ti ti-pencil"></i> ${esc(t('btn.edit'))}</button>
+          </div>
+          <div id="td-desc-text" class="${descLong ? 'msg-content collapsed' : ''}" style="background:none;border:none;padding:0">${esc(desc)}</div>
+          ${descLong ? `<span class="msg-more" onclick="tkToggleMsg(this, 'td-desc-text')">${esc(t('tickets.msg.show_more'))}</span>` : ''}
         </div>
-        ${!resolved ? `
+        ${!desc ? `<div style="padding:10px 20px 0"><button class="btn btn-sm btn-ghost" style="font-size:11.5px" onclick="tkEditDescription('${tk.id}')"><i class="ti ti-plus"></i> ${esc(t('tickets.description.add'))}</button></div>` : ''}
+        <div class="messages" id="msg-thread">
+          ${threadHtml || `<div style="text-align:center;color:var(--text-tertiary);font-size:12px;padding:20px">${esc(t('tickets.msg.none'))}</div>`}
+        </div>
+        ${!closed ? `
           <div class="reply-box">
-            <textarea class="reply-input" id="reply-input" placeholder="${t('tickets.reply_placeholder')}"></textarea>
+            <div class="reply-modes">
+              <button class="reply-mode ${mode==='note'?'active':''}" data-mode="note" onclick="tkSetComposerMode('note')" title="${esc(t('tickets.composer.note_hint'))}"><i class="ti ti-note"></i> ${esc(t('tickets.composer.note'))}</button>
+              <button class="reply-mode ${mode==='mail'?'active':''}" data-mode="mail" onclick="tkSetComposerMode('mail')" ${canMail ? '' : `disabled title="${esc(t('tickets.send_by_mail.no_inbound'))}" style="opacity:0.5;cursor:not-allowed"`}><i class="ti ti-mail-forward"></i> ${esc(t('tickets.composer.mail'))}${tk.requester_email && canMail ? ` <span style="opacity:0.75">→ ${esc(tk.requester_email)}</span>` : ''}</button>
+              <span class="reply-hint" id="reply-hint">${esc(mode === 'mail' ? t('tickets.composer.mail_hint') : t('tickets.composer.note_hint'))}</span>
+            </div>
+            <textarea class="reply-input ${mode==='mail'?'mode-mail':''}" id="reply-input" placeholder="${esc(mode === 'mail' ? t('tickets.composer.mail_placeholder') : t('tickets.composer.note_placeholder'))}" onkeydown="tkComposerKey(event, '${tk.id}')"></textarea>
             <div class="reply-actions">
               <button class="btn btn-sm" id="tk-ai-btn" onclick="tkAiSuggest('${tk.id}')" title="${esc(t('tickets.ai.hint'))}">
-                <i class="ti ti-sparkles" style="font-size:13px"></i> ${t('tickets.ai.suggest')}
+                <i class="ti ti-sparkles"></i> ${t('tickets.ai.suggest')}
               </button>
               <span style="flex:1"></span>
-              <button class="btn btn-primary btn-sm" onclick="sendReply('${tk.id}')">${t('tickets.send')}</button>
+              <span style="font-size:11px;color:var(--text-tertiary)">⌘/Ctrl + ↵</span>
+              <button class="btn btn-sm ${mode==='mail' ? 'btn-primary' : ''}" id="tk-send-btn" onclick="sendReply('${tk.id}')">
+                <i class="ti ${mode==='mail' ? 'ti-send' : 'ti-note'}"></i> ${esc(mode === 'mail' ? t('tickets.composer.send_mail') : t('tickets.composer.send_note'))}
+              </button>
             </div>
           </div>
         ` : ''}
       </div>
       <div class="ticket-info-col">
-        <div class="info-section">
-          <div class="info-section-title">${t('tickets.info.details')}</div>
-          <div class="info-row"><span class="label">${t('tickets.info.created')}</span><span class="value">${formatRelative(tk.created_at)}</span></div>
-          ${tk.created_by_name ? `<div class="info-row"><span class="label">${t('tickets.info.by')}</span><span class="value">${esc(tk.created_by_name)}</span></div>` : ''}
-          ${tk.updated_at ? `<div class="info-row"><span class="label">${t('tickets.info.updated')}</span><span class="value">${formatRelative(tk.updated_at)}</span></div>` : ''}
-          ${resolved && tk.resolved_at ? `<div class="info-row"><span class="label">${t('tickets.info.resolved')}</span><span class="value">${formatRelative(tk.resolved_at)}</span></div>` : ''}
-        </div>
+        ${canMail ? `
+        <div class="info-mail">
+          <i class="ti ti-mail-check"></i>
+          <div>
+            <div style="font-weight:600">${esc(t('tickets.mail.linked_title'))}</div>
+            <div style="opacity:0.9">${esc(t('tickets.mail.linked_desc', { n: tk.inbound_mail_count || 0 }))}</div>
+          </div>
+        </div>` : ''}
 
         <div class="info-section">
-          <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
-            <span>${t('tickets.info.assignee')}</span>
-            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkOpenAssigneePickerOnTicket('${tk.id}')">
-              <i class="ti ti-pencil" style="font-size:11px"></i>
-            </button>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:4px">
-            <div style="font-size:13px">${tk.assigned_to_name ? userLink(tk.assigned_to_entra_id, tk.assigned_to_name) : `<span style="color:var(--text-tertiary)">${t('tickets.unassigned')}</span>`}</div>
-            <div style="display:flex;gap:4px;flex-wrap:wrap">
-              <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkAssignSelf('${tk.id}')">${t('tickets.assign_self')}</button>
-              ${tk.assigned_to_entra_id ? `<button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkUnassign('${tk.id}')">${t('tickets.unassign')}</button>` : ''}
-            </div>
-          </div>
-        </div>
-
-        <div class="info-section">
-          <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
+          <div class="info-section-title">
             <span>${t('tickets.info.related_users')}</span>
-            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkOpenRequesterPicker('${tk.id}')" title="${esc(t('tickets.related_users.add'))}">
-              <i class="ti ti-plus" style="font-size:11px"></i>
-            </button>
+            <button class="btn btn-sm btn-ghost" onclick="tkOpenRequesterPicker('${tk.id}')" title="${esc(t('tickets.related_users.add'))}"><i class="ti ti-plus"></i></button>
           </div>
-          <div style="display:flex;flex-direction:column;gap:6px">
-            ${renderRelatedUsers(tk)}
-          </div>
-        </div>
-
-        <div class="info-section">
-          <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
-            <span>${t('tickets.info.tags')}</span>
-            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkOpenTagPicker('${tk.id}')">
-              <i class="ti ti-plus" style="font-size:11px"></i> ${t('tickets.add_tag')}
-            </button>
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:4px">
-            ${(tk.tags || []).length
-              ? tk.tags.map(g => tagChip(g, { onRemove: `tkRemoveTagFromTicket('${tk.id}','${g.id}')` })).join('')
-              : `<span style="color:var(--text-tertiary);font-size:12px">${t('tickets.no_tags')}</span>`}
-          </div>
-        </div>
-
-        <div class="info-section">
-          <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
-            <span>${t('tickets.info.attachments')}</span>
-            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="document.getElementById('tk-att-input-${tk.id}').click()" title="${esc(t('tickets.attachments.add'))}">
-              <i class="ti ti-paperclip" style="font-size:11px"></i> ${t('tickets.attachments.add')}
-            </button>
-          </div>
-          <input type="file" id="tk-att-input-${tk.id}" style="display:none" onchange="tkUploadAttachment('${tk.id}', this)">
-          <div style="display:flex;flex-direction:column;gap:6px">
-            ${renderAttachments(tk)}
-          </div>
+          ${renderRelatedUsers(tk)}
         </div>
 
         ${window.OPALE.moduleEnabled('inventory') ? `
         <div class="info-section">
-          <div class="info-section-title" style="display:flex;align-items:center;justify-content:space-between">
+          <div class="info-section-title">
             <span>${t('tickets.info.related_devices')}</span>
-            <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" onclick="tkOpenDevicePicker('${tk.id}')" title="${esc(t('tickets.related_devices.add'))}">
-              <i class="ti ti-plus" style="font-size:11px"></i>
-            </button>
+            <button class="btn btn-sm btn-ghost" onclick="tkOpenDevicePicker('${tk.id}')" title="${esc(t('tickets.related_devices.add'))}"><i class="ti ti-plus"></i></button>
           </div>
-          <div style="display:flex;flex-direction:column;gap:6px">
-            ${renderRelatedDevices(tk)}
+          ${renderRelatedDevices(tk)}
+        </div>` : ''}
+
+        <div class="info-section">
+          <div class="info-section-title">
+            <span>${t('tickets.info.tags')}</span>
+            <button class="btn btn-sm btn-ghost" onclick="tkOpenTagPicker('${tk.id}')" title="${esc(t('tickets.tags.add'))}"><i class="ti ti-plus"></i></button>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${(tk.tags || []).length
+              ? tk.tags.map(g => tagChip(g, { onRemove: `tkRemoveTagFromTicket('${tk.id}','${g.id}')` })).join('')
+              : `<span class="info-empty">${t('tickets.no_tags')}</span>`}
           </div>
         </div>
 
         <div class="info-section">
-          <div class="info-section-title">${t('tickets.merge.section')}</div>
-          <button class="btn btn-sm" style="font-size:11px;width:100%" onclick="tkOpenMergeModal('${tk.id}')">
-            <i class="ti ti-arrows-join" style="font-size:11px"></i> ${esc(t('tickets.merge.action'))}
-          </button>
-        </div>` : ''}
+          <div class="info-section-title">
+            <span>${t('tickets.info.attachments')}</span>
+            <button class="btn btn-sm btn-ghost" onclick="document.getElementById('tk-att-input-${tk.id}').click()" title="${esc(t('tickets.attachments.add'))}"><i class="ti ti-paperclip"></i></button>
+          </div>
+          <input type="file" id="tk-att-input-${tk.id}" style="display:none" onchange="tkUploadAttachment('${tk.id}', this)">
+          ${renderAttachments(tk)}
+        </div>
+
+        <div class="info-section">
+          <div class="info-section-title"><span>${t('tickets.info.details')}</span></div>
+          <div class="info-row"><span class="label">${t('tickets.info.ref')}</span><span class="value" style="font-family:monospace">#${ticketRef(tk.id)}</span></div>
+          <div class="info-row"><span class="label">${t('tickets.info.created')}</span><span class="value">${whenHtml(tk.created_at)}</span></div>
+          ${tk.created_by_name ? `<div class="info-row"><span class="label">${t('tickets.info.by')}</span><span class="value">${esc(tk.created_by_name)}</span></div>` : ''}
+          ${tk.updated_at ? `<div class="info-row"><span class="label">${t('tickets.info.updated')}</span><span class="value">${whenHtml(tk.updated_at)}</span></div>` : ''}
+          ${resolved && tk.resolved_at ? `<div class="info-row"><span class="label">${t('tickets.info.resolved')}</span><span class="value">${whenHtml(tk.resolved_at)}</span></div>` : ''}
+          ${tk.source ? `<div class="info-row"><span class="label">${t('tickets.info.source')}</span><span class="value">${esc(t('tickets.source.' + tk.source) === 'tickets.source.' + tk.source ? tk.source : t('tickets.source.' + tk.source))}</span></div>` : ''}
+          ${canMail ? `<div class="info-row"><span class="label">${t('tickets.info.mails')}</span><span class="value">${tk.inbound_mail_count || 0} ↓ · ${tk.outbound_mail_count || 0} ↑</span></div>` : ''}
+        </div>
       </div>
     </div>`
 
@@ -1029,45 +1105,31 @@ function renderDetail(tk, container) {
   if (thread) thread.scrollTop = thread.scrollHeight
 }
 
-// Phase 2 — rendu des relations multi (users / devices) + bouton de retrait.
-// Le requester est listé en premier (badge spécifique) puis les involved.
 function renderRelatedUsers(tk) {
   const users = Array.isArray(tk.related_users) ? tk.related_users : []
-  if (!users.length) {
-    return `<span style="color:var(--text-tertiary);font-size:12px">${t('tickets.no_requester')}</span>`
-  }
+  if (!users.length) return `<span class="info-empty">${t('tickets.no_requester')}</span>`
   return users.map(u => {
     const isReq = u.role === 'requester'
-    const roleBadge = isReq
-      ? `<span class="badge" style="background:rgba(13,148,136,0.12);color:#0d9488;font-size:9px;padding:1px 5px">${esc(t('tickets.role.requester'))}</span>`
-      : ''
-    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-      <div style="font-size:13px;display:flex;align-items:center;gap:6px;flex:1;min-width:0">
-        ${userLink(u.entra_id, u.display_name || u.entra_id)} ${roleBadge}
+    return `<div class="info-item">
+      <div class="main">
+        ${userLink(u.entra_id, u.display_name || u.entra_id)}
+        ${isReq ? `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">${esc(t('tickets.role.requester'))}</span>` : ''}
       </div>
-      <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text-tertiary)"
-        onclick="tkRemoveUser('${tk.id}',${jsArg(u.entra_id)})" title="${esc(t('tickets.related_users.remove'))}">
-        <i class="ti ti-x" style="font-size:11px"></i>
-      </button>
+      ${u.email ? `<span class="sub" title="${esc(u.email)}"><a href="mailto:${esc(u.email)}" style="color:inherit" onclick="event.stopPropagation()"><i class="ti ti-mail"></i></a></span>` : ''}
+      <button class="rm" onclick="tkRemoveUser('${tk.id}',${jsArg(u.entra_id)})" title="${esc(t('tickets.related_users.remove'))}"><i class="ti ti-x"></i></button>
     </div>`
   }).join('')
 }
 
 function renderRelatedDevices(tk) {
   const devs = Array.isArray(tk.related_devices) ? tk.related_devices : []
-  if (!devs.length) {
-    return `<span style="color:var(--text-tertiary);font-size:12px">${t('tickets.no_device')}</span>`
-  }
-  return devs.map(d => `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-    <div style="font-size:13px;flex:1;min-width:0">${deviceLink(d.id, d.hostname || d.id)}</div>
-    <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text-tertiary)"
-      onclick="tkRemoveDevice('${tk.id}','${d.id}')" title="${esc(t('tickets.related_devices.remove'))}">
-      <i class="ti ti-x" style="font-size:11px"></i>
-    </button>
+  if (!devs.length) return `<span class="info-empty">${t('tickets.no_device')}</span>`
+  return devs.map(d => `<div class="info-item">
+    <div class="main"><i class="ti ti-device-laptop" style="color:var(--text-tertiary)"></i>${deviceLink(d.id, d.hostname || d.id)}</div>
+    <button class="rm" onclick="tkRemoveDevice('${tk.id}','${d.id}')" title="${esc(t('tickets.related_devices.remove'))}"><i class="ti ti-x"></i></button>
   </div>`).join('')
 }
 
-// Formatage taille lisible (Ko / Mo).
 function formatBytes(n) {
   if (n == null) return ''
   if (n < 1024) return `${n} o`
@@ -1077,124 +1139,244 @@ function formatBytes(n) {
 
 function renderAttachments(tk) {
   const atts = Array.isArray(tk.attachments) ? tk.attachments : []
-  if (!atts.length) {
-    return `<span style="color:var(--text-tertiary);font-size:12px">${t('tickets.attachments.none')}</span>`
-  }
-  return atts.map(a => `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
-    <div style="flex:1;min-width:0;font-size:13px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-      onclick="tkDownloadAttachment('${tk.id}','${a.id}', this.dataset.fn)" data-fn="${esc(a.filename)}" title="${esc(a.filename)}">
-      <i class="ti ti-paperclip" style="font-size:11px"></i> ${esc(a.filename)}
-      <span style="color:var(--text-tertiary);font-size:11px">· ${formatBytes(a.size_bytes)}</span>
+  if (!atts.length) return `<span class="info-empty">${t('tickets.attachments.none')}</span>`
+  return atts.map(a => `<div class="info-item">
+    <div class="main" style="cursor:pointer" onclick="tkDownloadAttachment('${tk.id}','${a.id}', this.dataset.fn)" data-fn="${esc(a.filename)}" title="${esc(a.filename)}">
+      <i class="ti ti-paperclip" style="color:var(--text-tertiary)"></i><a>${esc(a.filename)}</a>
+      <span class="sub">${formatBytes(a.size_bytes)}</span>
     </div>
-    <button class="btn btn-sm" style="padding:2px 6px;font-size:10px;color:var(--text-tertiary)"
-      onclick="tkRemoveAttachment('${tk.id}','${a.id}')" title="${esc(t('tickets.attachments.remove'))}">
-      <i class="ti ti-x" style="font-size:11px"></i>
-    </button>
+    <button class="rm" onclick="tkRemoveAttachment('${tk.id}','${a.id}')" title="${esc(t('tickets.attachments.remove'))}"><i class="ti ti-x"></i></button>
   </div>`).join('')
 }
 
+const MSG_COLLAPSE_CHARS = 1400
+
 function renderMsg(m, tk) {
+  const when = `<span class="msg-time">${whenHtml(m.created_at)}</span>`
   if (m.type === 'system') {
     return `<div class="msg">
-      <div class="msg-av" style="background:var(--bg-tertiary);color:var(--text-tertiary)"><i class="ti ti-info-circle" style="font-size:14px"></i></div>
+      <div class="msg-av av-sys"><i class="ti ti-info-circle" style="font-size:14px"></i></div>
       <div class="msg-bubble">
-        <div class="msg-author">${esc(m.author)}<span class="msg-time">${formatRelative(m.created_at)}</span></div>
+        <div class="msg-author">${esc(m.author)}${when}</div>
         <div class="msg-content sys">${esc(m.content)}</div>
       </div>
     </div>`
   }
   if (m.type === 'ai_suggestion') {
-    // Brouillon IA : bulle distincte (jamais envoyée). Actions : reprendre
-    // dans le composer pour éditer/envoyer, ou supprimer le brouillon.
     return `<div class="msg">
-      <div class="msg-av" style="background:rgba(124,58,237,0.15);color:#7c3aed"><i class="ti ti-sparkles" style="font-size:14px"></i></div>
+      <div class="msg-av av-ai"><i class="ti ti-sparkles" style="font-size:14px"></i></div>
       <div class="msg-bubble">
-        <div class="msg-author">${esc(m.author)}
-          <span class="msg-badge" style="background:rgba(124,58,237,0.12);color:#7c3aed">${esc(t('tickets.ai.badge'))}</span>
-          <span class="msg-time">${formatRelative(m.created_at)}</span>
-        </div>
-        <div class="msg-content ai-suggestion" style="white-space:pre-wrap;line-height:1.5">${esc(m.content)}</div>
+        <div class="msg-author">${esc(m.author)}<span class="msg-badge msg-badge-ai">${esc(t('tickets.ai.badge'))}</span>${when}</div>
+        <div class="msg-content ai-suggestion">${esc(m.content)}</div>
         <div class="msg-actions">
           <button class="btn btn-sm" data-content="${esc(m.content)}" onclick="tkUseSuggestion(this)" title="${esc(t('tickets.ai.use_hint'))}">
-            <i class="ti ti-corner-up-left" style="font-size:11px"></i> ${esc(t('tickets.ai.use'))}
+            <i class="ti ti-corner-up-left"></i> ${esc(t('tickets.ai.use'))}
           </button>
-          <button class="btn btn-sm" style="color:var(--text-tertiary)" onclick="tkDeleteSuggestion('${tk.id}','${m.id}')" title="${esc(t('tickets.ai.discard'))}">
-            <i class="ti ti-x" style="font-size:11px"></i>
+          <button class="btn btn-sm btn-ghost" onclick="tkDeleteSuggestion('${tk.id}','${m.id}')" title="${esc(t('tickets.ai.discard'))}">
+            <i class="ti ti-x"></i>
           </button>
         </div>
       </div>
     </div>`
   }
-  const initials = (m.author || '?').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
 
-  // Phase 1c — badge d'état d'envoi mail + bouton "Envoyer par mail" sur
-  // les notes internes. Trois états :
-  //   - type='internal_note'           → badge "Note interne" (+ bouton si origine mail)
-  //   - type='comment'  + email_sent_at NULL → badge "Envoi en cours"
-  //   - type='comment'  + email_sent_at NOT NULL → badge "Envoyé par mail"
-  // Pour les commentaires inbound (mail entrant), email_sent_at est posé
-  // au moment de l'ingestion par processOne — ils tombent dans le 3e cas.
+  const inbound = isInboundMail(m, tk)
   let stateBadge = ''
   let mailAction = ''
+  let contentClass = ''
+  let avClass = ''
   if (m.type === 'internal_note') {
-    stateBadge = `<span class="msg-badge msg-badge-internal" title="${esc(t('tickets.msg.internal'))}">
-      <i class="ti ti-note" style="font-size:11px"></i> ${esc(t('tickets.msg.internal'))}
-    </span>`
+    contentClass = 'internal-note'
+    stateBadge = `<span class="msg-badge msg-badge-internal" title="${esc(t('tickets.msg.internal_hint'))}"><i class="ti ti-lock"></i> ${esc(t('tickets.msg.internal'))}</span>`
     if (tk?.has_inbound_mail) {
       mailAction = `<button class="btn btn-sm msg-send-mail" onclick="sendMsgByMail('${tk.id}','${m.id}')" title="${esc(t('tickets.msg.send_by_mail'))}">
-        <i class="ti ti-mail-forward" style="font-size:11px"></i> ${esc(t('tickets.msg.send_by_mail'))}
+        <i class="ti ti-mail-forward"></i> ${esc(t('tickets.msg.send_by_mail'))}
       </button>`
     }
+  } else if (m.type === 'resolution') {
+    contentClass = 'resolution'
+  } else if (m.type === 'comment' && inbound) {
+    contentClass = 'mail-in'
+    avClass = 'av-mail'
+    stateBadge = `<span class="msg-badge msg-badge-in"><i class="ti ti-mail-down"></i> ${esc(t('tickets.msg.received_by_mail'))}</span>`
   } else if (m.type === 'comment' && m.outbound_failed_at) {
-    // Dead-letter : l'envoi a échoué après plusieurs tentatives.
-    stateBadge = `<span class="msg-badge msg-badge-failed" title="${esc(m.outbound_error || t('tickets.msg.send_failed'))}">
-      <i class="ti ti-mail-x" style="font-size:11px"></i> ${esc(t('tickets.msg.send_failed'))}
-    </span>`
+    stateBadge = `<span class="msg-badge msg-badge-failed" title="${esc(m.outbound_error || t('tickets.msg.send_failed'))}"><i class="ti ti-mail-x"></i> ${esc(t('tickets.msg.send_failed'))}</span>`
     mailAction = `<button class="btn btn-sm msg-send-mail" onclick="tkRetrySend('${tk.id}','${m.id}')" title="${esc(t('tickets.msg.retry_send'))}">
-      <i class="ti ti-refresh" style="font-size:11px"></i> ${esc(t('tickets.msg.retry_send'))}
+      <i class="ti ti-refresh"></i> ${esc(t('tickets.msg.retry_send'))}
     </button>`
   } else if (m.type === 'comment' && !m.email_sent_at) {
-    stateBadge = `<span class="msg-badge msg-badge-sending" title="${esc(t('tickets.msg.sending'))}">
-      <i class="ti ti-mail-fast" style="font-size:11px"></i> ${esc(t('tickets.msg.sending'))}
-    </span>`
+    stateBadge = `<span class="msg-badge msg-badge-sending"><i class="ti ti-mail-fast"></i> ${esc(t('tickets.msg.sending'))}</span>`
   } else if (m.type === 'comment' && m.email_sent_at) {
-    stateBadge = `<span class="msg-badge msg-badge-sent" title="${esc(t('tickets.msg.sent_by_mail'))}">
-      <i class="ti ti-mail-check" style="font-size:11px"></i> ${esc(t('tickets.msg.sent_by_mail'))}
-    </span>`
+    stateBadge = `<span class="msg-badge msg-badge-sent"><i class="ti ti-mail-check"></i> ${esc(t('tickets.msg.sent_by_mail'))}</span>`
   }
 
-  const contentClass = m.type === 'resolution' ? 'resolution'
-                     : m.type === 'internal_note' ? 'internal-note' : ''
-
-  return `<div class="msg">
-    <div class="msg-av">${esc(initials)}</div>
+  const long = (m.content || '').length > MSG_COLLAPSE_CHARS
+  const cid = `msg-c-${m.id}`
+  return `<div class="msg" id="msg-${m.id}">
+    <div class="msg-av ${avClass}">${esc(initialsOf(m.author))}</div>
     <div class="msg-bubble">
-      <div class="msg-author">${esc(m.author)}<span class="msg-time">${formatRelative(m.created_at)}</span>${stateBadge}</div>
-      <div class="msg-content ${contentClass}" style="white-space:pre-wrap;line-height:1.5">${esc(m.content)}</div>
+      <div class="msg-author">${esc(m.author)}${stateBadge}${when}</div>
+      <div class="msg-content ${contentClass} ${long ? 'collapsed' : ''}" id="${cid}">${esc(m.content)}</div>
+      ${long ? `<span class="msg-more" onclick="tkToggleMsg(this, '${cid}')">${esc(t('tickets.msg.show_more'))}</span>` : ''}
       ${mailAction ? `<div class="msg-actions">${mailAction}</div>` : ''}
     </div>
   </div>`
+}
+
+function tkToggleMsg(link, id) {
+  const el = document.getElementById(id)
+  if (!el) return
+  const collapsed = el.classList.toggle('collapsed')
+  link.textContent = collapsed ? t('tickets.msg.show_more') : t('tickets.msg.show_less')
+}
+
+// ─── Édition titre / description ─────────────────────────────────────────────
+
+function tkEditTitle(id) {
+  const row = document.getElementById('td-titlerow')
+  const tk = _currentTk
+  if (!row || !tk || tk.id !== id || document.getElementById('td-title-input')) return
+  row.innerHTML = `
+    <div style="flex:1;display:flex;gap:6px;align-items:center">
+      <input class="form-input" id="td-title-input" value="${esc(tk.title)}" maxlength="200" style="font-size:15px;font-weight:600"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();tkSaveTitle('${id}')}else if(event.key==='Escape'){tkCancelEditTitle()}">
+      <button class="btn btn-sm btn-primary" onclick="tkSaveTitle('${id}')"><i class="ti ti-check"></i> ${t('btn.save')}</button>
+      <button class="btn btn-sm" onclick="tkCancelEditTitle()">${t('btn.cancel')}</button>
+    </div>`
+  const input = document.getElementById('td-title-input')
+  input.focus(); input.select()
+}
+
+function tkCancelEditTitle() {
+  if (_currentTk) renderDetail(_currentTk)
+}
+
+async function tkSaveTitle(id) {
+  const title = document.getElementById('td-title-input')?.value?.trim()
+  if (!title) { showToast(t('tickets.new.title_required'), 'error'); return }
+  if (title === _currentTk?.title) { tkCancelEditTitle(); return }
+  try {
+    await window.api.updateTicket(id, { title })
+    await refreshTicket(id)
+    showToast(t('tickets.toast.renamed'), 'success')
+  } catch (err) { showToast(err?.body?.error || t('error.generic'), 'error') }
+}
+
+function tkEditDescription(id) {
+  const tk = _currentTk
+  if (!tk || tk.id !== id) return
+  showModal(`
+    <div class="modal-title">${t('tickets.description.edit_title')}</div>
+    <textarea class="form-textarea" id="td-desc-input" style="min-height:220px" placeholder="${esc(t('tickets.new.placeholder_desc'))}">${esc(cleanLegacyHtml(tk.description || ''))}</textarea>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal()">${t('btn.cancel')}</button>
+      <button class="btn btn-primary" onclick="tkSaveDescription('${id}')">${t('btn.save')}</button>
+    </div>`)
+  setTimeout(() => document.getElementById('td-desc-input')?.focus(), 50)
+}
+
+async function tkSaveDescription(id) {
+  const description = document.getElementById('td-desc-input')?.value ?? ''
+  try {
+    await window.api.updateTicket(id, { description })
+    closeModal()
+    await refreshTicket(id)
+    showToast(t('tickets.toast.description_saved'), 'success')
+  } catch (err) { showToast(err?.body?.error || t('error.generic'), 'error') }
+}
+
+async function tkCopyRef(id) {
+  try { await navigator.clipboard.writeText(`[Opale #${ticketRef(id)}]`); showToast(t('tickets.ref.copied'), 'success') }
+  catch { showToast(t('error.generic'), 'error') }
+}
+async function tkCopyLink(id) {
+  const url = `${location.origin}${location.pathname.replace(/mobile\.html$/, '')}#/tickets/${id}`
+  try { await navigator.clipboard.writeText(url); showToast(t('tickets.link.copied'), 'success') }
+  catch { showToast(t('error.generic'), 'error') }
+}
+
+// Menu de statut : toutes les transitions depuis le bandeau de propriétés.
+function tkOpenStatusMenu(id) {
+  const current = _currentTk?.id === id ? _currentTk.status : null
+  const opts = [
+    ['open',        'ti-circle',        t('tickets.status.open')],
+    ['in_progress', 'ti-player-play',   t('tickets.status.in_progress')],
+    ['resolved',    'ti-check',         t('tickets.status.resolved')],
+    ['closed',      'ti-archive',       t('tickets.status.closed')],
+  ]
+  showModal(`
+    <div class="modal-title">${t('tickets.status.picker_title')}</div>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      ${opts.map(([v, icon, label]) => `
+        <button class="btn ${v === current ? 'btn-primary' : ''}" style="justify-content:flex-start" onclick="tkSetStatus('${id}','${v}')">
+          <i class="ti ${icon}"></i> ${esc(label)}
+          ${v === current ? `<span style="margin-left:auto;font-size:11px;opacity:0.8">(${t('tickets.priority.current')})</span>` : ''}
+        </button>`).join('')}
+    </div>
+    <div class="modal-footer"><button class="btn" onclick="closeModal()">${t('btn.cancel')}</button></div>`)
+}
+
+async function tkSetStatus(id, status) {
+  closeModal()
+  if (status === 'closed')   return archiveTicket(id)
+  if (status === 'resolved') return resolveTicket(id)
+  if (status === 'in_progress') return takeInProgressTicket(id)
+  return reopenTicket(id)
+}
+
+// ─── Composer ────────────────────────────────────────────────────────────────
+
+function tkSetComposerMode(mode) {
+  if (mode === 'mail' && !_currentTk?.has_inbound_mail) return
+  _composerMode = mode
+  const draft = document.getElementById('reply-input')?.value || ''
+  if (_currentTk) renderDetail(_currentTk)
+  const input = document.getElementById('reply-input')
+  if (input) { input.value = draft; input.focus() }
+}
+
+function tkComposerKey(e, id) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); sendReply(id) }
+}
+
+// Envoi depuis le composer : note interne (défaut) ou réponse par mail
+// (note créée puis basculée en comment à envoyer, en un seul geste).
+async function sendReply(id) {
+  const input = document.getElementById('reply-input')
+  const content = input?.value?.trim()
+  if (!content) return
+  const mail = _composerMode === 'mail' && _currentTk?.has_inbound_mail
+  const btn = document.getElementById('tk-send-btn')
+  if (btn) btn.disabled = true
+  try {
+    const msg = await window.api.addMessage(id, { content })
+    if (mail) await window.api.sendMessageByMail(id, msg.id)
+    input.value = ''
+    await refreshTicket(id)
+    showToast(mail ? t('tickets.toast.mail_queued') : t('tickets.toast.note_added'), 'success')
+  } catch (err) {
+    if (btn) btn.disabled = false
+    if (err?.status === 409) showToast(t('tickets.send_by_mail.no_inbound'), 'error')
+    else showToast(err?.body?.error || t('error.generic'), 'error')
+  }
 }
 
 // ─── Assistant IA ─────────────────────────────────────────────────────────────
 
 async function tkAiSuggest(id) {
   const btn = document.getElementById('tk-ai-btn')
-  if (btn) { btn.disabled = true; btn.style.opacity = '0.6' }
+  if (btn) { btn.disabled = true; btn.innerHTML = `<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i> ${t('tickets.ai.generating')}` }
   try {
     await window.api.aiSuggest(id)
-    const tk = await window.api.getTicket(id)
-    renderDetail(tk)
-    // Scroll en bas pour voir la suggestion fraîche.
+    await refreshTicket(id)
     const thread = document.getElementById('msg-thread')
     if (thread) thread.scrollTop = thread.scrollHeight
   } catch (err) {
     showToast(err?.body?.error || t('tickets.ai.failed'), 'error')
-    if (btn) { btn.disabled = false; btn.style.opacity = '1' }
+    if (btn) { btn.disabled = false; btn.innerHTML = `<i class="ti ti-sparkles"></i> ${t('tickets.ai.suggest')}` }
   }
 }
 
-// Reprend une suggestion IA dans le composer pour l'éditer/l'envoyer.
 function tkUseSuggestion(btn) {
   const input = document.getElementById('reply-input')
   if (!input) return
@@ -1206,33 +1388,12 @@ function tkUseSuggestion(btn) {
 async function tkDeleteSuggestion(ticketId, msgId) {
   try {
     await window.api.deleteTicketMessage(ticketId, msgId)
-    const tk = await window.api.getTicket(ticketId)
-    renderDetail(tk)
+    await refreshTicket(ticketId)
   } catch { showToast(t('error.generic'), 'error') }
 }
 
 // ─── Actions sur ticket ──────────────────────────────────────────────────────
 
-async function sendReply(id) {
-  const input = document.getElementById('reply-input')
-  const content = input?.value?.trim()
-  if (!content) return
-  try {
-    // Pas de type explicite : l'API défaulte à 'internal_note' (Phase 1c).
-    await window.api.addMessage(id, { content })
-    input.value = ''
-    const tk = await window.api.getTicket(id)
-    renderDetail(tk)
-    const idx = _tickets.findIndex(t => t.id === id)
-    if (idx !== -1) { _tickets[idx].updated_at = new Date().toISOString(); renderList() }
-  } catch {
-    showToast(t('error.generic'), 'error')
-  }
-}
-
-// Phase 1c — convertit une note interne en message à envoyer par mail.
-// L'outbound worker l'enverra au prochain tick (~10s). On confirme avant car
-// l'action est visible côté requester et non réversible (re-clic = no-op).
 async function sendMsgByMail(ticketId, msgId) {
   if (!confirm(t('tickets.send_by_mail.confirm'))) return
   try {
@@ -1302,7 +1463,7 @@ async function archiveTicket(id) {
     _tickets = _tickets.filter(t => t.id !== id)
     if (_activeId === id) _activeId = null
     renderListOrKanban()
-    document.getElementById('ticket-detail').innerHTML = `<div class="ticket-detail-empty"></div>`
+    clearDetail()
     showToast(t('tickets.toast.archived'), 'success')
   } catch {
     showToast(t('error.generic'), 'error')
@@ -1317,7 +1478,7 @@ async function unarchiveTicket(id) {
     _tickets = _tickets.filter(t => t.id !== id)  // sortir du tab Archives
     if (_activeId === id) _activeId = null
     renderListOrKanban()
-    document.getElementById('ticket-detail').innerHTML = `<div class="ticket-detail-empty"></div>`
+    clearDetail()
     showToast(t('tickets.toast.unarchived'), 'info')
   } catch {
     showToast(t('error.generic'), 'error')
@@ -1349,7 +1510,7 @@ async function tkUnassign(id) {
 // Picker de priorité : un PATCH par click sur l'une des 4 valeurs.
 // Modale ultra simple — pas de search, juste 4 boutons radio-like.
 async function tkOpenPriorityPicker(id) {
-  const current = _tickets.find(t => t.id === id)?.priority || 'normal'
+  const current = (_currentTk?.id === id ? _currentTk.priority : null) || _tickets.find(t => t.id === id)?.priority || 'normal'
   const opts = [
     { v: 'critical', color: '#dc2626' },
     { v: 'high',     color: '#d97706' },
@@ -1983,9 +2144,314 @@ async function tkRemoveChip(key) {
   renderActiveChips()
 }
 
-// ─── Modal "Gérer les tags" ──────────────────────────────────────────────────
+// ─── Vue « À trier » : mails entrants sans ticket ────────────────────────────
+// Les mails d'une même conversation Outlook sont regroupés en un fil : une
+// seule décision par fil (créer un ticket / rattacher / ignorer), et le
+// ticket créé contient tous les mails du fil.
 
-// ─── Modal "Propositions" (tickets proposés à valider) ──────────────────────
+let _inboxMails    = []      // mails pending_review (API /email/inbox)
+let _inboxThreads  = []      // regroupés par conversation
+let _inboxActive   = null    // clé du fil sélectionné
+let _inboxQ        = ''
+let _inboxBodies   = {}      // mappingId → { body_text, source }
+
+function cleanSubjectFront(s) {
+  return String(s || '').replace(/^\s*(?:(?:re|tr|fwd|fw|aw|wg)\s*:\s*)+/i, '').trim() || t('tickets.inbox.no_subject')
+}
+
+function groupInboxThreads(mails) {
+  const map = new Map()
+  for (const m of mails) {
+    const key = m.conversation_id || m.id
+    if (!map.has(key)) map.set(key, { key, mails: [] })
+    map.get(key).mails.push(m)
+  }
+  const threads = [...map.values()].map(th => {
+    th.mails.sort((a, b) => Date.parse(a.received_at || 0) - Date.parse(b.received_at || 0))
+    th.latest = th.mails[th.mails.length - 1]
+    th.first  = th.mails[0]
+    th.count  = Math.max(th.mails.length, th.latest.thread_count || 1)
+    th.senders = [...new Set(th.mails.map(m => m.from_name || m.from_address).filter(Boolean))]
+    return th
+  })
+  threads.sort((a, b) => Date.parse(b.latest.received_at || 0) - Date.parse(a.latest.received_at || 0))
+  return threads
+}
+
+function renderInboxLayout(main) {
+  main.innerHTML = `
+    <div class="inbox-split">
+      <div class="inbox-list-col">
+        <div class="toolbar" style="padding:8px 10px;gap:6px">
+          <div class="search-bar" style="max-width:none;padding:5px 9px">
+            <i class="ti ti-search"></i>
+            <input id="inbox-q" placeholder="${esc(t('tickets.inbox.search'))}" oninput="inboxFilter(this.value)" value="${esc(_inboxQ)}">
+          </div>
+          <button class="btn btn-sm" onclick="inboxReload()" title="${esc(t('btn.refresh'))}"><i class="ti ti-refresh"></i></button>
+        </div>
+        <div class="inbox-list" id="inbox-list">
+          <div class="empty-state" style="padding:2rem"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
+        </div>
+      </div>
+      <div class="inbox-detail" id="inbox-detail">
+        <div class="ticket-detail-empty">
+          <i class="ti ti-mail-opened" style="font-size:32px"></i>
+          <span>${esc(t('tickets.inbox.select_hint'))}</span>
+        </div>
+      </div>
+    </div>`
+  inboxReload()
+}
+
+async function inboxReload() {
+  try { _inboxMails = await window.api.getInbox({ limit: 500 }) } catch { _inboxMails = [] }
+  _inboxThreads = groupInboxThreads(_inboxMails)
+  _inboxCount = _inboxMails.length
+  updateInboxBadge()
+  updateSubtitle()
+  renderInboxList()
+  if (_inboxActive && !_inboxThreads.some(th => th.key === _inboxActive)) _inboxActive = null
+  if (!_inboxActive && _inboxThreads.length) inboxSelect(_inboxThreads[0].key)
+  else if (_inboxActive) inboxSelect(_inboxActive)
+  else renderInboxEmptyDetail()
+}
+
+function inboxFilter(q) {
+  _inboxQ = q
+  renderInboxList()
+}
+
+function inboxVisibleThreads() {
+  const q = _inboxQ.trim().toLowerCase()
+  if (!q) return _inboxThreads
+  return _inboxThreads.filter(th =>
+    (th.latest.subject || '').toLowerCase().includes(q) ||
+    th.senders.some(s => s.toLowerCase().includes(q)) ||
+    th.mails.some(m => (m.from_address || '').toLowerCase().includes(q) || (m.body_preview || '').toLowerCase().includes(q))
+  )
+}
+
+function aiChip(m) {
+  const cls = m.classifier_result
+  if (!cls || cls.fallback) return ''
+  const label = cls.intent === 'new_ticket' ? t('tickets.inbox.suggest.new_ticket')
+              : cls.intent === 'reply'      ? t('tickets.inbox.suggest.reply')
+              : cls.intent === 'other'      ? t('tickets.inbox.suggest.dismiss')
+              : cls.intent
+  const kind = cls.intent === 'new_ticket' ? 'ai-new' : cls.intent === 'reply' ? 'ai-reply' : 'ai-other'
+  const pct = Math.round((cls.confidence || 0) * 100)
+  return `<span class="inbox-chip ${kind}" title="${esc((cls.reason || '') + ' (' + pct + '%)')}"><i class="ti ti-sparkles"></i> ${esc(label)}${pct ? ` ${pct}%` : ''}</span>`
+}
+
+function renderInboxList() {
+  const el = document.getElementById('inbox-list')
+  if (!el) return
+  const threads = inboxVisibleThreads()
+  if (!threads.length) {
+    el.innerHTML = `<div class="empty-state" style="padding:2rem">
+      <i class="ti ti-mail-check"></i>
+      <p>${esc(_inboxThreads.length ? t('tickets.inbox.no_match') : t('tickets.inbox.empty'))}</p>
+      ${!_inboxThreads.length ? `<p style="font-size:11.5px;max-width:260px;text-align:center;line-height:1.4">${esc(t('tickets.inbox.empty_hint'))}</p>` : ''}
+    </div>`
+    return
+  }
+  el.innerHTML = threads.map(th => {
+    const m = th.latest
+    const who = th.senders.length > 1 ? th.senders.map(shortName).join(', ') : (m.from_name || m.from_address || '?')
+    return `<div class="inbox-row ${_inboxActive === th.key ? 'active' : ''}" onclick="inboxSelect(${jsArg(th.key)})">
+      <div class="inbox-row-top">
+        <span class="inbox-row-from">${esc(who)}</span>
+        <span class="inbox-row-time">${whenHtml(m.received_at)}</span>
+      </div>
+      <div class="inbox-row-subj">${esc(cleanSubjectFront(m.subject))}</div>
+      ${m.body_preview ? `<div class="inbox-row-prev">${esc(m.body_preview)}</div>` : ''}
+      <div class="inbox-row-meta">
+        ${th.count > 1 ? `<span class="inbox-chip thread"><i class="ti ti-messages"></i> ${esc(t('tickets.inbox.thread_n', { n: th.count }))}</span>` : ''}
+        ${aiChip(m)}
+        ${m.suggested_user_name ? `<span class="inbox-chip"><i class="ti ti-user"></i> ${esc(shortName(m.suggested_user_name))}</span>` : `<span class="inbox-chip" title="${esc(t('tickets.inbox.unknown_sender'))}"><i class="ti ti-user-question"></i> ${esc(t('tickets.inbox.external'))}</span>`}
+        ${m.suggested_device_hostname ? `<span class="inbox-chip"><i class="ti ti-device-laptop"></i> ${esc(m.suggested_device_hostname)}</span>` : ''}
+        ${m.has_attachments ? `<span class="inbox-chip" title="${esc(t('tickets.info.attachments'))}"><i class="ti ti-paperclip"></i></span>` : ''}
+      </div>
+    </div>`
+  }).join('')
+}
+
+function renderInboxEmptyDetail() {
+  const d = document.getElementById('inbox-detail')
+  if (!d) return
+  d.innerHTML = `<div class="ticket-detail-empty">
+    <i class="ti ti-mail-check" style="font-size:32px"></i>
+    <span>${esc(_inboxThreads.length ? t('tickets.inbox.select_hint') : t('tickets.inbox.all_done'))}</span>
+  </div>`
+}
+
+async function inboxSelect(key) {
+  _inboxActive = key
+  renderInboxList()
+  const th = _inboxThreads.find(x => x.key === key)
+  const d = document.getElementById('inbox-detail')
+  if (!th || !d) { renderInboxEmptyDetail(); return }
+  const m = th.latest
+
+  d.innerHTML = `
+    <div class="inbox-detail-header">
+      <div class="td-topline">
+        <span class="badge badge-blue"><i class="ti ti-mail"></i> ${esc(m.mailbox || '')}</span>
+        ${th.count > 1 ? `<span class="badge badge-green"><i class="ti ti-messages"></i> ${esc(t('tickets.inbox.thread_n', { n: th.count }))}</span>` : ''}
+        ${aiChip(m)}
+        <span>${esc(t('tickets.inbox.last_mail'))} ${whenHtml(m.received_at)}</span>
+      </div>
+      <div class="inbox-detail-title">${esc(cleanSubjectFront(m.subject))}</div>
+      <div class="inbox-detail-actions">
+        <button class="btn btn-primary" id="inbox-btn-ticket" onclick="inboxToTicket(${jsArg(m.id)})">
+          <i class="ti ti-ticket"></i> ${esc(th.count > 1 ? t('tickets.inbox.to_ticket_n', { n: th.count }) : t('tickets.inbox.to_ticket'))}
+        </button>
+        <button class="btn" onclick="inboxOpenAttach(${jsArg(m.id)})" title="${esc(t('tickets.inbox.attach_hint'))}">
+          <i class="ti ti-arrows-join"></i> ${esc(t('tickets.inbox.attach'))}
+        </button>
+        <button class="btn btn-ghost" onclick="inboxDismiss(${jsArg(m.id)}, ${th.count > 1 ? 'true' : 'false'})" style="margin-left:auto">
+          <i class="ti ti-eye-off"></i> ${esc(th.count > 1 ? t('tickets.inbox.dismiss_thread') : t('tickets.inbox.dismiss'))}
+        </button>
+      </div>
+      <div class="td-props">
+        ${m.suggested_user_name
+          ? `<span class="td-prop" title="${esc(t('tickets.inbox.will_be_requester'))}"><i class="ti ti-user"></i>${userLink(m.suggested_user_id, m.suggested_user_name)}<span class="lbl">${esc(t('tickets.inbox.will_be_requester'))}</span></span>`
+          : `<span class="td-prop empty" title="${esc(t('tickets.inbox.unknown_sender'))}"><i class="ti ti-user-question"></i>${esc(m.from_address || '')} · ${esc(t('tickets.inbox.external'))}</span>`}
+        ${m.suggested_device_hostname ? `<span class="td-prop"><i class="ti ti-device-laptop"></i>${deviceLink(m.suggested_device_id, m.suggested_device_hostname)}</span>` : ''}
+      </div>
+    </div>
+    <div class="inbox-detail-body" id="inbox-thread">
+      <div style="text-align:center;color:var(--text-tertiary);padding:20px"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
+    </div>`
+
+  let items
+  try { items = await window.api.getInboxThread(m.id) } catch { items = th.mails.map(x => ({ ...x, direction: 'inbound' })) }
+  if (_inboxActive !== key) return
+  const body = document.getElementById('inbox-thread')
+  if (!body) return
+
+  body.innerHTML = `
+    ${items.length > 1 ? `<div class="inbox-hint"><i class="ti ti-info-circle"></i><span>${esc(t('tickets.inbox.thread_hint', { n: items.length }))}</span></div>` : ''}
+    ${items.map(it => `
+      <div class="mail-card ${it.direction === 'outbound' ? 'out' : ''}" id="mail-card-${it.id}">
+        <div class="mail-card-head">
+          <span class="msg-av ${it.direction === 'outbound' ? '' : 'av-mail'}" style="width:26px;height:26px;font-size:10px">${esc(initialsOf(it.from_name || it.from_address))}</span>
+          <span class="who">${esc(it.from_name || it.from_address || '?')}</span>
+          ${it.from_name && it.from_address ? `<span class="addr">&lt;${esc(it.from_address)}&gt;</span>` : ''}
+          ${it.action === 'skipped_other' ? `<span class="badge badge-gray" title="${esc(t('tickets.inbox.was_dismissed_hint'))}">${esc(t('tickets.inbox.was_dismissed'))}</span>` : ''}
+          ${it.has_attachments ? `<span class="badge badge-gray"><i class="ti ti-paperclip"></i></span>` : ''}
+          <span class="when" title="${esc(fmtDateFull(it.received_at))}">${esc(fmtDateShort(it.received_at))}</span>
+        </div>
+        <div class="mail-card-body loading" id="mail-body-${it.id}">${esc(it.body_preview || '')}</div>
+      </div>`).join('')}`
+
+  // Corps complets chargés en parallèle (Graph), aperçu conservé en fallback.
+  await Promise.all(items.map(async it => {
+    try {
+      const b = _inboxBodies[it.id] || (_inboxBodies[it.id] = await window.api.getInboxBody(it.id))
+      const el = document.getElementById(`mail-body-${it.id}`)
+      if (el) {
+        el.textContent = b.body_text || it.body_preview || t('tickets.inbox.empty_body')
+        el.classList.remove('loading')
+        if (b.source === 'preview') el.insertAdjacentHTML('beforeend', `<div style="margin-top:8px;font-size:11px;color:var(--text-tertiary);font-style:italic">${esc(t('tickets.inbox.preview_only'))}</div>`)
+      }
+    } catch {
+      document.getElementById(`mail-body-${it.id}`)?.classList.remove('loading')
+    }
+  }))
+}
+
+function inboxToggleRaw() {}
+
+async function inboxToTicket(mappingId) {
+  const btn = document.getElementById('inbox-btn-ticket')
+  if (btn) { btn.disabled = true; btn.innerHTML = `<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i>` }
+  try {
+    const { ticket, absorbed } = await window.api.inboxToTicket(mappingId)
+    showToast(absorbed > 1 ? t('tickets.inbox.ticket_created_n', { n: absorbed }) : t('tickets.inbox.ticket_created'), 'success')
+    _inboxActive = null
+    await loadInboxCount()
+    // Ouvre le ticket créé en vue liste.
+    _activeId = ticket?.id || null
+    _view = 'list'
+    writeView('list')
+    document.querySelectorAll('#tk-seg .seg-btn').forEach((b, i) => b.classList.toggle('active', i === 0))
+    await loadTickets()
+    renderMain()
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.innerHTML = `<i class="ti ti-ticket"></i> ${esc(t('tickets.inbox.to_ticket'))}` }
+    showToast(err?.body?.error || t('error.generic'), 'error')
+  }
+}
+
+async function inboxDismiss(mappingId, wholeThread) {
+  if (!confirm(wholeThread ? t('tickets.inbox.confirm_dismiss_thread') : t('tickets.inbox.confirm_dismiss'))) return
+  try {
+    await window.api.inboxDismiss(mappingId, wholeThread)
+    _inboxActive = null
+    await inboxReload()
+  } catch (err) {
+    showToast(err?.body?.error || t('error.generic'), 'error')
+  }
+}
+
+// Rattacher à un ticket existant : recherche serveur (titre, description,
+// messages, personnes), archives incluses via un second appel.
+function inboxOpenAttach(mappingId) {
+  showModal(`
+    <div class="modal-title">${esc(t('tickets.inbox.attach_title'))}</div>
+    <div class="modal-sub">${esc(t('tickets.inbox.attach_help'))}</div>
+    <input class="form-input" id="inbox-attach-q" placeholder="${esc(t('tickets.merge.search'))}" autocomplete="off">
+    <div class="pick-list" id="inbox-attach-results" style="margin-top:8px"></div>
+    <div class="modal-footer"><button class="btn" onclick="closeModal()">${t('btn.cancel')}</button></div>`)
+  const input = document.getElementById('inbox-attach-q')
+  const list  = document.getElementById('inbox-attach-results')
+  setTimeout(() => input?.focus(), 50)
+
+  const paint = (tickets) => {
+    list.innerHTML = tickets.length
+      ? tickets.map(tk => `
+          <div class="pick-row" onclick="window.inboxConfirmAttach(${jsArg(mappingId)}, '${tk.id}', ${jsArg(tk.title)})">
+            <div class="t">${esc(tk.title)}</div>
+            <div class="s">#${ticketRef(tk.id)} · ${statusLabel(tk.status)}${tk.requester_name ? ' · ' + esc(tk.requester_name) : ''} · ${displayWhen(tk)}</div>
+          </div>`).join('')
+      : `<div style="padding:10px;color:var(--text-tertiary);font-size:12px">${t('tickets.merge.no_match')}</div>`
+  }
+  const search = async () => {
+    const q = input.value.trim()
+    const params = { limit: 30 }
+    if (q) params.q = q
+    try {
+      const [live, archived] = await Promise.all([
+        window.api.getTickets(params),
+        q ? window.api.getTickets({ ...params, status: 'closed', limit: 10 }).catch(() => []) : Promise.resolve([]),
+      ])
+      paint([...live, ...archived].filter(tk => tk.status !== 'merged'))
+    } catch { list.innerHTML = '' }
+  }
+  let timer
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 250) })
+  search()
+
+  window.inboxConfirmAttach = async (mid, ticketId, title) => {
+    if (!confirm(t('tickets.inbox.attach_confirm', { title }))) return
+    closeModal()
+    try {
+      const out = await window.api.inboxAttach(mid, ticketId)
+      showToast(t('tickets.inbox.attached', { n: out.appended }), 'success')
+      _inboxActive = null
+      await loadInboxCount()
+      _activeId = ticketId
+      _view = 'list'
+      writeView('list')
+      document.querySelectorAll('#tk-seg .seg-btn').forEach((b, i) => b.classList.toggle('active', i === 0))
+      await loadTickets()
+      renderMain()
+    } catch (err) {
+      showToast(err?.body?.error || t('error.generic'), 'error')
+    }
+  }
+}
 
 // Modale diagnostic du pont mail (issue #8). Affiche :
 //   - Conf classifieur (URL, modèle, enabled) + état du polling
@@ -1996,8 +2462,7 @@ async function openMailDiagnosticModal() {
   // Phase 4 — alignée sur la largeur des modales Propositions et Mails à
   // trier : le contenu (config + breakdown + 50 derniers mails) déborde
   // sinon sur le max-width 640px par défaut de showModal.
-  showModal(`
-    <style>#modal-content { max-width: min(1100px, 92vw) !important; }</style>
+  showWideModal(`
     <div class="modal-title">${t('tickets.mail_diag.title')}</div>
     <div id="mail-diag-body" style="max-height:72vh;overflow-y:auto;margin-top:10px;font-size:13px">
       <div style="text-align:center;color:var(--text-tertiary);padding:20px">${t('common.loading')}…</div>
@@ -2150,103 +2615,6 @@ function renderMailDiagErrors(errors) {
     </section>`
 }
 
-// Phase 3 — Vue "Mails à trier". Liste les mails entrants en
-// attente d'arbitrage humain (action='pending_review' côté DB). Pour
-// chaque mail : "→ Ticket" crée un ticket, "Ignorer" passe en
-// skipped_other. La suggestion du classifier (Ollama) est affichée en
-// badge advisory mais ne décide jamais à la place de l'admin.
-async function openInboxModal() {
-  let list = []
-  try { list = await window.api.getInbox() } catch { list = [] }
-
-  showModal(`
-    <style>#modal-content { max-width: min(1100px, 92vw) !important; }</style>
-    <div class="modal-title">${t('tickets.inbox.title')} (${list.length})</div>
-    <div id="tk-inbox-list" style="max-height:72vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;margin-top:10px">
-      ${list.length
-        ? list.map(m => inboxCard(m)).join('')
-        : `<div style="text-align:center;color:var(--text-tertiary);padding:24px;font-size:13px">${t('tickets.inbox.empty')}</div>`}
-    </div>
-    <div class="modal-footer">
-      <button class="btn" onclick="closeModal()">${t('btn.close')}</button>
-    </div>`)
-}
-
-function inboxCard(m) {
-  // Badge advisory du classifier — uniquement informatif, ne préselectionne
-  // aucun bouton. Mapping intent → couleur cohérent avec proposalCard.
-  const cls = m.classifier_result
-  let suggestionBadge = ''
-  if (cls && !cls.fallback) {
-    const intentLabel = cls.intent === 'new_ticket' ? t('tickets.inbox.suggest.new_ticket')
-                      : cls.intent === 'reply'      ? t('tickets.inbox.suggest.reply')
-                      : cls.intent === 'other'      ? t('tickets.inbox.suggest.dismiss')
-                      : cls.intent
-    const color = cls.intent === 'other' ? '#64748b'
-                : (cls.confidence || 0) >= 0.7 ? '#0d9488' : '#d97706'
-    suggestionBadge = `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:8px;font-weight:500;font-size:11px"
-      title="${esc((cls.reason || '') + ' (' + Math.round((cls.confidence || 0) * 100) + '%)')}">
-      🤖 ${esc(intentLabel)}
-    </span>`
-  }
-  const senderInfo = m.suggested_user_name
-    ? `<span style="background:var(--bg-secondary);padding:1px 6px;border-radius:8px;font-size:11px"><i class="ti ti-user" style="font-size:10px"></i> ${esc(m.suggested_user_name)}</span>`
-    : ''
-  const deviceInfo = m.suggested_device_hostname
-    ? `<span style="background:var(--bg-secondary);padding:1px 6px;border-radius:8px;font-size:11px"><i class="ti ti-device-laptop" style="font-size:10px"></i> ${esc(m.suggested_device_hostname)}</span>`
-    : ''
-  return `
-    <div id="tk-inbox-card-${m.id}" style="border:0.5px solid var(--border);border-radius:6px;padding:12px;background:var(--bg-tertiary)">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:14px;color:var(--text-primary)">${esc(m.subject || '(sans sujet)')}</div>
-          <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <span><i class="ti ti-mail" style="font-size:10px"></i> ${esc(m.from_address || '')}</span>
-            ${suggestionBadge}
-            ${senderInfo}
-            ${deviceInfo}
-            <span>${formatRelative(m.received_at)}</span>
-          </div>
-          ${m.body_preview ? `<div style="margin-top:8px;font-size:13px;color:var(--text-primary);background:var(--bg-secondary);padding:8px 10px;border-radius:4px;white-space:pre-wrap;max-height:120px;overflow:auto;line-height:1.4">${esc(m.body_preview)}</div>` : ''}
-        </div>
-        <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0">
-          <button class="btn btn-sm btn-primary" onclick="tkInboxToTicket('${m.id}')">
-            <i class="ti ti-arrow-right" style="font-size:11px"></i> ${esc(t('tickets.inbox.to_ticket'))}
-          </button>
-          <button class="btn btn-sm" onclick="tkInboxDismiss('${m.id}')">
-            <i class="ti ti-x" style="font-size:11px"></i> ${esc(t('tickets.inbox.dismiss'))}
-          </button>
-        </div>
-      </div>
-    </div>`
-}
-
-async function tkInboxToTicket(mappingId) {
-  try {
-    const { ticket } = await window.api.inboxToTicket(mappingId)
-    showToast(t('tickets.inbox.ticket_created'), 'success')
-    closeModal()
-    await loadInboxCount()
-    await loadTickets()
-    // Ouvre directement le ticket créé
-    if (ticket?.id) await selectTicket(ticket.id)
-  } catch (err) {
-    showToast(err?.body?.error || t('error.generic'), 'error')
-  }
-}
-
-async function tkInboxDismiss(mappingId) {
-  if (!confirm(t('tickets.inbox.confirm_dismiss'))) return
-  try {
-    await window.api.inboxDismiss(mappingId)
-    // Retire la card de la modale sans recharger toute la liste
-    document.getElementById(`tk-inbox-card-${mappingId}`)?.remove()
-    await loadInboxCount()
-  } catch (err) {
-    showToast(err?.body?.error || t('error.generic'), 'error')
-  }
-}
-
 async function openProposalsModal() {
   let list = []
   try { list = await window.api.getProposals({ status: 'pending' }) } catch { list = [] }
@@ -2255,8 +2623,7 @@ async function openProposalsModal() {
   // pour la modale propositions : on a souvent ~10 cards à afficher avec
   // description longue, le 640px serre trop. 1100px / 92vw = lisible
   // sur écran moyen, gardable sur petit écran.
-  showModal(`
-    <style>#modal-content { max-width: min(1100px, 92vw) !important; }</style>
+  showWideModal(`
     <div class="modal-title">${t('tickets.proposals.title')} (${list.length})</div>
     <div style="max-height:72vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px;margin-top:10px">
       ${list.length
@@ -2783,12 +3150,19 @@ function openNewTicketModal({ prefillDevice = null } = {}) {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+function showWideModal(html) {
+  showModal(html)
+  document.getElementById('modal-content')?.classList.add('modal-wide')
+}
+
 // Valeur inconnue : échappée (status/priority sont du texte libre côté API,
 // modifiable par tout utilisateur authentifié sur ses tickets).
 function statusLabel(s) {
   return s === 'open'        ? t('tickets.status.open')
        : s === 'in_progress' ? t('tickets.status.in_progress')
        : s === 'resolved'    ? t('tickets.status.resolved')
+       : s === 'closed'      ? t('tickets.status.closed')
+       : s === 'merged'      ? t('tickets.status.merged')
        : esc(s)
 }
 function prioLabel(p) {

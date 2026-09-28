@@ -8,7 +8,9 @@
 <!-- Tabler Icons — vendorisé par setup.sh (version figée, SHA-256 vérifié) -->
 <link rel="stylesheet" href="/tabler-icons-webfont/tabler-icons.min.css">
 <link rel="stylesheet" href="/styles/main.css">
+<meta name="theme-color" content="#ffffff">
 <script src="/env.js"></script>
+<script src="/theme.js"></script>
 <script>
   // Hydrate les éléments [data-brand="<champ>"] depuis window.ENV.BRANDING.
   // Champs supportés : org_name, product_name, tagline, default_role_label.
@@ -63,6 +65,7 @@
     </a>
     <a class="nav-item" href="#/tickets" data-module="tickets"><i class="ti ti-ticket"></i> Tickets
       <span class="nav-badges">
+        <span class="nav-badge nav-badge-info" id="badge-inbox" title="Mails à trier" style="display:none"></span>
         <span class="nav-badge" id="badge-proposals" title="Propositions à valider" style="display:none"></span>
         <span class="nav-badge nav-badge-warn" id="badge-tickets" title="Tickets ouverts non assignés" style="display:none"></span>
       </span>
@@ -92,10 +95,20 @@
         <div class="avatar-name" id="sidebar-name">—</div>
         <div class="avatar-role" id="sidebar-role" data-brand="default_role_label">IT</div>
       </div>
-      <div id="user-menu" class="user-menu hidden">
+      <div id="user-menu" class="user-menu hidden" onclick="event.stopPropagation()">
+        <a class="user-menu-item" href="#/parametres" onclick="toggleUserMenu()">
+          <i class="ti ti-palette"></i> <span data-i18n="settings.appearance.title">Apparence</span>
+        </a>
         <button class="user-menu-item" onclick="window.auth.logout()">
           <i class="ti ti-logout"></i> Déconnexion
         </button>
+        <div class="user-menu-modes">
+          <div class="seg" id="user-menu-mode-seg">
+            <button class="seg-btn" data-mode="system" onclick="setThemeMode('system')" title="Système"><i class="ti ti-device-desktop"></i></button>
+            <button class="seg-btn" data-mode="light"  onclick="setThemeMode('light')"  title="Clair"><i class="ti ti-sun"></i></button>
+            <button class="seg-btn" data-mode="dark"   onclick="setThemeMode('dark')"   title="Sombre"><i class="ti ti-moon"></i></button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

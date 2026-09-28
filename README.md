@@ -49,10 +49,16 @@ on critical changes.
 
 **Tickets** — full workflow (open / in progress / resolved / merged),
 tags, Kanban view, multiple involved people and devices per ticket,
-two-way mail integration: incoming mails land in a "to sort" inbox
-where an admin promotes them to tickets or dismisses them, replies are
-appended to the existing thread automatically, outgoing notes can be
-sent back by mail in one click.
+two-way mail integration: incoming mails land in a "to sort" view
+where an admin turns a whole mail thread into a ticket (every mail of the
+conversation, including older ones still in the mailbox, becomes a message),
+attaches it to an existing ticket, or dismisses it; replies are appended to
+the existing thread automatically, and the composer answers the requester
+by mail in one click. Tickets can be renamed and re-described at any time.
+
+**Themes** — five colour themes (Opale, Aurore, Sable, Ardoise, Forêt),
+each with light and dark variants, selectable per user in Settings and
+synced between the desktop and mobile interfaces.
 
 **Remote SSH** — terminal in the browser via WebSocket + xterm.js, over
 your existing mesh VPN (e.g. Netbird, Tailscale, ZeroTier).

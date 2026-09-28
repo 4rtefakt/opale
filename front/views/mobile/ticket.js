@@ -32,7 +32,8 @@ export async function renderTicket(el, id) {
       <button class="m-icon-btn" onclick="window.location.hash='#/tickets'">
         <i class="ti ti-arrow-left"></i>
       </button>
-      <h1 id="m-tk-title" style="flex:1;margin:0;font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">…</h1>
+      <h1 id="m-tk-title" onclick="mEditTitle()" title="${esc(t('mobile.ticket.menu.edit_title'))}"
+          style="flex:1;margin:0;font-size:15px;font-weight:600;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">…</h1>
       <span id="m-tk-badge"></span>
       <button class="m-icon-btn" id="m-tk-menu-btn" onclick="mTicketMenu()" title="Actions">
         <i class="ti ti-dots-vertical"></i>
@@ -42,6 +43,10 @@ export async function renderTicket(el, id) {
       <div style="display:flex;justify-content:center;padding:40px"><div class="m-spinner"></div></div>
     </div>
     <div id="m-tk-reply-bar" class="m-reply-bar" style="display:none">
+      <button class="m-send-btn" id="m-reply-mode-btn" style="background:var(--bg-tertiary);color:var(--text-secondary)"
+        onclick="mToggleReplyMode()" title="${esc(t('mobile.ticket.reply_mode_hint'))}">
+        <i class="ti ti-note"></i>
+      </button>
       <textarea class="m-reply-input" id="m-reply-txt" rows="1" placeholder="${t('mobile.ticket.reply_placeholder')}"
         oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px'"></textarea>
       <button class="m-send-btn" id="m-ai-btn" style="background:rgba(124,58,237,0.15);color:#7c3aed"
@@ -61,6 +66,9 @@ export async function renderTicket(el, id) {
   }
 
   window.mSendReply       = mSendReply
+  window.mToggleReplyMode = mToggleReplyMode
+  window.mEditDescription = mEditDescription
+  window.mCopyLink        = mCopyLink
   window.mTicketMenu      = mTicketMenu
   window.mCloseSheetThen  = mCloseSheetThen   // requis par les onclick="mCloseSheetThen(...)" du menu
   window.mChangePriority  = mChangePriority
@@ -93,6 +101,7 @@ function renderTicketBody() {
     `<span id="m-tk-badge" class="m-pill ${pillCls}">${pillTxt}</span>`
 
   const resolved = tk.status === 'resolved'
+  const closed   = tk.status === 'closed'
 
   const devCount = (tk.related_devices || []).length
   const attCount = (tk.attachments || []).length
@@ -118,24 +127,33 @@ function renderTicketBody() {
       <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
         ${tk.tags.map(g => `<span style="font-size:11px;background:${M_TK_TAG_PALETTE[g.color] || M_TK_TAG_PALETTE.slate};color:#fff;padding:1px 8px;border-radius:8px">${esc(g.name)}</span>`).join('')}
       </div>` : ''}
-      <div style="display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;color:var(--text-tertiary)">${formatRelative(tk.created_at)}${tk.created_by_name ? ' · ' + esc(tk.created_by_name) : ''}</span>
-        ${!resolved
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--text-tertiary)"><span style="font-family:monospace">#${mTicketRef(tk.id)}</span> · ${formatRelative(tk.created_at)}${tk.created_by_name ? ' · ' + esc(tk.created_by_name) : ''}${tk.has_inbound_mail ? ` · <i class="ti ti-mail" style="font-size:11px"></i> ${t('mobile.ticket.via_mail', { n: tk.inbound_mail_count || 0 })}` : ''}</span>
+        ${closed
+          ? `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('resolved',this)">${t('mobile.ticket.menu.unarchive')}</button>`
+          : !resolved
           ? `<div style="display:flex;gap:6px">
               ${tk.status === 'open'        ? `<button class="m-pill m-pill-warn" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('in_progress',this)">En cours</button>` : ''}
               ${tk.status === 'in_progress' ? `<button class="m-pill m-pill-off"  style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('open',this)">Ouvrir</button>` : ''}
               <button class="m-pill m-pill-on" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('resolved',this)">Résoudre</button>
              </div>`
-          : `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('open',this)">Rouvrir</button>`
+          : `<div style="display:flex;gap:6px">
+              <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('open',this)">Rouvrir</button>
+              <button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSetStatus('closed',this)">${t('mobile.ticket.menu.archive')}</button>
+             </div>`
         }
       </div>
     </div>
 
     <!-- Description -->
-    ${tk.description ? `
-    <div style="padding:12px 16px;background:var(--bg-secondary);border-bottom:0.5px solid var(--border)">
-      <div style="font-size:12px;color:var(--text-secondary);white-space:pre-wrap">${esc(tk.description)}</div>
-    </div>` : ''}
+    <div style="padding:12px 16px;background:var(--bg-secondary);border-bottom:0.5px solid var(--border)" onclick="mEditDescription()">
+      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--text-tertiary);margin-bottom:4px;display:flex;justify-content:space-between">
+        <span>${t('mobile.ticket.description')}</span><i class="ti ti-pencil"></i>
+      </div>
+      ${tk.description
+        ? `<div style="font-size:12px;color:var(--text-secondary);white-space:pre-wrap;max-height:160px;overflow:auto">${esc(tk.description)}</div>`
+        : `<div style="font-size:12px;color:var(--text-tertiary);font-style:italic">${t('mobile.ticket.description_empty')}</div>`}
+    </div>
 
     <!-- Messages -->
     <div id="m-tk-msgs" style="display:flex;flex-direction:column;gap:0;padding-bottom:8px">
@@ -145,9 +163,10 @@ function renderTicketBody() {
 
   window.mSetStatus = mSetStatus
 
-  // Barre de réponse
+  // Barre de réponse (masquée sur un ticket archivé) + bascule note / mail
   const replyBar = document.getElementById('m-tk-reply-bar')
-  if (replyBar) replyBar.style.display = resolved ? 'none' : 'flex'
+  if (replyBar) replyBar.style.display = closed ? 'none' : 'flex'
+  paintReplyMode()
 
   // Scroll en bas
   thread.scrollTop = thread.scrollHeight
@@ -189,6 +208,9 @@ function renderMsg(m) {
 
   const av   = (m.author || '?').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
   const isMe = m.author === window.appState?.user?.displayName
+  // Reçu par mail : auteur = expéditeur d'un mail entrant du ticket.
+  const inbound = m.type === 'comment' && !isMe && (
+    (_tk?.mail_authors || []).includes(m.author) || m.author === _tk?.requester_name || /@/.test(m.author || ''))
 
   // Badge d'état + action mail selon le type (note interne / commentaire
   // public) et l'état d'envoi. Aligné avec la sémantique desktop (Phase 1c).
@@ -199,6 +221,8 @@ function renderMsg(m) {
     if (_tk?.has_inbound_mail) {
       action = `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mSendMsgByMail('${esc(m.id)}',this)"><i class="ti ti-mail-forward" style="font-size:11px"></i> ${t('mobile.ticket.msg.send_by_mail')}</button>`
     }
+  } else if (inbound) {
+    badge = `<span class="m-msg-badge" style="background:rgba(59,130,246,.15);color:var(--blue-text)"><i class="ti ti-mail-down" style="font-size:10px"></i> ${t('mobile.ticket.msg.received_by_mail')}</span>`
   } else if (m.type === 'comment' && m.outbound_failed_at) {
     badge = `<span class="m-msg-badge" style="background:rgba(239,68,68,.15);color:var(--red)" title="${esc(m.outbound_error || '')}"><i class="ti ti-mail-x" style="font-size:10px"></i> ${t('mobile.ticket.msg.send_failed')}</span>`
     action = `<button class="m-pill m-pill-off" style="border:none;cursor:pointer;font-size:11px" onclick="mRetrySend('${esc(m.id)}',this)"><i class="ti ti-refresh" style="font-size:11px"></i> ${t('mobile.ticket.msg.retry_send')}</button>`
@@ -210,8 +234,8 @@ function renderMsg(m) {
 
   return `
   <div class="m-msg ${isMe ? 'm-msg-me' : ''}">
-    ${!isMe ? `<div class="m-av" style="width:28px;height:28px;font-size:11px;flex-shrink:0">${esc(av)}</div>` : ''}
-    <div class="m-msg-bubble ${isMe ? 'm-msg-bubble-me' : ''}">
+    ${!isMe ? `<div class="m-av" style="width:28px;height:28px;font-size:11px;flex-shrink:0${inbound ? ';background:var(--green)' : ''}">${esc(av)}</div>` : ''}
+    <div class="m-msg-bubble ${isMe ? 'm-msg-bubble-me' : ''} ${inbound ? 'm-msg-bubble-in' : ''} ${m.type === 'internal_note' ? 'm-msg-bubble-note' : ''}">
       ${!isMe ? `<div class="m-msg-author">${esc(m.author)}</div>` : ''}
       <div class="m-msg-content">${esc(m.content)}</div>
       ${badge || action ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:5px">${badge}${action}</div>` : ''}
@@ -227,26 +251,80 @@ async function reload() {
   renderTicketBody()
 }
 
+// Mode du composer : 'note' (interne, défaut) ou 'mail' (réponse au
+// demandeur dans le fil mail). Mémorisé pour la session.
+let _replyMode = 'note'
+function paintReplyMode() {
+  const canMail = !!_tk?.has_inbound_mail
+  if (!canMail) _replyMode = 'note'
+  const btn = document.getElementById('m-reply-mode-btn')
+  const input = document.getElementById('m-reply-txt')
+  if (btn) {
+    btn.style.display = canMail ? 'flex' : 'none'
+    btn.innerHTML = _replyMode === 'mail' ? '<i class="ti ti-mail-forward"></i>' : '<i class="ti ti-note"></i>'
+    btn.style.background = _replyMode === 'mail' ? 'rgba(34,197,94,.18)' : 'var(--bg-tertiary)'
+    btn.style.color = _replyMode === 'mail' ? 'var(--green)' : 'var(--text-secondary)'
+  }
+  if (input) input.placeholder = _replyMode === 'mail' ? t('mobile.ticket.reply_placeholder_mail') : t('mobile.ticket.reply_placeholder')
+}
+function mToggleReplyMode() {
+  _replyMode = _replyMode === 'mail' ? 'note' : 'mail'
+  paintReplyMode()
+  window.showToast(_replyMode === 'mail' ? t('mobile.ticket.reply_mode_mail') : t('mobile.ticket.reply_mode_note'), 'info')
+}
+
 async function mSendReply(btn) {
   const input   = document.getElementById('m-reply-txt')
   const content = input?.value?.trim()
   if (!content) return
-  input.value = ''
-  input.style.height = 'auto'
+  const mail = _replyMode === 'mail' && _tk?.has_inbound_mail
   await withBusy(btn, async () => {
     try {
-      await window.api.addMessage(_tk.id, { content })
+      const msg = await window.api.addMessage(_tk.id, { content })
+      if (mail) await window.api.sendMessageByMail(_tk.id, msg.id)
+      input.value = ''
+      input.style.height = 'auto'
       await reload()
+      if (mail) window.showToast(t('mobile.ticket.msg.send_queued'), 'success')
     } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
   })
 }
+
+function mEditDescription() {
+  window.mShowSheet(`
+    <div class="m-sheet-title">${t('mobile.ticket.description')}</div>
+    <div style="padding:0 4px;display:flex;flex-direction:column;gap:12px">
+      <textarea class="m-input" id="m-edit-desc" rows="7" style="resize:none">${esc(_tk.description || '')}</textarea>
+      <button class="m-btn-primary" onclick="mSaveDescription(this)">${t('mobile.ticket.save')}</button>
+    </div>`)
+  setTimeout(() => document.getElementById('m-edit-desc')?.focus(), 100)
+  window.mSaveDescription = async (btn) => {
+    const description = document.getElementById('m-edit-desc')?.value ?? ''
+    await withBusy(btn, async () => {
+      try {
+        await window.api.updateTicket(_tk.id, { description })
+        window.mCloseSheet()
+        await reload()
+        window.showToast(t('mobile.ticket.toast.saved'), 'success')
+      } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+    })
+  }
+}
+
+async function mCopyLink() {
+  const url = `${location.origin}/#/tickets/${_tk.id}`
+  try { await navigator.clipboard.writeText(url); window.showToast(t('mobile.ticket.link_copied'), 'success') }
+  catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
+}
+
+function mTicketRef(id) { return String(id || '').replace(/-/g, '').slice(0, 8).toUpperCase() }
 
 async function mSetStatus(status, btn) {
   await withBusy(btn, async () => {
     try {
       await window.api.updateTicket(_tk.id, { status })
       await reload()
-      const labels = { resolved: 'Ticket résolu ✓', open: 'Ticket rouvert', in_progress: 'En cours' }
+      const labels = { resolved: 'Ticket résolu ✓', open: 'Ticket rouvert', in_progress: 'En cours', closed: t('mobile.ticket.toast.archived') }
       window.showToast(labels[status] || 'Mis à jour', status === 'resolved' ? 'success' : 'info')
     } catch { window.showToast(t('mobile.ticket.toast.error'), 'error') }
   })
@@ -335,7 +413,7 @@ function mTicketMenu() {
       <button class="m-menu-row" onclick="mCloseSheetThen(()=>mSetStatus('open'))">
         <i class="ti ti-player-stop" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.set_open')}
       </button>` : ''}
-      ${tk.status !== 'resolved' ? `
+      ${tk.status !== 'resolved' && tk.status !== 'closed' ? `
       <button class="m-menu-row" onclick="mCloseSheetThen(()=>mSetStatus('resolved'))">
         <i class="ti ti-check" style="color:var(--green)"></i> ${t('mobile.ticket.menu.resolve')}
       </button>` : `
@@ -374,6 +452,20 @@ function mTicketMenu() {
       <button class="m-menu-row" onclick="mEditTitle()">
         <i class="ti ti-pencil" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.edit_title')}
       </button>
+      <button class="m-menu-row" onclick="mCloseSheetThen(mEditDescription)">
+        <i class="ti ti-align-left" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.edit_description')}
+      </button>
+      <button class="m-menu-row" onclick="mCloseSheetThen(mCopyLink)">
+        <i class="ti ti-link" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.copy_link')}
+      </button>
+      ${tk.status === 'resolved' ? `
+      <button class="m-menu-row" onclick="mCloseSheetThen(()=>mSetStatus('closed'))">
+        <i class="ti ti-archive" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.archive')}
+      </button>` : ''}
+      ${tk.status === 'closed' ? `
+      <button class="m-menu-row" onclick="mCloseSheetThen(()=>mSetStatus('resolved'))">
+        <i class="ti ti-archive-off" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.unarchive')}
+      </button>` : ''}
 
       <button class="m-menu-row" onclick="mOpenTags()">
         <i class="ti ti-tag" style="color:var(--text-secondary)"></i> ${t('mobile.ticket.menu.tags')}
@@ -830,7 +922,8 @@ function mEditTitle() {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function statusLabel(s) {
-  return s === 'resolved' ? 'Résolu' : s === 'in_progress' ? 'En cours' : s === 'proposed' ? 'Proposé' : 'Ouvert'
+  return s === 'resolved' ? 'Résolu' : s === 'in_progress' ? 'En cours' : s === 'proposed' ? 'Proposé'
+       : s === 'closed' ? 'Archivé' : s === 'merged' ? 'Fusionné' : 'Ouvert'
 }
 // Valeur inconnue échappée : priority est du texte libre côté API.
 function prioLabel(p) {

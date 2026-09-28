@@ -1,4 +1,4 @@
-const CACHE_NAME = 'opale-v5'
+const CACHE_NAME = 'opale-v6'
 
 // Charge window/self.ENV pour récupérer le branding (fallback titre push).
 // importScripts est synchrone et ne bloque pas l'install si l'endpoint échoue.
@@ -12,6 +12,7 @@ const PRECACHE = [
   '/api.js',
   '/i18n.js',
   '/env.js',
+  '/theme.js',
 ]
 
 // ── Installation : précache des assets statiques ──────────────────────────────

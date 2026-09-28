@@ -96,6 +96,7 @@ export async function renderTickets(el) {
       <button class="m-filter-pill" data-f="auto"        onclick="mTkSetFilter('auto',this)">Auto</button>
       <button class="m-filter-pill" data-f="resolved"    onclick="mTkSetFilter('resolved',this)">Résolus</button>
       <button class="m-filter-pill" data-f="closed"      onclick="mTkSetFilter('closed',this)">Archivés</button>
+      <button class="m-filter-pill" data-f="inbox"       onclick="mTkSetFilter('inbox',this)" id="m-tk-inbox-pill" style="display:none">✉ ${t('mobile.tickets.inbox_pill')}</button>
       <button class="m-filter-pill" data-f="proposed"    onclick="mTkSetFilter('proposed',this)" id="m-tk-proposed-pill" style="display:none">💡 Proposés</button>
     </div>
     <div id="m-tk-active-chips" style="padding:6px 12px;display:none;flex-wrap:wrap;gap:4px"></div>
@@ -124,6 +125,10 @@ export async function renderTickets(el) {
   window.mTkRemoveChip  = mTkRemoveChip
   window.mTkAcceptProposal = mTkAcceptProposal
   window.mTkRejectProposal = mTkRejectProposal
+  window.mInboxOpen        = mInboxOpen
+  window.mInboxToTicket    = mInboxToTicket
+  window.mInboxDismiss     = mInboxDismiss
+  window.mInboxAttach      = mInboxAttach
   window.mNewTicket = () => {
     // État local de la modale (closure)
     const me = window.appState?.user
@@ -458,6 +463,10 @@ async function loadTickets() {
       // Mode propositions : on liste depuis la table dédiée ticket_proposals
       _tickets = await window.api.getProposals({ status: 'pending' })
       _tickets = _tickets.map(p => ({ ...p, _isProposal: true }))
+    } else if (_filter === 'inbox') {
+      // Mode « À trier » : mails entrants sans ticket, regroupés par fil.
+      _inboxThreads = groupInboxThreads(await window.api.getInbox({ limit: 500 }))
+      _tickets = []
     } else {
       const params = {}
       // 'auto' = is_auto sans contrainte de statut ; 'closed' = archives
@@ -474,14 +483,22 @@ async function loadTickets() {
     }
     renderActiveChips()
 
-    // Toujours raffraichir le compteur du pill "Proposés"
-    if (_filter === 'all' || _filter === 'open' || _filter === 'proposed') {
+    // Toujours raffraichir les compteurs des pills "Proposés" et "À trier"
+    if (['all', 'open', 'proposed', 'inbox'].includes(_filter)) {
       try {
-        const { pending } = await window.api.getProposalsCount()
+        const [{ pending }, inbox] = await Promise.all([
+          window.api.getProposalsCount().catch(() => ({ pending: 0 })),
+          window.api.getInboxCount().catch(() => ({ pending: 0 })),
+        ])
         const pill = document.getElementById('m-tk-proposed-pill')
         if (pill) {
           pill.style.display = pending > 0 ? '' : 'none'
           pill.textContent   = `💡 Proposés (${pending})`
+        }
+        const ipill = document.getElementById('m-tk-inbox-pill')
+        if (ipill) {
+          ipill.style.display = (inbox.pending > 0 || _filter === 'inbox') ? '' : 'none'
+          ipill.textContent   = `✉ ${t('mobile.tickets.inbox_pill')} (${inbox.pending})`
         }
       } catch {}
     }
@@ -492,6 +509,7 @@ async function loadTickets() {
 }
 
 function renderList() {
+  if (_filter === 'inbox') return renderInboxList()
   const q       = (document.getElementById('m-tk-q')?.value || '').toLowerCase()
   const matched = _tickets.filter(tk =>
     !q || (tk.title || '').toLowerCase().includes(q) || (tk.hostname || '').toLowerCase().includes(q)
@@ -549,6 +567,157 @@ function renderList() {
         ${tags ? `<div class="m-ticket-tags">${tags}</div>` : ''}
       </div>`
   }).join('')
+}
+
+// ── Mails à trier (mobile) ─────────────────────────────────────────────────
+// Un fil (= conversation Outlook) par carte ; le sheet montre les mails du
+// fil avec leur corps complet, puis : créer un ticket / rattacher / ignorer.
+
+let _inboxThreads = []
+
+function groupInboxThreads(mails) {
+  const map = new Map()
+  for (const m of mails || []) {
+    const key = m.conversation_id || m.id
+    if (!map.has(key)) map.set(key, { key, mails: [] })
+    map.get(key).mails.push(m)
+  }
+  return [...map.values()].map(th => {
+    th.mails.sort((a, b) => Date.parse(a.received_at || 0) - Date.parse(b.received_at || 0))
+    th.latest = th.mails[th.mails.length - 1]
+    th.count  = Math.max(th.mails.length, th.latest.thread_count || 1)
+    return th
+  }).sort((a, b) => Date.parse(b.latest.received_at || 0) - Date.parse(a.latest.received_at || 0))
+}
+
+function cleanSubjectM(s) {
+  return String(s || '').replace(/^\s*(?:(?:re|tr|fwd|fw|aw|wg)\s*:\s*)+/i, '').trim() || t('mobile.tickets.inbox.no_subject')
+}
+
+function renderInboxList() {
+  const list = document.getElementById('m-tk-list')
+  if (!list) return
+  const q = (document.getElementById('m-tk-q')?.value || '').toLowerCase()
+  const threads = _inboxThreads.filter(th => !q
+    || (th.latest.subject || '').toLowerCase().includes(q)
+    || th.mails.some(m => (m.from_name || m.from_address || '').toLowerCase().includes(q)))
+  const countEl = document.getElementById('m-tk-count')
+  if (countEl) countEl.textContent = `${threads.length}`
+  if (!threads.length) {
+    list.innerHTML = `<div style="text-align:center;color:var(--text-tertiary);padding:30px">${t('mobile.tickets.inbox.empty')}</div>`
+    return
+  }
+  list.innerHTML = threads.map(th => {
+    const m = th.latest
+    return `
+      <div class="m-ticket-card" onclick="mInboxOpen(${mJsArg(th.key)})">
+        <div class="m-ticket-top">
+          <div class="m-ticket-title">${esc(cleanSubjectM(m.subject))}</div>
+          ${th.count > 1 ? `<span class="m-pill m-pill-warn">${th.count} ✉</span>` : ''}
+        </div>
+        <div class="m-ticket-meta"><i class="ti ti-user"></i>${esc(m.from_name || m.from_address || '?')}<span class="m-ticket-sep">·</span>${formatRelative(m.received_at)}${m.suggested_device_hostname ? `<span class="m-ticket-sep">·</span><i class="ti ti-device-laptop"></i>${esc(m.suggested_device_hostname)}` : ''}</div>
+        ${m.body_preview ? `<div style="font-size:12px;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.body_preview)}</div>` : ''}
+      </div>`
+  }).join('')
+}
+
+async function mInboxOpen(key) {
+  const th = _inboxThreads.find(x => x.key === key)
+  if (!th) return
+  const m = th.latest
+  window.mShowSheet(`
+    <div class="m-sheet-title">${esc(cleanSubjectM(m.subject))}</div>
+    <div style="padding:0 4px 8px;display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:12px;color:var(--text-tertiary)">
+        ${m.suggested_user_name ? `<i class="ti ti-user"></i> ${esc(m.suggested_user_name)} · ${t('mobile.tickets.inbox.will_be_requester')}` : `<i class="ti ti-user-question"></i> ${esc(m.from_address || '')} · ${t('mobile.tickets.inbox.external')}`}
+        ${th.count > 1 ? `<br><i class="ti ti-messages"></i> ${t('mobile.tickets.inbox.thread_hint', { n: th.count })}` : ''}
+      </div>
+      <div id="m-inbox-thread" style="display:flex;flex-direction:column;gap:8px;max-height:45vh;overflow-y:auto">
+        <div style="display:flex;justify-content:center;padding:16px"><div class="m-spinner"></div></div>
+      </div>
+      <button class="m-btn-primary" onclick="mInboxToTicket(${mJsArg(m.id)}, this)"><i class="ti ti-ticket"></i> ${th.count > 1 ? t('mobile.tickets.inbox.to_ticket_n', { n: th.count }) : t('mobile.tickets.inbox.to_ticket')}</button>
+      <div style="display:flex;gap:8px">
+        <button class="m-filter-pill" style="flex:1;justify-content:center" onclick="mInboxAttach(${mJsArg(m.id)})"><i class="ti ti-arrows-join"></i>&nbsp;${t('mobile.tickets.inbox.attach')}</button>
+        <button class="m-filter-pill" style="flex:1;justify-content:center;color:var(--text-tertiary)" onclick="mInboxDismiss(${mJsArg(m.id)}, ${th.count > 1 ? 'true' : 'false'}, this)"><i class="ti ti-eye-off"></i>&nbsp;${t('mobile.tickets.inbox.dismiss')}</button>
+      </div>
+    </div>`)
+
+  let items
+  try { items = await window.api.getInboxThread(m.id) } catch { items = th.mails }
+  const host = document.getElementById('m-inbox-thread')
+  if (!host) return
+  host.innerHTML = items.map(it => `
+    <div style="background:var(--bg-tertiary);border-radius:10px;padding:10px 12px;${it.direction === 'outbound' ? 'border:1px solid rgba(34,197,94,.35)' : ''}">
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--text-tertiary);margin-bottom:4px">
+        <span style="font-weight:600;color:var(--text-primary)">${esc(it.from_name || it.from_address || '?')}</span>
+        <span>${formatRelative(it.received_at)}</span>
+      </div>
+      <div id="m-inbox-body-${esc(it.id)}" style="font-size:13px;white-space:pre-wrap;line-height:1.45;color:var(--text-secondary)">${esc(it.body_preview || '')}</div>
+    </div>`).join('')
+  await Promise.all(items.map(async it => {
+    try {
+      const b = await window.api.getInboxBody(it.id)
+      const el = document.getElementById(`m-inbox-body-${it.id}`)
+      if (el && b.body_text) { el.textContent = b.body_text; el.style.color = 'var(--text-primary)' }
+    } catch {}
+  }))
+}
+
+async function mInboxToTicket(mappingId, btn) {
+  await withBusy(btn, async () => {
+    try {
+      const { ticket, absorbed } = await window.api.inboxToTicket(mappingId)
+      window.mCloseSheet()
+      window.showToast(absorbed > 1 ? t('mobile.tickets.inbox.created_n', { n: absorbed }) : t('mobile.tickets.inbox.created'), 'success')
+      if (ticket?.id) window.location.hash = `#/ticket/${ticket.id}`
+    } catch (err) { window.showToast(err?.body?.error || t('mobile.ticket.toast.error'), 'error') }
+  })
+}
+
+async function mInboxDismiss(mappingId, wholeThread, btn) {
+  if (!confirm(t('mobile.tickets.inbox.confirm_dismiss'))) return
+  await withBusy(btn, async () => {
+    try {
+      await window.api.inboxDismiss(mappingId, wholeThread)
+      window.mCloseSheet()
+      await loadTickets()
+    } catch (err) { window.showToast(err?.body?.error || t('mobile.ticket.toast.error'), 'error') }
+  })
+}
+
+function mInboxAttach(mappingId) {
+  window.mShowSheet(`
+    <div class="m-sheet-title">${t('mobile.tickets.inbox.attach_title')}</div>
+    <div style="padding:0 4px 8px;display:flex;flex-direction:column;gap:10px">
+      <input class="m-input" id="m-inbox-attach-q" placeholder="${esc(t('mobile.tickets.search_ph'))}" autocomplete="off">
+      <div id="m-inbox-attach-results" style="max-height:45vh;overflow-y:auto;display:flex;flex-direction:column;gap:2px"></div>
+    </div>`)
+  const input = document.getElementById('m-inbox-attach-q')
+  const list  = document.getElementById('m-inbox-attach-results')
+  setTimeout(() => input?.focus(), 50)
+  const search = async () => {
+    const q = input.value.trim()
+    const params = { limit: 30 }
+    if (q) params.q = q
+    let tickets = []
+    try { tickets = await window.api.getTickets(params) } catch {}
+    list.innerHTML = tickets.length ? tickets.map(tk => `
+      <div style="padding:10px;cursor:pointer;border-bottom:0.5px solid var(--border)" onclick="window.mInboxConfirmAttach(${mJsArg(mappingId)}, '${esc(tk.id)}')">
+        <div style="font-size:13px;font-weight:500">${esc(tk.title)}</div>
+        <div style="font-size:11px;color:var(--text-tertiary)">${tk.requester_name ? esc(shortName(tk.requester_name)) + ' · ' : ''}${displayWhen(tk)}</div>
+      </div>`).join('') : `<div style="padding:10px;color:var(--text-tertiary);font-size:12px">Aucun ticket</div>`
+  }
+  let timer
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 250) })
+  search()
+  window.mInboxConfirmAttach = async (mid, ticketId) => {
+    try {
+      const out = await window.api.inboxAttach(mid, ticketId)
+      window.mCloseSheet()
+      window.showToast(t('mobile.tickets.inbox.attached', { n: out.appended }), 'success')
+      window.location.hash = `#/ticket/${ticketId}`
+    } catch (err) { window.showToast(err?.body?.error || t('mobile.ticket.toast.error'), 'error') }
+  }
 }
 
 function renderActiveChips() {

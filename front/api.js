@@ -120,8 +120,17 @@ class API {
     return this._fetch(`/email/inbox${qs}`)
   }
   getInboxCount()                    { return this._fetch('/email/inbox/count') }
+  // Fil complet d'un mail à trier (mails ingérés de la même conversation).
+  getInboxThread(mappingId)          { return this._fetch(`/email/inbox/${mappingId}/thread`) }
+  // Corps complet (Graph, sinon aperçu) : { body_text, source }.
+  getInboxBody(mappingId)            { return this._fetch(`/email/inbox/${mappingId}/body`) }
+  // → nouveau ticket avec tout le fil. Réponse : { ticket, absorbed }.
   inboxToTicket(mappingId)           { return this._fetch(`/email/inbox/${mappingId}/to-ticket`, { method: 'POST' }) }
-  inboxDismiss(mappingId)            { return this._fetch(`/email/inbox/${mappingId}/dismiss`, { method: 'POST' }) }
+  // → ajouté (avec son fil) à un ticket existant. Réponse : { ticket_id, appended }.
+  inboxAttach(mappingId, ticketId)   { return this._fetch(`/email/inbox/${mappingId}/attach`, { method: 'POST', body: { ticket_id: ticketId } }) }
+  inboxDismiss(mappingId, wholeThread = false) {
+    return this._fetch(`/email/inbox/${mappingId}/dismiss`, { method: 'POST', body: { whole_thread: !!wholeThread } })
+  }
 
   // Tags (référentiel partagé avec les tickets)
   getTags()                   { return this._fetch('/tickets/tags') }

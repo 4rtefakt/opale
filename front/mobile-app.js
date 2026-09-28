@@ -147,10 +147,16 @@ const SCREENS = ['dashboard','postes','poste','ssh','tickets','ticket','menu','s
 
 window.mNavigateTo = (route) => { window.location.hash = '#/' + route }
 
+// Liens de la version desktop (`#/tickets/<id>`, `#/postes/<id>`, `#/users/<id>`)
+// partagés par mail, notification ou redirection depuis index.html : ils
+// doivent ouvrir la fiche, pas la liste. Le `?…` éventuel est ignoré.
+const DETAIL_ALIASES = { tickets: 'ticket', postes: 'poste' }
 function getRoute() {
   const hash  = window.location.hash || '#/dashboard'
-  const parts = hash.slice(2).split('/').filter(Boolean)
-  return { route: parts[0] || 'dashboard', parts }
+  const parts = hash.slice(2).split('?')[0].split('/').filter(Boolean)
+  let route = parts[0] || 'dashboard'
+  if (DETAIL_ALIASES[route] && parts[1]) { route = DETAIL_ALIASES[route] }
+  return { route, parts }
 }
 
 // Les 4 raccourcis courants de la barre du bas (le 5e onglet « Plus » est fixe).
@@ -208,7 +214,11 @@ async function router() {
   setActiveNav(route)
 
   const container = document.getElementById(`m-screen-${route}`)
-  if (!container) { mNavigateTo('dashboard'); return }
+  if (!container) {
+    // Route desktop sans équivalent mobile (users, groupes, réseau…) : on
+    // retombe sur le tableau de bord plutôt qu'un écran vide.
+    mNavigateTo('dashboard'); return
+  }
   container.classList.add('active')
 
   if (route === 'dashboard') {
@@ -393,6 +403,7 @@ async function launchApp() {
   appEl.style.display = 'flex'
 
   bio.touch()
+  window.OpaleTheme?.syncFromPrefs(window.api)
 
   // Barre du bas personnalisée (pref serveur par user). Non bloquant : en cas
   // d'échec on garde les 4 raccourcis par défaut. Rendu avant updateBadge pour

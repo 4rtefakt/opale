@@ -61,7 +61,9 @@ window.showToast = (msg, type = 'info') => {
 }
 
 window.showModal = (html) => {
-  document.getElementById('modal-content').innerHTML = html
+  const box = document.getElementById('modal-content')
+  box.className = ''          // une modale large (modal-wide) ne contamine pas la suivante
+  box.innerHTML = html
   document.getElementById('modal-overlay').classList.remove('hidden')
 }
 window.closeModal = () => {
@@ -275,6 +277,21 @@ async function updateTicketsBadge() {
   } catch {}
 }
 
+// ─── Badge mails à trier ───
+// Mis à jour au boot (toutes les 5 min) et par la vue Tickets elle-même.
+window.updateInboxSidebarBadge = (pending) => {
+  const badge = document.getElementById('badge-inbox')
+  if (!badge) return
+  badge.textContent = pending
+  badge.style.display = pending > 0 ? '' : 'none'
+}
+async function updateInboxBadge() {
+  try {
+    const { pending } = await window.api.getInboxCount()
+    window.updateInboxSidebarBadge(pending || 0)
+  } catch {}
+}
+
 // ─── Badge propositions (à valider) ───
 async function updateProposalsBadge() {
   try {
@@ -336,6 +353,9 @@ async function init() {
       return
     }
 
+    // Thème : la préférence serveur (multi-appareils) prime sur le cache local.
+    window.OpaleTheme?.syncFromPrefs(window.api)
+
     const u = window.auth.getUser()
     const initials = (u.displayName || '?').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
     document.getElementById('sidebar-avatar').textContent = initials
@@ -372,6 +392,7 @@ async function init() {
     updateAlertBadge()
     updateTicketsBadge()
     updateProposalsBadge()
+    updateInboxBadge()
   }
   refreshBadges()
   setInterval(refreshBadges, 5 * 60 * 1000)
@@ -386,7 +407,20 @@ window.appState = { user: null }
 window.toggleUserMenu = function() {
   const menu = document.getElementById('user-menu')
   menu.classList.toggle('hidden')
+  paintModeSeg()
 }
+
+// Bascule clair / sombre / système depuis le menu utilisateur (persistée
+// localement et côté serveur via theme.js).
+function paintModeSeg() {
+  const mode = window.OpaleTheme?.get().mode
+  document.querySelectorAll('#user-menu-mode-seg .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode))
+}
+window.setThemeMode = (mode) => {
+  window.OpaleTheme?.save(window.api, { mode })
+  paintModeSeg()
+}
+window.addEventListener('themechange', paintModeSeg)
 
 // Fermer le menu si on clique ailleurs
 document.addEventListener('click', e => {
