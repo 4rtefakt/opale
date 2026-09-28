@@ -187,6 +187,8 @@ export default async function devicesRoute(fastify) {
 
     return {
       ...formatDevice(d, thr),
+      // Seuils disque (settings) : la fiche colore comme la liste.
+      thresholds: thr,
       // tofu | strict : adapte le texte de l'action de réinitialisation SSH.
       ssh_host_key_policy: hostKeyPolicy(process.env, fastify.log),
       health_signals: d.health_signals || null,

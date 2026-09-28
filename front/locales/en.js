@@ -1415,4 +1415,10 @@ export default {
   'poste.more_actions': 'More actions',
   'poste.hardware_summary': 'Hardware & system',
   'alertes.open_device': 'Open device',
+  'poste.action.checkin': 'Force sync',
+  'poste.action.checkin_desc': 'Asks the agent for an immediate check-in',
+  'poste.action.intune': 'Intune sync',
+  'poste.action.intune_desc': 'Triggers an Intune sync of this device',
+  'poste.action.delete': 'Delete device',
+  'poste.action.delete_desc': 'Irreversible — the agent will need re-enrolment',
 }

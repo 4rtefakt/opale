@@ -431,10 +431,10 @@ function settingsTab(k) {
   localStorage.setItem('settings-tab', k)
   document.querySelectorAll('#settings-tabs .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === k))
   applyTab()
+  document.getElementById('settings-body')?.closest('.page')?.scrollTo({ top: 0 })
 }
 function applyTab() {
   document.querySelectorAll('#settings-body .settings-tab').forEach(sec => { sec.style.display = sec.dataset.tab === _tab ? '' : 'none' })
-  document.getElementById('settings-body')?.closest('.page')?.scrollTo({ top: 0 })
 }
 
 async function saveBranding() {

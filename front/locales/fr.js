@@ -1421,4 +1421,10 @@ export default {
   'poste.more_actions': 'Autres actions',
   'poste.hardware_summary': 'Matériel & système',
   'alertes.open_device': 'Ouvrir le poste',
+  'poste.action.checkin': 'Forcer sync',
+  'poste.action.checkin_desc': "Demande un checkin immédiat à l'agent",
+  'poste.action.intune': 'Sync Intune',
+  'poste.action.intune_desc': 'Déclenche une synchronisation Intune du poste',
+  'poste.action.delete': 'Supprimer le poste',
+  'poste.action.delete_desc': "Irréversible — l'agent devra être réenrôlé",
 }

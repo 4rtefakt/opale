@@ -292,6 +292,7 @@ test('GET /:id — admin OK retourne le device complet', { skip: SKIP }, async (
   const body = res.json()
   assert.equal(body.hostname, 'PC-DETAIL')
   assert.equal(body.status, 'online')
+  assert.deepEqual(Object.keys(body.thresholds).sort(), ['critical', 'warn'], 'seuils disque exposés comme sur la liste')
 })
 
 // ─── DELETE /:id — admin-only ──────────────────────────────────────────────

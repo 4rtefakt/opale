@@ -64,6 +64,10 @@ export async function renderPosteDetail(container, id) {
 // renderBody() remet les panneaux asynchrones (historique d'exécution,
 // conformité, sessions distantes) à l'état « chargement » : tout re-rendu de
 // la fiche doit les recharger.
+// Panneau matériel : replié par défaut, son état survit aux re-rendus de la fiche.
+let _hwOpen = false
+window.__pdHwToggle = (el) => { _hwOpen = el.open }
+
 function renderBodyAndPanels() {
   renderBody()
   loadExecHistory()
@@ -80,19 +84,27 @@ function renderBody() {
     `<span id="pd-status-badge" class="badge badge-${statusColor(d.status)}">${t('status.' + d.status)}</span>`
 
   const diskC = (d.disks || []).find(dk => dk.letter === 'C:') || d.disks?.[0]
-  const online  = d.status === 'online' || (!!d.last_seen && (Date.now() - new Date(d.last_seen).getTime()) < 3_600_000)
+  // `d.status` est calculé côté serveur (même règle que la liste) ; les
+  // seuils disque viennent des settings via la réponse.
+  const online  = !!d.status && d.status !== 'offline'
+  const thr     = d.thresholds || { warn: 80, critical: 90 }
   const diskPct = diskC?.used_pct ?? d.disk_used_pct ?? null
   const hwSummary = [[d.manufacturer, d.model].filter(Boolean).join(' '), d.os].filter(Boolean).join(' · ')
   // Ce qu'on vient chercher en premier sur une fiche : état, qui, disque,
   // conformité, agent — en cartes, avant le détail.
+  const userHref = d.user ? (d.user.id || d.user.email || '') : ''
+  const userInner = d.user
+    ? `<div class="k">${esc(t('poste.facts.user'))}</div><div class="v"><span class="av">${initials(d.user.name)}</span>${esc(d.user.name || d.user.email)}</div><div class="s">${esc(d.user.job_title || d.user.email || '')}&nbsp;</div>`
+    : `<div class="k">${esc(t('poste.facts.user'))}</div><div class="v dim">${esc(t('poste.facts.unassigned'))}</div><div class="s">&nbsp;</div>`
+  const userCard = userHref
+    ? `<a class="prop" href="#/users/${esc(userHref)}">${userInner}</a>`
+    : `<div class="prop static">${userInner}</div>`
   const factsHtml = `
     <div class="props props-5">
       <div class="prop static"><div class="k">${esc(t('poste.facts.status'))}</div><div class="v ${online ? 'ok' : 'dim'}"><span class="dotv"></span>${esc(t('status.' + (online ? 'online' : 'offline')))}</div><div class="s">${esc(t('poste.hw.last_seen'))} · ${esc(formatRelative(d.last_seen))}</div></div>
-      ${d.user
-        ? `<a class="prop" href="#/users/${esc(d.user.entraId || d.user.email)}"><div class="k">${esc(t('poste.facts.user'))}</div><div class="v"><span class="av">${initials(d.user.name)}</span>${esc(d.user.name || d.user.email)}</div><div class="s">${esc(d.user.job_title || d.user.email || '')}</div></a>`
-        : `<div class="prop static"><div class="k">${esc(t('poste.facts.user'))}</div><div class="v dim">${esc(t('poste.facts.unassigned'))}</div><div class="s">&nbsp;</div></div>`}
-      <div class="prop static"><div class="k">${esc(t('poste.facts.disk'))}</div><div class="v ${diskPct >= 90 ? 'crit' : diskPct >= 80 ? 'needs' : ''}">${diskPct != null ? diskPct + '%' : '—'}</div><div class="s">${diskC?.size_gb ? diskC.size_gb + ' Go' : '&nbsp;'}</div></div>
-      <a class="prop" href="#/conformite"><div class="k">${esc(t('poste.facts.compliance'))}</div><div class="v ${d.compliance_state === 'compliant' ? 'ok' : d.compliance_state === 'noncompliant' ? 'crit' : 'dim'}">${d.compliance_state ? complianceBadge(d.compliance_state) : esc(t('poste.facts.no_compliance'))}</div><div class="s">${d.intune_last_sync ? esc(formatRelative(d.intune_last_sync)) : '&nbsp;'}</div></a>
+      ${userCard}
+      <div class="prop static"><div class="k">${esc(t('poste.facts.disk'))}</div><div class="v ${diskPct >= thr.critical ? 'crit' : diskPct >= thr.warn ? 'needs' : ''}">${diskPct != null ? diskPct + '%' : '—'}</div><div class="s">${diskC?.size_gb ? diskC.size_gb + ' Go' : '&nbsp;'}</div></div>
+      <a class="prop" href="#/conformite"><div class="k">${esc(t('poste.facts.compliance'))}</div><div class="v ${d.compliance_state === 'compliant' ? 'ok' : d.compliance_state === 'noncompliant' ? 'crit' : 'dim'}">${d.compliance_state ? esc(complianceBadge(d.compliance_state)) : esc(t('poste.facts.no_compliance'))}</div><div class="s">${d.intune_last_sync ? esc(formatRelative(d.intune_last_sync)) : '&nbsp;'}</div></a>
       <div class="prop static"><div class="k">${esc(t('poste.facts.agent'))}</div><div class="v ${d.agent_version ? '' : 'dim'}">${d.agent_version ? 'v' + esc(d.agent_version) : '—'}</div><div class="s">${esc(d.ip_netbird || '')}&nbsp;</div></div>
     </div>`
 
@@ -122,7 +134,7 @@ function renderBody() {
           ${pingPanel(d.ping)}
         </div>
         <!-- Hardware -->
-        <details class="panel panel-collapsible">
+        <details class="panel panel-collapsible" id="pd-hardware" ${_hwOpen ? 'open' : ''} ontoggle="window.__pdHwToggle(this)">
           <summary class="panel-header">${t('poste.hardware_summary')} <span class="muted">${esc(hwSummary)}</span></summary>
           <div class="hw-grid">
             ${hwRow('ti-building-factory-2', t('poste.hw.manufacturer'), d.manufacturer)}
@@ -1833,9 +1845,9 @@ function pdMoreMenu() {
   showModal(`
     <div class="modal-title">${esc(t('poste.more_actions'))}</div>
     <div class="status-list">
-      <button class="status-opt" id="btn-force-checkin" onclick="closeModal();forceCheckin()"><i class="ti ti-refresh"></i><span><b>Forcer sync</b><small>Demande un checkin immédiat à l'agent</small></span></button>
-      <button class="status-opt" id="btn-sync-intune" onclick="closeModal();syncIntune()"><i class="ti ti-cloud-download"></i><span><b>Sync Intune</b><small>Déclenche une synchronisation Intune du poste</small></span></button>
-      ${admin ? `<button class="status-opt danger" onclick="closeModal();deleteDevice()"><i class="ti ti-trash"></i><span><b>Supprimer le poste</b><small>Irréversible — l'agent devra être réenrôlé</small></span></button>` : ''}
+      <button class="status-opt" id="btn-force-checkin" onclick="forceCheckin()"><i class="ti ti-refresh"></i><span><b>${esc(t('poste.action.checkin'))}</b><small>${esc(t('poste.action.checkin_desc'))}</small></span></button>
+      <button class="status-opt" id="btn-sync-intune" onclick="syncIntune()"><i class="ti ti-cloud-download"></i><span><b>${esc(t('poste.action.intune'))}</b><small>${esc(t('poste.action.intune_desc'))}</small></span></button>
+      ${admin ? `<button class="status-opt danger" onclick="closeModal();deleteDevice()"><i class="ti ti-trash"></i><span><b>${esc(t('poste.action.delete'))}</b><small>${esc(t('poste.action.delete_desc'))}</small></span></button>` : ''}
     </div>
     <div class="modal-footer"><button class="btn" onclick="closeModal()">${t('btn.cancel')}</button></div>`)
 }
@@ -1872,10 +1884,15 @@ async function resetSshHostKey() {
   }
 }
 
+// Les deux actions ci-dessous s'exécutent depuis la modale « Autres actions » :
+// le bouton passe en attente sous les yeux de l'admin, la modale se ferme à
+// la fin, et un verrou empêche un second envoi pendant l'appel.
+const _pdBusy = new Set()
 async function forceCheckin() {
-  if (!_device) return
+  if (!_device || _pdBusy.has('checkin')) return
+  _pdBusy.add('checkin')
   const btn = document.getElementById('btn-force-checkin')
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i>' }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i><span><b>' + esc(t('poste.action.checkin')) + '</b><small>…</small></span>' }
   try {
     const res = await window.api.forceCheckinDevices([_device.id])
     const parts = []
@@ -1886,14 +1903,16 @@ async function forceCheckin() {
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-refresh"></i> Forcer sync' }
+    _pdBusy.delete('checkin')
+    closeModal()
   }
 }
 
 async function syncIntune() {
-  if (!_device) return
+  if (!_device || _pdBusy.has('intune')) return
+  _pdBusy.add('intune')
   const btn = document.getElementById('btn-sync-intune')
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i>' }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i><span><b>' + esc(t('poste.action.intune')) + '</b><small>…</small></span>' }
   try {
     const res = await window.api.forceSyncDevices([_device.id])
     const parts = []
@@ -1904,6 +1923,7 @@ async function syncIntune() {
   } catch (err) {
     showToast(err.message || t('error.generic'), 'error')
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-cloud-download"></i> Sync Intune' }
+    _pdBusy.delete('intune')
+    closeModal()
   }
 }

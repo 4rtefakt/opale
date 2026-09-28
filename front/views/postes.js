@@ -205,6 +205,8 @@ function renderHead() {
     </tr>`
   const lbl = document.getElementById('btn-cols-label')
   if (lbl) lbl.textContent = full ? t('postes.cols.less') : t('postes.cols.more')
+  const all = document.getElementById('check-all')
+  if (all) { const n = getFiltered().length; all.checked = n > 0 && getFiltered().every(d => _selected.has(d.id)) }
 }
 
 function postesToggleCols() {
