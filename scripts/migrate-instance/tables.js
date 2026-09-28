@@ -37,6 +37,7 @@ export const TABLES = [
   { name: 'ssh_keys',            conflictTarget: ['id'] },
   { name: 'push_subscriptions',  conflictTarget: ['user_entra_id', 'endpoint'] },
   { name: 'groups',              conflictTarget: ['id'] },
+  { name: 'reviews',             conflictTarget: ['id'] },
 
   // === Layer 1 : FK → users_cache ===
   { name: 'devices',             conflictTarget: ['hostname'] },

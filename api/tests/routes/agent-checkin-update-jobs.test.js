@@ -121,7 +121,7 @@ test('POST /checkin — mise à jour proposée à un agent < 2.15.3 : aucun trav
 })
 
 test('POST /checkin — mise à jour proposée à un agent ≥ 2.15.3 : travaux réservés avec la mise à jour', { skip: SKIP }, async () => {
-  const { device, secret, dep, scriptId } = await deviceWithJobs('PC-UPD-2151')
+  const { device, secret, dep, scriptId } = await deviceWithJobs('PC-UPD-2153')
 
   const res = await goAgentCheckin(secret, device.hostname, '2.15.3')
   assert.equal(res.statusCode, 200, res.body)
