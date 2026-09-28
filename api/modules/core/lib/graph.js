@@ -328,6 +328,26 @@ export async function getGroupUserIds(groupId) {
   return items.map(u => u.id).filter(Boolean)
 }
 
+// Sous-groupes DIRECTS d'un groupe Entra ({ id, displayName, description }).
+// Sert à l'import récursif : /members/microsoft.graph.group ne renvoie que les
+// groupes membres directs (pas leurs propres membres).
+export async function getGroupNestedGroups(groupId) {
+  const items = []
+  let url = `https://graph.microsoft.com/v1.0/groups/${groupId}/members/microsoft.graph.group` +
+    `?$select=id,displayName,description&$top=999`
+  while (url) {
+    const token = await getAppToken()
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) throw new Error(`Graph group nested ${groupId}: ${res.status}`)
+    const data = await res.json()
+    items.push(...(data.value || []))
+    url = data['@odata.nextLink'] || null
+  }
+  return items
+    .filter(g => g.id)
+    .map(g => ({ id: g.id, displayName: g.displayName || null, description: g.description || null }))
+}
+
 export async function searchAADUsers(query, db) {
   const token = await getAppToken()
   const userFilter = await getUserFilter(db)

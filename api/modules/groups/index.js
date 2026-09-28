@@ -1,7 +1,7 @@
 import groupsRoute       from './routes/groups.js'
 import nativeGroupsRoute  from './routes/native-groups.js'
 import { startGroupSyncWorker, stopGroupSyncWorker } from './lib/group-sync.js'
-import { getGroupDeviceHostnames, getGroupUserIds } from '../core/lib/graph.js'
+import { getGroupDeviceHostnames, getGroupUserIds, getGroupNestedGroups } from '../core/lib/graph.js'
 
 export default {
   name: 'groups',
@@ -11,7 +11,7 @@ export default {
     // des hostnames/users à partir d'un groupId. Vit ici parce que c'est la
     // surface "groupes" d'Opale. Si groups est désactivé, ce décorateur
     // n'existe pas (à wrapper côté consommateurs si nécessaire).
-    fastify.decorate('graph', { getGroupDeviceHostnames, getGroupUserIds })
+    fastify.decorate('graph', { getGroupDeviceHostnames, getGroupUserIds, getGroupNestedGroups })
 
     await fastify.register(groupsRoute,       { prefix: '/api/groups' })
     await fastify.register(nativeGroupsRoute, { prefix: '/api/groups' })
