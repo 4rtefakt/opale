@@ -21,3 +21,13 @@ func TestAgentVersionAboveUnfixed2150(t *testing.T) {
 		t.Fatalf("AgentVersion %q doit être > 2.15.0 (build 2.15.0 sans les correctifs de livraison)", AgentVersion)
 	}
 }
+
+// Un binaire 2.15.2 construit hors de main (branche anti-gel + pins racines
+// ISRG, sans les correctifs de livraison) équipe un parc en production :
+// cette version doit lui être proposée, et le serveur ne doit pas le prendre
+// pour un agent qui traite toute réponse (AGENT_PROCESSES_EVERY_RESPONSE).
+func TestAgentVersionAboveUnfixed2152(t *testing.T) {
+	if !semverGT(AgentVersion, "2.15.2") {
+		t.Fatalf("AgentVersion %q doit être > 2.15.2 (build 2.15.2 sans les correctifs de livraison)", AgentVersion)
+	}
+}

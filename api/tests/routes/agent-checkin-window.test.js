@@ -61,7 +61,7 @@ async function checkinResponse() {
   const res = await fastify.inject({
     method: 'POST', url: '/api/agent/checkin',
     headers: { authorization: `Bearer ${secret}` },
-    payload: { hostname: device.hostname, agent_version: '2.15.1' },
+    payload: { hostname: device.hostname, agent_version: '2.15.3' },
   })
   assert.equal(res.statusCode, 200, res.body)
   return res.json()
@@ -143,7 +143,7 @@ async function checkinWithJobs() {
   const res = await fastify.inject({
     method: 'POST', url: '/api/agent/checkin',
     headers: { authorization: `Bearer ${secret}` },
-    payload: { hostname: device.hostname, agent_version: '2.15.1' },
+    payload: { hostname: device.hostname, agent_version: '2.15.3' },
   })
   assert.equal(res.statusCode, 200, res.body)
   const { rows: [d] } = await db.query(`SELECT status FROM deployments WHERE id = $1`, [dep.id])
