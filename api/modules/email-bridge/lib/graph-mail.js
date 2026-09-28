@@ -117,7 +117,7 @@ export async function getSystemFolderIds(mailbox, { now = Date.now } = {}) {
 }
 
 // Pour les tests : forcer le re-fetch du cache.
-export function _resetSystemFolderCache() { _systemFolderCache.clear() }
+export function _resetSystemFolderCache() { _systemFolderCache.clear(); _namedFolderCache.clear() }
 
 // Page suivante d'un listing : `@odata.nextLink` est une URL absolue. On
 // n'y envoie le jeton applicatif que si elle pointe bien sur Graph v1.0.
@@ -198,6 +198,62 @@ export async function listSentMessagesSince(mailbox, sinceIso, opts = {}) {
   return graphGet(opts.nextLink
     ? nextLinkPath(opts.nextLink)
     : buildListSentMessagesPath(mailbox, sinceIso, opts))
+}
+
+// Liste les mails d'une conversation Outlook (même `conversationId`) dans
+// la boîte cible — utilisé quand l'admin transforme un mail en ticket :
+// les mails plus anciens du fil (arrivés avant la mise en place du
+// polling, ou déjà répondus depuis Outlook) sont récupérés pour que le
+// ticket contienne tout l'historique.
+//
+// Pas de `$orderby` combiné au `$filter` (Graph refuse « restriction or
+// sort order too complex » sur certaines boîtes) : le tri chronologique se
+// fait côté appelant. Les brouillons et les dossiers Supprimés / Indésirables
+// sont écartés ; les Éléments envoyés sont GARDÉS (réponses de l'équipe IT
+// faites depuis Outlook) et signalés via `page.sentFolderId` pour que
+// l'appelant les marque `outbound`.
+export function buildListConversationPath(mailbox, conversationId, { top = 50 } = {}) {
+  const select = [
+    'id', 'internetMessageId', 'conversationId', 'subject', 'bodyPreview',
+    'from', 'toRecipients', 'receivedDateTime', 'sentDateTime', 'hasAttachments',
+    'internetMessageHeaders', 'parentFolderId', 'isDraft',
+  ].join(',')
+  const params = new URLSearchParams()
+  params.set('$top', String(Math.min(Math.max(top, 1), 100)))
+  params.set('$select', select)
+  // Valeur OData entre quotes simples, quote interne doublée (RFC OData).
+  params.set('$filter', `conversationId eq '${String(conversationId).replace(/'/g, "''")}'`)
+  return `/users/${encodeMailbox(mailbox)}/messages?${params.toString()}`
+}
+
+export async function listConversationMessages(mailbox, conversationId, opts = {}) {
+  if (!mailbox || !conversationId) return { value: [], sentFolderId: null }
+  const [page, folders] = await Promise.all([
+    graphGet(buildListConversationPath(mailbox, conversationId, opts)),
+    getSystemFolderIdsByName(mailbox).catch(() => ({})),
+  ])
+  const excluded = new Set([folders.drafts, folders.deleteditems, folders.junkemail, folders.outbox].filter(Boolean))
+  const value = (page?.value || [])
+    .filter(m => !m.isDraft && !excluded.has(m.parentFolderId))
+    .sort((a, b) => Date.parse(a.receivedDateTime || a.sentDateTime || 0) - Date.parse(b.receivedDateTime || b.sentDateTime || 0))
+  return { value, sentFolderId: folders.sentitems || null }
+}
+
+// Variante de getSystemFolderIds qui conserve le nom de chaque dossier
+// (sentitems → id, …). Même cache TTL 1 h.
+const _namedFolderCache = new Map()
+export async function getSystemFolderIdsByName(mailbox, { now = Date.now } = {}) {
+  const cached = _namedFolderCache.get(mailbox)
+  if (cached && (now() - cached.fetchedAt) < FOLDER_CACHE_TTL_MS) return cached.byName
+  const byName = {}
+  for (const shortcut of SYSTEM_FOLDER_SHORTCUTS) {
+    try {
+      const folder = await graphGet(`/users/${encodeMailbox(mailbox)}/mailFolders/${shortcut}`)
+      if (folder?.id) byName[shortcut] = folder.id
+    } catch { /* dossier absent ou perm refusée : toléré */ }
+  }
+  _namedFolderCache.set(mailbox, { byName, fetchedAt: now() })
+  return byName
 }
 
 // Re-fetch un message complet (corps + headers complets) — utilisé Phase 2/3

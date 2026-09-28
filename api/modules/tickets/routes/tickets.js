@@ -457,6 +457,19 @@ export default async function ticketsRoute(fastify) {
     tk.related_devices = devicesMap.get(tk.id) || []
     tk.attachments     = attachments.rows
 
+    // Origine mail : auteurs des mails entrants (nom d'affichage Graph, sinon
+    // adresse) et volume du fil. Le front s'en sert pour marquer un message
+    // « reçu par mail » (auteur ∈ mail_authors) plutôt que « envoyé par mail ».
+    const { rows: mailRows } = await fastify.db.query(`
+      SELECT direction,
+             COALESCE(NULLIF(raw->'from'->'emailAddress'->>'name', ''), from_address) AS author,
+             from_address
+      FROM email_thread_mapping WHERE ticket_id = $1
+    `, [req.params.id])
+    tk.mail_authors       = [...new Set(mailRows.filter(r => r.direction === 'inbound').flatMap(r => [r.author, r.from_address]).filter(Boolean))]
+    tk.inbound_mail_count = mailRows.filter(r => r.direction === 'inbound').length
+    tk.outbound_mail_count = mailRows.filter(r => r.direction === 'outbound').length
+
     reply.send(tk)
   })
 
@@ -465,10 +478,23 @@ export default async function ticketsRoute(fastify) {
     const acl = await checkTicketAccess(fastify, req, reply, req.params.id)
     if (!acl) return
     const { status, priority, assigned_to_entra_id, assigned_to_name, user_id, device_id } = req.body || {}
+    let { title, description } = req.body || {}
     const { displayName } = acl
 
     if (status !== undefined && !STATUSES.includes(status)) {
       return reply.code(400).send({ error: 'Statut invalide' })
+    }
+    // Titre / description modifiables par tout membre du ticket (admin,
+    // demandeur, assigné) : renommer un ticket mal intitulé par un mail, ou
+    // compléter la description, fait partie du travail courant.
+    if (title !== undefined) {
+      title = String(title ?? '').trim()
+      if (!title)             return reply.code(400).send({ error: 'Titre requis' })
+      if (title.length > 200) return reply.code(400).send({ error: 'Titre trop long (200 max)' })
+    }
+    if (description !== undefined) {
+      description = description === null ? null : String(description).trim() || null
+      if (description && description.length > 20000) return reply.code(400).send({ error: 'Description trop longue' })
     }
     if (priority !== undefined && !PRIORITIES.includes(priority)) {
       return reply.code(400).send({ error: 'Priorité invalide' })
@@ -498,6 +524,8 @@ export default async function ticketsRoute(fastify) {
 
     if (status !== undefined)               { fields.push(`status = $${i++}`);               params.push(status) }
     if (priority !== undefined)             { fields.push(`priority = $${i++}`);             params.push(priority) }
+    if (title !== undefined)                { fields.push(`title = $${i++}`);                params.push(title) }
+    if (description !== undefined)          { fields.push(`description = $${i++}`);          params.push(description) }
     if (assigned_to_entra_id !== undefined) { fields.push(`assigned_to_entra_id = $${i++}`); params.push(assigned_to_entra_id) }
     if (assigned_to_name !== undefined)     { fields.push(`assigned_to_name = $${i++}`);     params.push(assigned_to_name) }
     if (user_id !== undefined)              { fields.push(`user_id = $${i++}`);              params.push(user_id) }

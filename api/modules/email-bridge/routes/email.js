@@ -7,7 +7,7 @@
 // Les routes de configuration (mail.inboxes, mail.poll_enabled) passent
 // par l'API existante /api/settings — pas besoin d'endpoints dédiés ici.
 
-import { createTicketFromMapping, dismissInboxMapping } from '../lib/inbox.js'
+import { createTicketFromMapping, attachMappingToTicket, dismissInboxMapping, readMappingBody, findThreadSiblings } from '../lib/inbox.js'
 import { htmlToText } from '../lib/body-text.js'
 import { MAX_INGEST_ATTEMPTS } from '../lib/poll-cursor.js'
 
@@ -164,17 +164,29 @@ export default async function emailRoute(fastify) {
 
       const { rows } = await fastify.db.query(`
         SELECT etm.id, etm.mailbox, etm.from_address, etm.subject, etm.received_at,
-               etm.action, etm.classifier_result,
+               etm.action, etm.classifier_result, etm.conversation_id,
                etm.raw->>'bodyPreview' AS body_preview,
+               etm.raw->'from'->'emailAddress'->>'name' AS from_name,
+               COALESCE((etm.raw->>'hasAttachments')::boolean, false) AS has_attachments,
                u.entra_id   AS suggested_user_id,
                u.display_name AS suggested_user_name,
                d.id         AS suggested_device_id,
-               d.hostname   AS suggested_device_hostname
+               d.hostname   AS suggested_device_hostname,
+               -- Taille du fil : autres mails ingérés de la même conversation
+               -- Outlook, pas encore rattachés à un ticket (à trier ou mis de
+               -- côté). Ils seront versés dans le ticket avec ce mail.
+               th.n AS thread_count
         FROM email_thread_mapping etm
         -- match best-effort sur l'expéditeur pour suggérer un user/device
         -- côté UI (l'admin peut ré-attribuer manuellement après création).
         LEFT JOIN users_cache u ON LOWER(u.email) = LOWER(etm.from_address)
         LEFT JOIN devices d     ON d.assigned_user_id = u.entra_id
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*)::int AS n FROM email_thread_mapping s
+          WHERE s.conversation_id = etm.conversation_id
+            AND s.ticket_id IS NULL AND s.proposal_id IS NULL
+            AND (s.action IN ('pending_review', 'skipped_other') OR s.action IS NULL)
+        ) th ON etm.conversation_id IS NOT NULL
         ${where}
         ORDER BY etm.received_at DESC NULLS LAST, etm.created_at DESC
         LIMIT $${i} OFFSET $${i + 1}
@@ -184,9 +196,54 @@ export default async function emailRoute(fastify) {
       // pré-Phase-3 stockaient parfois du bodyPreview Outlook avec balises
       // résiduelles dans raw. On normalise ici sans toucher à raw lui-même
       // (qui reste la source brute Graph pour le diagnostic admin).
-      for (const r of rows) r.body_preview = htmlToText(r.body_preview || '')
+      for (const r of rows) {
+        r.body_preview = htmlToText(r.body_preview || '')
+        r.thread_count = r.thread_count || 1
+      }
 
       reply.send(rows)
+    })
+
+  // GET /api/email/inbox/:id/thread — les mails ingérés du même fil (celui
+  // demandé compris), dans l'ordre chronologique : ce que « → Ticket »
+  // versera dans le ticket. Les mails plus anciens encore dans la boîte
+  // mais jamais ingérés ne sont pas listés ici (récupérés à la création).
+  fastify.get('/inbox/:id/thread',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const { rows } = await fastify.db.query(
+        `SELECT id, mailbox, internet_message_id, conversation_id, direction, from_address,
+                subject, received_at, raw, action, ticket_id
+         FROM email_thread_mapping WHERE id = $1`, [req.params.id]
+      )
+      if (!rows.length) return reply.code(404).send({ error: 'Mail introuvable' })
+      const m = rows[0]
+      const siblings = m.ticket_id ? [] : await findThreadSiblings(fastify.db, m)
+      const items = [m, ...siblings]
+        .map(r => ({
+          id: r.id,
+          direction: r.direction,
+          from_address: r.from_address,
+          from_name: r.raw?.from?.emailAddress?.name || null,
+          subject: r.subject,
+          received_at: r.received_at,
+          action: r.action,
+          has_attachments: !!r.raw?.hasAttachments,
+          body_preview: htmlToText(r.raw?.bodyPreview || ''),
+        }))
+        .sort((a, b) => Date.parse(a.received_at || 0) - Date.parse(b.received_at || 0))
+      reply.send(items)
+    })
+
+  // GET /api/email/inbox/:id/body — corps complet du mail (Graph, sinon
+  // aperçu). Lecture à la demande : un mail se lit avant d'être trié.
+  fastify.get('/inbox/:id/body',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      try {
+        reply.send(await readMappingBody(fastify.db, fastify.log, req.params.id))
+      } catch (err) {
+        if (err.message === 'MAPPING_NOT_FOUND') return reply.code(404).send({ error: 'Mail introuvable' })
+        throw err
+      }
     })
 
   // GET /api/email/inbox/count — compteur pour le badge UI.
@@ -215,11 +272,40 @@ export default async function emailRoute(fastify) {
           byName:    displayName,
         })
         await client.query('COMMIT')
-        reply.code(201).send({ ticket: tk })
+        reply.code(201).send({ ticket: tk, absorbed: tk.absorbed_count })
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {})
         if (err.message === 'MAPPING_NOT_FOUND') return reply.code(404).send({ error: 'Mail introuvable' })
         if (err.message === 'ALREADY_LINKED')    return reply.code(409).send({ error: 'Mail déjà lié à un ticket' })
+        throw err
+      } finally {
+        client.release()
+      }
+    })
+
+  // POST /api/email/inbox/:id/attach { ticket_id }
+  // Rattache un mail en attente (et son fil) à un ticket existant : le mail
+  // était la suite d'une demande déjà ouverte, sans en-têtes de threading
+  // exploitables (nouveau mail « au lieu de répondre »). Un ticket résolu
+  // ou archivé est rouvert.
+  fastify.post('/inbox/:id/attach',
+    { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      const ticketId = String(req.body?.ticket_id || '').trim()
+      if (!ticketId) return reply.code(400).send({ error: 'ticket_id requis' })
+      const client = await fastify.db.connect()
+      try {
+        await client.query('BEGIN')
+        const out = await attachMappingToTicket(client, fastify.log, {
+          mappingId: req.params.id, ticketId,
+        })
+        await client.query('COMMIT')
+        reply.send(out)
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        if (err.message === 'MAPPING_NOT_FOUND') return reply.code(404).send({ error: 'Mail introuvable' })
+        if (err.message === 'ALREADY_LINKED')    return reply.code(409).send({ error: 'Mail déjà lié à un ticket' })
+        if (err.message === 'TICKET_NOT_FOUND' || err.code === '22P02') return reply.code(404).send({ error: 'Ticket introuvable' })
+        if (err.message === 'TICKET_MERGED')     return reply.code(409).send({ error: 'Ticket fusionné — choisir le ticket final' })
         throw err
       } finally {
         client.release()
@@ -234,7 +320,7 @@ export default async function emailRoute(fastify) {
       const client = await fastify.db.connect()
       try {
         await client.query('BEGIN')
-        await dismissInboxMapping(client, req.params.id)
+        await dismissInboxMapping(client, req.params.id, { wholeThread: req.body?.whole_thread === true })
         await client.query('COMMIT')
         reply.send({ ok: true })
       } catch (err) {

@@ -52,7 +52,10 @@ export function htmlToText(html) {
 // 2. Footers mobiles Outlook : "Envoyé depuis…", "Sent from…", etc.
 // 3. Bloc cité Outlook : "De : <expéditeur>\nEnvoyé : <date>" — apparaît
 //    en réponse, on garde uniquement le message du dessus.
-export function stripSignature(text) {
+//
+// `keepQuoted` : ne coupe PAS le bloc cité (cas d'un mail transféré : le
+// fil d'origine est justement dans la citation, c'est le contexte utile).
+export function stripSignature(text, { keepQuoted = false } = {}) {
   if (!text) return text
   let s = String(text)
 
@@ -69,7 +72,7 @@ export function stripSignature(text) {
   }
 
   // 3. Bloc cité Outlook (forwarded / réponse).
-  const quotedMatch = s.match(/^(De|From)\s*:\s.+\r?\n.*(Envoyé|Sent)\s*:/m)
+  const quotedMatch = keepQuoted ? null : s.match(/^(De|From)\s*:\s.+\r?\n.*(Envoyé|Sent)\s*:/m)
   if (quotedMatch && quotedMatch.index > 5) {
     s = s.slice(0, quotedMatch.index).trimEnd()
   }
@@ -84,7 +87,9 @@ export function stripSignature(text) {
 // Limite la sortie à `maxChars` pour éviter qu'un mail de 50 pages
 // remplisse une description de ticket. Par défaut 8000 chars (très large,
 // permet de garder un long signalement détaillé).
-export function extractMailBodyText(graphMessage, fullMessage, { maxChars = 8000 } = {}) {
+//
+// `keepQuoted` : conserve le bloc cité (mail transféré, cf. stripSignature).
+export function extractMailBodyText(graphMessage, fullMessage, { maxChars = 8000, keepQuoted = false } = {}) {
   let body = ''
   if (fullMessage?.body?.content) {
     // Graph documente `contentType: text | html` (minuscule). En prod on
@@ -97,7 +102,14 @@ export function extractMailBodyText(graphMessage, fullMessage, { maxChars = 8000
   } else if (graphMessage?.bodyPreview) {
     body = String(graphMessage.bodyPreview)
   }
-  body = stripSignature(body)
+  body = stripSignature(body, { keepQuoted })
   if (body.length > maxChars) body = body.slice(0, maxChars) + '\n…(tronqué)'
   return body
+}
+
+// Un sujet de mail transféré (TR:/FW:/Fwd:, éventuellement derrière un
+// "Re:"). Pour ces mails, la citation contient le fil d'origine : on la
+// garde au lieu de la couper.
+export function isForwardedSubject(subject) {
+  return /^\s*(?:(?:re|aw)\s*:\s*)*(?:tr|fw|fwd|wg)\s*:/i.test(String(subject || ''))
 }

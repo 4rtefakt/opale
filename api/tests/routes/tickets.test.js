@@ -223,6 +223,52 @@ test('PATCH /:id — transition open → resolved : crée message system + set r
   assert.match(rows[0].content, /résolu/i)
 })
 
+test('PATCH /:id — title / description modifiables (renommage), validés', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tk-rename')
+  const { rows } = await db.query(`INSERT INTO tickets (title, description) VALUES ('RE: TR: imprimante', 'x') RETURNING id`)
+  const id = rows[0].id
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${id}`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { title: '  Imprimante du 2e étage bloquée  ', description: 'Bourrage papier récurrent.' },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().title, 'Imprimante du 2e étage bloquée')
+  assert.equal(res.json().description, 'Bourrage papier récurrent.')
+
+  const empty = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${id}`,
+    headers: { authorization: `Bearer ${token}` }, payload: { title: '   ' },
+  })
+  assert.equal(empty.statusCode, 400)
+  const long = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${id}`,
+    headers: { authorization: `Bearer ${token}` }, payload: { title: 'a'.repeat(201) },
+  })
+  assert.equal(long.statusCode, 400)
+
+  // Description effaçable (null ou vide → NULL), sans message système.
+  const cleared = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${id}`,
+    headers: { authorization: `Bearer ${token}` }, payload: { description: '' },
+  })
+  assert.equal(cleared.statusCode, 200)
+  assert.equal(cleared.json().description, null)
+  const { rows: msgs } = await db.query(`SELECT COUNT(*)::int AS n FROM ticket_messages WHERE ticket_id = $1`, [id])
+  assert.equal(msgs[0].n, 0)
+})
+
+test('PATCH /:id — le demandeur (non-admin) peut renommer son propre ticket', { skip: SKIP }, async () => {
+  const { user, token } = await userAuth('oid-tk-rename-req')
+  const { rows } = await db.query(`INSERT INTO tickets (title, user_id) VALUES ('Souci', $1) RETURNING id`, [user.entraId])
+  const res = await fastify.inject({
+    method: 'PATCH', url: `/api/tickets/${rows[0].id}`,
+    headers: { authorization: `Bearer ${token}` }, payload: { title: 'Souci de connexion VPN' },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.json().title, 'Souci de connexion VPN')
+})
+
 test('PATCH /:id — aucun champ → 400', { skip: SKIP }, async () => {
   const admin = await adminAuth('oid-tk-empty-patch')
   const created = await createTicketAs(admin.token, { title: 'Static' })
@@ -537,6 +583,23 @@ test('DELETE message — supprime une ai_suggestion mais pas un message normal',
     headers: { authorization: `Bearer ${admin.token}` },
   })
   assert.equal(delNote.statusCode, 404, 'un message non-IA ne doit pas être supprimable')
+})
+
+test('GET /:id — expose mail_authors et compteurs de mails (entrants / sortants)', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-tk-mailauthors')
+  const { rows } = await db.query(`INSERT INTO tickets (title) VALUES ('Origine mail') RETURNING id`)
+  const id = rows[0].id
+  await db.query(`
+    INSERT INTO email_thread_mapping (internet_message_id, mailbox, direction, from_address, raw, ticket_id) VALUES
+      ('<ma-1@x>', 'helpdesk@test', 'inbound',  'bob@ex.fr', '{"from":{"emailAddress":{"name":"Bob Martin","address":"bob@ex.fr"}}}', $1),
+      ('<ma-2@x>', 'helpdesk@test', 'inbound',  'bob@ex.fr', '{"from":{"emailAddress":{"name":"Bob Martin","address":"bob@ex.fr"}}}', $1),
+      ('<ma-3@x>', 'helpdesk@test', 'outbound', 'helpdesk@test', '{}', $1)
+  `, [id])
+  const res = await fastify.inject({ method: 'GET', url: `/api/tickets/${id}`, headers: { authorization: `Bearer ${token}` } })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json().mail_authors.sort(), ['Bob Martin', 'bob@ex.fr'])
+  assert.equal(res.json().inbound_mail_count, 2)
+  assert.equal(res.json().outbound_mail_count, 1)
 })
 
 test('GET /:id — expose has_inbound_mail selon présence d\'email_thread_mapping inbound',

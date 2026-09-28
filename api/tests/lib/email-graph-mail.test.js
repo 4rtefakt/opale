@@ -183,3 +183,50 @@ test('listMessagesSince : nextLink hors graph.microsoft.com/v1.0 refusé, jeton 
     _resetSystemFolderCache()
   }
 })
+
+// ── Listing d'une conversation (fil complet lors du tri d'un mail) ───────────
+
+test('buildListConversationPath : filtre conversationId quoté, quote interne doublée, sans $orderby', async () => {
+  const { buildListConversationPath } = await import('../../modules/email-bridge/lib/graph-mail.js')
+  const path = buildListConversationPath('helpdesk@example.com', "AAQkAD'x=", { top: 500 })
+  const url = new URL('https://graph.microsoft.com/v1.0' + path)
+  assert.equal(url.pathname, '/v1.0/users/helpdesk%40example.com/messages')
+  assert.equal(url.searchParams.get('$filter'), "conversationId eq 'AAQkAD''x='")
+  assert.equal(url.searchParams.get('$top'), '100')
+  assert.equal(url.searchParams.get('$orderby'), null)
+  assert.match(url.searchParams.get('$select'), /internetMessageHeaders/)
+  assert.match(url.searchParams.get('$select'), /parentFolderId/)
+})
+
+test('listConversationMessages : tri chronologique, brouillons et Supprimés exclus, Éléments envoyés gardés + signalés', async () => {
+  const { listConversationMessages, _resetSystemFolderCache: reset } = await import('../../modules/email-bridge/lib/graph-mail.js')
+  reset()
+  const original = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const u = decodeURIComponent(String(url))
+    let body, status = 200
+    if (/login\.microsoftonline\.com/.test(u)) body = { access_token: 'tok', expires_in: 3600 }
+    else if (/mailFolders\/sentitems$/.test(u)) body = { id: 'sent-id' }
+    else if (/mailFolders\/deleteditems$/.test(u)) body = { id: 'del-id' }
+    else if (/mailFolders\/\w+$/.test(u)) { status = 404; body = {} }
+    else if (/\/messages\?/.test(u)) body = { value: [
+      { id: 'c', receivedDateTime: '2026-03-03T10:00:00Z', parentFolderId: 'inbox' },
+      { id: 'deleted', receivedDateTime: '2026-03-02T10:00:00Z', parentFolderId: 'del-id' },
+      { id: 'draft', receivedDateTime: '2026-03-02T11:00:00Z', parentFolderId: 'inbox', isDraft: true },
+      { id: 'b', receivedDateTime: '2026-03-02T10:00:00Z', parentFolderId: 'sent-id' },
+      { id: 'a', receivedDateTime: '2026-03-01T10:00:00Z', parentFolderId: 'inbox' },
+    ] }
+    else { status = 404; body = {} }
+    return { ok: status < 300, status, headers: new Headers(), json: async () => body, text: async () => JSON.stringify(body) }
+  }
+  try {
+    const page = await listConversationMessages('helpdesk@example.com', 'conv-1')
+    assert.deepEqual(page.value.map(m => m.id), ['a', 'b', 'c'])
+    assert.equal(page.sentFolderId, 'sent-id')
+    const empty = await listConversationMessages('helpdesk@example.com', null)
+    assert.deepEqual(empty.value, [])
+  } finally {
+    globalThis.fetch = original
+    reset()
+  }
+})

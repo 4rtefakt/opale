@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { validateMobileNav, validatePrefsPatch, MOBILE_NAV_ROUTES } from '../../modules/core/lib/prefs.js'
+import { validateMobileNav, validatePrefsPatch, MOBILE_NAV_ROUTES, validateUiTheme, validateUiMode } from '../../modules/core/lib/prefs.js'
 
 test('validateMobileNav — accepte 1 à 4 routes autorisées distinctes', () => {
   for (const v of [['dashboard'], ['dashboard', 'postes', 'alertes', 'tickets']]) {
@@ -71,4 +71,16 @@ test('validatePrefsPatch — normalise et renvoie le patch validé', () => {
 test('validatePrefsPatch — propage l\'erreur du validateur de clé', () => {
   const res = validatePrefsPatch({ mobile_nav: [] })
   assert.equal(res.ok, false)
+})
+
+test('ui_theme / ui_mode — ensembles fermés, acceptés dans un patch', () => {
+  assert.equal(validateUiTheme('sable').ok, true)
+  assert.equal(validateUiTheme('neon').ok, false)
+  assert.equal(validateUiTheme(3).ok, false)
+  assert.equal(validateUiMode('dark').ok, true)
+  assert.equal(validateUiMode('auto').ok, false)
+  const patch = validatePrefsPatch({ ui_theme: 'aurore', ui_mode: 'system' })
+  assert.equal(patch.ok, true)
+  assert.deepEqual(patch.patch, { ui_theme: 'aurore', ui_mode: 'system' })
+  assert.equal(validatePrefsPatch({ ui_theme: 'x' }).ok, false)
 })

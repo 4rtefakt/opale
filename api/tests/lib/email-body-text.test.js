@@ -143,3 +143,24 @@ test('extractMailBodyText : maxChars tronque + marqueur', () => {
   assert.equal(out.length, 100 + '\n…(tronqué)'.length)
   assert.match(out, /…\(tronqué\)$/)
 })
+
+// ── Mail transféré : la citation est le contexte, on la garde ─────────────────
+
+test('isForwardedSubject : TR:/FW:/Fwd: (même derrière un Re:) → true, Re: seul → false', async () => {
+  const { isForwardedSubject } = await import('../../modules/email-bridge/lib/body-text.js')
+  assert.equal(isForwardedSubject('TR: Accès partagé'), true)
+  assert.equal(isForwardedSubject('Fwd: Accès partagé'), true)
+  assert.equal(isForwardedSubject('FW: Accès partagé'), true)
+  assert.equal(isForwardedSubject('Re: TR: Accès partagé'), true)
+  assert.equal(isForwardedSubject('Re: Accès partagé'), false)
+  assert.equal(isForwardedSubject('Accès partagé'), false)
+  assert.equal(isForwardedSubject(null), false)
+})
+
+test('stripSignature / extractMailBodyText : keepQuoted conserve le bloc cité Outlook', () => {
+  const text = 'Pour info.\n\nDe : Carole\nEnvoyé : lundi\nObjet : Accès\n\nJe n\'arrive pas à ouvrir le dossier.'
+  assert.equal(stripSignature(text), 'Pour info.')
+  assert.match(stripSignature(text, { keepQuoted: true }), /ouvrir le dossier/)
+  const out = extractMailBodyText({}, { body: { contentType: 'Text', content: text } }, { keepQuoted: true })
+  assert.match(out, /ouvrir le dossier/)
+})
