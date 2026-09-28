@@ -16,6 +16,7 @@ import { buildApp } from '../helpers/build-app.js'
 import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 
 import emailRoute from '../../modules/email-bridge/routes/email.js'
+import { prepareThread, createTicketFromMapping } from '../../modules/email-bridge/lib/inbox.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
@@ -703,5 +704,86 @@ test('POST /inbox/:id/dismiss — whole_thread ignore aussi les autres mails à 
     const { rows } = await db.query(`SELECT id, action FROM email_thread_mapping WHERE id = ANY($1::uuid[])`, [[a, b, other]])
     const byId = Object.fromEntries(rows.map(r => [r.id, r.action]))
     assert.equal(byId[a], 'skipped_other'); assert.equal(byId[b], 'skipped_other'); assert.equal(byId[other], 'pending_review')
+  }
+)
+
+// ─── Robustesse : ids, demandeur, concurrence ────────────────────────────────
+
+test('routes /inbox/:id/* — id non UUID → 404 « introuvable », jamais une erreur Postgres',
+  { skip: SKIP }, async () => {
+    const { token } = await adminAuth('oid-inbox-baduuid')
+    for (const [method, url] of [
+      ['GET', '/api/email/inbox/not-a-uuid/body'], ['GET', '/api/email/inbox/not-a-uuid/thread'],
+      ['POST', '/api/email/inbox/not-a-uuid/to-ticket'], ['POST', '/api/email/inbox/not-a-uuid/dismiss'],
+    ]) {
+      const res = await fastify.inject({ method, url, headers: { authorization: `Bearer ${token}` } })
+      assert.equal(res.statusCode, 404, `${method} ${url}`)
+      assert.equal(res.json().error, 'Mail introuvable')
+    }
+    const m = await seedInboxMapping(db)
+    const res = await fastify.inject({
+      method: 'POST', url: `/api/email/inbox/${m}/attach`,
+      headers: { authorization: `Bearer ${token}` }, payload: { ticket_id: 'pas-un-uuid' },
+    })
+    assert.equal(res.statusCode, 404)
+    assert.equal(res.json().error, 'Ticket introuvable')
+  }
+)
+
+test('POST /inbox/:id/to-ticket — le demandeur est l\'expéditeur du mail converti, pas le plus ancien du fil',
+  { skip: SKIP }, async () => {
+    const { token } = await adminAuth('oid-inbox-requester')
+    const alice = await seedNonAdmin(db, { entraId: 'oid-req-alice', displayName: 'Alice', email: 'alice-req@ex.fr' })
+    const bob   = await seedNonAdmin(db, { entraId: 'oid-req-bob',   displayName: 'Bob',   email: 'bob-req@ex.fr' })
+    const conv = `conv-req-${Math.random().toString(36).slice(2)}`
+    await seedInboxMapping(db, { conversationId: conv, subject: 'Salle de réunion', fromAddress: alice.email, fromName: 'Alice', receivedAt: hour(48), action: 'skipped_other' })
+    const clicked = await seedInboxMapping(db, { conversationId: conv, subject: 'RE: Salle de réunion', fromAddress: bob.email, fromName: 'Bob', receivedAt: hour(1) })
+
+    const res = await withFakeGraph(() => undefined, () => fastify.inject({
+      method: 'POST', url: `/api/email/inbox/${clicked}/to-ticket`,
+      headers: { authorization: `Bearer ${token}` },
+    }))
+    assert.equal(res.statusCode, 201)
+    assert.equal(res.json().absorbed, 2)
+    assert.equal(res.json().ticket.user_id, bob.entraId, 'demandeur = expéditeur du mail cliqué (celui annoncé par la page de tri)')
+    const { rows } = await db.query(
+      `SELECT user_entra_id, role FROM ticket_users WHERE ticket_id = $1 ORDER BY user_entra_id`, [res.json().ticket.id]
+    )
+    assert.deepEqual(rows.map(r => r.user_entra_id), [alice.entraId, bob.entraId], 'Alice concernée, Bob demandeur')
+    assert.equal(rows.find(r => r.user_entra_id === bob.entraId).role, 'requester')
+    assert.notEqual(rows.find(r => r.user_entra_id === alice.entraId).role, 'requester')
+  }
+)
+
+test('createTicketFromMapping — fil préparé hors transaction, mail rattaché ailleurs entre-temps → pas versé deux fois',
+  { skip: SKIP }, async () => {
+    const conv = `conv-race-${Math.random().toString(36).slice(2)}`
+    const clicked = await seedInboxMapping(db, { conversationId: conv, subject: 'Imprimante', bodyPreview: 'Premier', receivedAt: hour(2) })
+    const sibling = await seedInboxMapping(db, { conversationId: conv, subject: 'RE: Imprimante', bodyPreview: 'Second', receivedAt: hour(1) })
+
+    // Phase 1 : deux mails vus, corps chargés (Graph muet → bodyPreview).
+    const prepared = await withFakeGraph(() => undefined, () => prepareThread(db, null, clicked))
+    assert.equal(prepared.bodies.size, 2)
+
+    // Entre-temps, un autre admin rattache le second mail à un autre ticket.
+    const { rows: t } = await db.query(`INSERT INTO tickets (title) VALUES ('Autre demande') RETURNING id`)
+    await db.query(`UPDATE email_thread_mapping SET ticket_id = $1, action = 'message_appended' WHERE id = $2`, [t[0].id, sibling])
+
+    // Phase 2 : le fil DB relu sous verrou fait foi.
+    const client = await db.connect()
+    let tk
+    try {
+      await client.query('BEGIN')
+      tk = await withFakeGraph(() => undefined, () => createTicketFromMapping(client, null, {
+        mappingId: clicked, byEntraId: 'oid-race', byName: 'Race', prepared,
+      }))
+      await client.query('COMMIT')
+    } catch (err) { await client.query('ROLLBACK').catch(() => {}); throw err } finally { client.release() }
+
+    assert.equal(tk.absorbed_count, 1, 'seul le mail cliqué est versé')
+    const { rows: msgs } = await db.query(`SELECT content FROM ticket_messages WHERE ticket_id = $1`, [tk.id])
+    assert.deepEqual(msgs.map(m => m.content), ['Premier'])
+    const { rows: link } = await db.query(`SELECT ticket_id FROM email_thread_mapping WHERE id = $1`, [sibling])
+    assert.equal(link[0].ticket_id, t[0].id, 'le mail rattaché ailleurs y reste')
   }
 )

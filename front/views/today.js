@@ -118,7 +118,7 @@ async function load() {
 function assigneeWhy(tk, me) {
   if (!tk.assigned_to_entra_id) return ' · ' + t('today.why.unassigned_short')
   if (tk.assigned_to_entra_id === me) return ' · ' + t('today.why.you')
-  return ' · ' + esc(shortName(tk.assigned_to_name))
+  return ' · ' + shortName(tk.assigned_to_name)
 }
 
 function firstAlertLabel(alerts) {

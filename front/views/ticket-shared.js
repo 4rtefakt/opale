@@ -81,6 +81,11 @@ export function cleanLegacyHtml(text) {
     .replace(/\r\n/g, '\n').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
+// Sujet sans les préfixes Outlook (RE:, TR:, Fwd:…) ; `empty` si vide.
+export function cleanSubject(s, empty) {
+  return String(s || '').replace(/^\s*(?:(?:re|tr|fwd|fw|aw|wg)\s*:\s*)+/i, '').trim() || empty
+}
+
 export function statusLabel(s) {
   return s === 'open'        ? t('tickets.status.open')
        : s === 'in_progress' ? t('tickets.status.in_progress')

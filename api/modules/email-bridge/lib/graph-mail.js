@@ -96,28 +96,34 @@ export function buildListMessagesPath(mailbox, sinceIso, { top = 50, inclusive =
 // Graph qui servent de raccourcis indépendants de la locale.
 const SYSTEM_FOLDER_SHORTCUTS = ['sentitems', 'drafts', 'deleteditems', 'junkemail', 'outbox']
 const FOLDER_CACHE_TTL_MS = 60 * 60 * 1000
-const _systemFolderCache = new Map()  // mailbox → { ids: Set, fetchedAt }
+const _namedFolderCache = new Map()  // mailbox → { byName: { sentitems: id, … }, fetchedAt }
 
-export async function getSystemFolderIds(mailbox, { now = Date.now } = {}) {
-  const cached = _systemFolderCache.get(mailbox)
-  if (cached && (now() - cached.fetchedAt) < FOLDER_CACHE_TTL_MS) return cached.ids
-
-  const ids = new Set()
+// Ids des dossiers système par nom (sentitems → id, …), un appel Graph par
+// raccourci lors du premier accès, puis cache 1 h.
+export async function getSystemFolderIdsByName(mailbox, { now = Date.now } = {}) {
+  const cached = _namedFolderCache.get(mailbox)
+  if (cached && (now() - cached.fetchedAt) < FOLDER_CACHE_TTL_MS) return cached.byName
+  const byName = {}
   for (const shortcut of SYSTEM_FOLDER_SHORTCUTS) {
     try {
       const folder = await graphGet(`/users/${encodeMailbox(mailbox)}/mailFolders/${shortcut}`)
-      if (folder?.id) ids.add(folder.id)
+      if (folder?.id) byName[shortcut] = folder.id
     } catch {
       // Dossier absent ou perm refusée → on tolère et on continue.
       // Cas typique : `outbox` n'existe pas dans certaines configurations.
     }
   }
-  _systemFolderCache.set(mailbox, { ids, fetchedAt: now() })
-  return ids
+  _namedFolderCache.set(mailbox, { byName, fetchedAt: now() })
+  return byName
+}
+
+// Ensemble des ids à exclure du polling (même cache).
+export async function getSystemFolderIds(mailbox, opts) {
+  return new Set(Object.values(await getSystemFolderIdsByName(mailbox, opts)))
 }
 
 // Pour les tests : forcer le re-fetch du cache.
-export function _resetSystemFolderCache() { _systemFolderCache.clear(); _namedFolderCache.clear() }
+export function _resetSystemFolderCache() { _namedFolderCache.clear() }
 
 // Page suivante d'un listing : `@odata.nextLink` est une URL absolue. On
 // n'y envoie le jeton applicatif que si elle pointe bien sur Graph v1.0.
@@ -237,23 +243,6 @@ export async function listConversationMessages(mailbox, conversationId, opts = {
     .filter(m => !m.isDraft && !excluded.has(m.parentFolderId))
     .sort((a, b) => Date.parse(a.receivedDateTime || a.sentDateTime || 0) - Date.parse(b.receivedDateTime || b.sentDateTime || 0))
   return { value, sentFolderId: folders.sentitems || null }
-}
-
-// Variante de getSystemFolderIds qui conserve le nom de chaque dossier
-// (sentitems → id, …). Même cache TTL 1 h.
-const _namedFolderCache = new Map()
-export async function getSystemFolderIdsByName(mailbox, { now = Date.now } = {}) {
-  const cached = _namedFolderCache.get(mailbox)
-  if (cached && (now() - cached.fetchedAt) < FOLDER_CACHE_TTL_MS) return cached.byName
-  const byName = {}
-  for (const shortcut of SYSTEM_FOLDER_SHORTCUTS) {
-    try {
-      const folder = await graphGet(`/users/${encodeMailbox(mailbox)}/mailFolders/${shortcut}`)
-      if (folder?.id) byName[shortcut] = folder.id
-    } catch { /* dossier absent ou perm refusée : toléré */ }
-  }
-  _namedFolderCache.set(mailbox, { byName, fetchedAt: now() })
-  return byName
 }
 
 // Re-fetch un message complet (corps + headers complets) — utilisé Phase 2/3

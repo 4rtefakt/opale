@@ -1,3 +1,5 @@
+import { cleanSubject } from '/views/ticket-shared.js'
+
 let _tickets = []
 let _filter  = 'open'
 let _allTags = []
@@ -590,9 +592,7 @@ function groupInboxThreads(mails) {
   }).sort((a, b) => Date.parse(b.latest.received_at || 0) - Date.parse(a.latest.received_at || 0))
 }
 
-function cleanSubjectM(s) {
-  return String(s || '').replace(/^\s*(?:(?:re|tr|fwd|fw|aw|wg)\s*:\s*)+/i, '').trim() || t('mobile.tickets.inbox.no_subject')
-}
+const cleanSubjectM = (s) => cleanSubject(s, t('mobile.tickets.inbox.no_subject'))
 
 function renderInboxList() {
   const list = document.getElementById('m-tk-list')

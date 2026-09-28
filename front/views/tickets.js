@@ -6,6 +6,7 @@
 import {
   TAG_PALETTE, TAG_COLOR_KEYS, shortName, initialsOf, ticketRef, tagChip,
   statusLabel, prioLabel, nextLabel, buildQueue, saveQueue,
+  cleanSubject,
 } from '/views/ticket-shared.js'
 
 const jsArg = window.jsArg
@@ -14,7 +15,8 @@ const FOLDERS = ['inbox', 'needs', 'mine', 'unassigned', 'all', 'resolved', 'clo
 let _folder   = 'needs'
 let _tagId    = null
 let _q        = ''
-let _tickets  = []          // tickets chargés (hors archives sauf dossier Archives)
+let _tickets  = []          // tickets vivants + résolus (jamais les archives)
+let _closed   = []          // archives, chargées seulement dans ce dossier
 let _inbox    = []          // mails à trier
 let _allTags  = []
 let _board    = false       // vue tableau (Kanban) — secondaire
@@ -121,12 +123,13 @@ async function loadProposalsCount() {
 async function loadAll() {
   const params = { limit: 200 }
   if (_q.trim()) params.q = _q.trim()
-  if (_folder === 'closed') params.status = 'closed'
-  const [tickets, inbox] = await Promise.all([
+  const [tickets, inbox, closed] = await Promise.all([
     window.api.getTickets(params).catch(() => []),
     window.api.getInbox({ limit: 200 }).catch(() => []),
+    _folder === 'closed' ? window.api.getTickets({ ...params, status: 'closed' }).catch(() => []) : Promise.resolve([]),
   ])
   _tickets = tickets
+  _closed = closed
   _inbox = inbox
 }
 
@@ -197,7 +200,7 @@ function visibleTickets() {
     case 'mine':       list = live.filter(tk => tk.assigned_to_entra_id === me); break
     case 'unassigned': list = live.filter(tk => !tk.assigned_to_entra_id); break
     case 'resolved':   list = _tickets.filter(tk => tk.status === 'resolved'); break
-    case 'closed':     list = _tickets.filter(tk => tk.status === 'closed'); break
+    case 'closed':     list = _closed; break
     case 'tag':        list = _tickets.filter(tk => (tk.tags || []).some(g => g.id === _tagId)); break
     default:           list = live
   }
@@ -327,13 +330,10 @@ function groupInbox(mails) {
     return th
   }).sort((a, b) => Date.parse(a.latest.received_at || 0) - Date.parse(b.latest.received_at || 0)) // le plus ancien d'abord : on traite dans l'ordre
 }
-function cleanSubject(s) {
-  return String(s || '').replace(/^\s*(?:(?:re|tr|fwd|fw|aw|wg)\s*:\s*)+/i, '').trim() || t('tickets.inbox.no_subject')
-}
 
 function renderInbox(main) {
   const q = _q.trim().toLowerCase()
-  const threads = groupInbox(_inbox).filter(th => !q || cleanSubject(th.latest.subject).toLowerCase().includes(q) || th.senders.some(s => s.toLowerCase().includes(q)))
+  const threads = groupInbox(_inbox).filter(th => !q || cleanSubject(th.latest.subject, t('tickets.inbox.no_subject')).toLowerCase().includes(q) || th.senders.some(s => s.toLowerCase().includes(q)))
   const cnt = document.getElementById('tk-count')
   if (cnt) cnt.textContent = threads.length ? `· ${threads.length}` : ''
   if (!threads.length) {
@@ -348,7 +348,7 @@ function renderInbox(main) {
       return `<a class="tk-row ${cls}" href="#/tickets/mail/${m.id}">
         <span class="st"></span>
         <span style="min-width:0">
-          <div class="ttl">${esc(cleanSubject(m.subject))}</div>
+          <div class="ttl">${esc(cleanSubject(m.subject, t('tickets.inbox.no_subject')))}</div>
           <div class="sub">${th.count > 1 ? `<span><i class="ti ti-messages" style="font-size:11px"></i> ${esc(t('tickets.inbox.thread_n', { n: th.count }))}</span>` : ''}${m.body_preview ? `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:520px">${esc(m.body_preview)}</span>` : ''}</div>
         </span>
         <span class="who req">${m.suggested_user_name ? `<span class="mini-av req">${esc(initialsOf(m.suggested_user_name))}</span>${esc(shortName(m.suggested_user_name))}` : `<span class="dim" title="${esc(m.from_address || '')}">${esc(m.from_name || m.from_address || '?')}</span>`}</span>

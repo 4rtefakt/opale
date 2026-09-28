@@ -7,7 +7,7 @@
 // Les routes de configuration (mail.inboxes, mail.poll_enabled) passent
 // par l'API existante /api/settings — pas besoin d'endpoints dédiés ici.
 
-import { createTicketFromMapping, attachMappingToTicket, dismissInboxMapping, readMappingBody, findThreadSiblings } from '../lib/inbox.js'
+import { prepareThread, createTicketFromMapping, attachMappingToTicket, dismissInboxMapping, readMappingBody, findThreadSiblings } from '../lib/inbox.js'
 import { htmlToText } from '../lib/body-text.js'
 import { MAX_INGEST_ATTEMPTS } from '../lib/poll-cursor.js'
 
@@ -208,14 +208,37 @@ export default async function emailRoute(fastify) {
   // demandé compris), dans l'ordre chronologique : ce que « → Ticket »
   // versera dans le ticket. Les mails plus anciens encore dans la boîte
   // mais jamais ingérés ne sont pas listés ici (récupérés à la création).
+  // Ids venus de l'URL : un non-UUID est un « introuvable », pas une erreur
+  // Postgres 22P02 à démêler après coup.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const isUuid = (v) => UUID_RE.test(String(v || ''))
+  const notFoundMail = (reply) => reply.code(404).send({ error: 'Mail introuvable' })
+
+  // Phase 1 du tri (appels Graph, hors transaction : aucun verrou tenu).
+  // Répond 404/409 et retourne null si le mail n'est pas rattachable.
+  async function prepareInboxThread(req, reply) {
+    if (!isUuid(req.params.id)) { notFoundMail(reply); return null }
+    try {
+      return await prepareThread(fastify.db, fastify.log, req.params.id)
+    } catch (err) {
+      if (err.message === 'MAPPING_NOT_FOUND') { notFoundMail(reply); return null }
+      if (err.message === 'ALREADY_LINKED') { reply.code(409).send({ error: 'Mail déjà lié à un ticket' }); return null }
+      throw err
+    }
+  }
+  // Deux admins sur le même fil en même temps : Postgres tranche (deadlock
+  // détecté ou verrou refusé) → 409, le second re-clic verra l'état à jour.
+  const isLockConflict = (err) => err.code === '40P01' || err.code === '55P03'
+
   fastify.get('/inbox/:id/thread',
     { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      if (!isUuid(req.params.id)) return notFoundMail(reply)
       const { rows } = await fastify.db.query(
         `SELECT id, mailbox, internet_message_id, conversation_id, direction, from_address,
                 subject, received_at, raw, action, ticket_id
          FROM email_thread_mapping WHERE id = $1`, [req.params.id]
       )
-      if (!rows.length) return reply.code(404).send({ error: 'Mail introuvable' })
+      if (!rows.length) return notFoundMail(reply)
       const m = rows[0]
       const siblings = m.ticket_id ? [] : await findThreadSiblings(fastify.db, m)
       const items = [m, ...siblings]
@@ -238,10 +261,11 @@ export default async function emailRoute(fastify) {
   // aperçu). Lecture à la demande : un mail se lit avant d'être trié.
   fastify.get('/inbox/:id/body',
     { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      if (!isUuid(req.params.id)) return notFoundMail(reply)
       try {
         reply.send(await readMappingBody(fastify.db, fastify.log, req.params.id))
       } catch (err) {
-        if (err.message === 'MAPPING_NOT_FOUND') return reply.code(404).send({ error: 'Mail introuvable' })
+        if (err.message === 'MAPPING_NOT_FOUND') return notFoundMail(reply)
         throw err
       }
     })
@@ -263,6 +287,8 @@ export default async function emailRoute(fastify) {
   fastify.post('/inbox/:id/to-ticket',
     { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
       const { entraId, displayName } = fastify.getUserIdentity(req)
+      const prepared = await prepareInboxThread(req, reply)
+      if (!prepared) return reply
       const client = await fastify.db.connect()
       try {
         await client.query('BEGIN')
@@ -270,13 +296,15 @@ export default async function emailRoute(fastify) {
           mappingId: req.params.id,
           byEntraId: entraId,
           byName:    displayName,
+          prepared,
         })
         await client.query('COMMIT')
         reply.code(201).send({ ticket: tk, absorbed: tk.absorbed_count })
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {})
-        if (err.message === 'MAPPING_NOT_FOUND') return reply.code(404).send({ error: 'Mail introuvable' })
+        if (err.message === 'MAPPING_NOT_FOUND') return notFoundMail(reply)
         if (err.message === 'ALREADY_LINKED')    return reply.code(409).send({ error: 'Mail déjà lié à un ticket' })
+        if (isLockConflict(err))                 return reply.code(409).send({ error: 'Fil en cours de traitement, réessayez' })
         throw err
       } finally {
         client.release()
@@ -292,20 +320,24 @@ export default async function emailRoute(fastify) {
     { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
       const ticketId = String(req.body?.ticket_id || '').trim()
       if (!ticketId) return reply.code(400).send({ error: 'ticket_id requis' })
+      if (!isUuid(ticketId)) return reply.code(404).send({ error: 'Ticket introuvable' })
+      const prepared = await prepareInboxThread(req, reply)
+      if (!prepared) return reply
       const client = await fastify.db.connect()
       try {
         await client.query('BEGIN')
         const out = await attachMappingToTicket(client, fastify.log, {
-          mappingId: req.params.id, ticketId,
+          mappingId: req.params.id, ticketId, prepared,
         })
         await client.query('COMMIT')
         reply.send(out)
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {})
-        if (err.message === 'MAPPING_NOT_FOUND') return reply.code(404).send({ error: 'Mail introuvable' })
+        if (err.message === 'MAPPING_NOT_FOUND') return notFoundMail(reply)
         if (err.message === 'ALREADY_LINKED')    return reply.code(409).send({ error: 'Mail déjà lié à un ticket' })
-        if (err.message === 'TICKET_NOT_FOUND' || err.code === '22P02') return reply.code(404).send({ error: 'Ticket introuvable' })
+        if (err.message === 'TICKET_NOT_FOUND')  return reply.code(404).send({ error: 'Ticket introuvable' })
         if (err.message === 'TICKET_MERGED')     return reply.code(409).send({ error: 'Ticket fusionné — choisir le ticket final' })
+        if (isLockConflict(err))                 return reply.code(409).send({ error: 'Fil en cours de traitement, réessayez' })
         throw err
       } finally {
         client.release()
@@ -317,6 +349,7 @@ export default async function emailRoute(fastify) {
   // ticket. Idempotent : re-clic = 200 no-op.
   fastify.post('/inbox/:id/dismiss',
     { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
+      if (!isUuid(req.params.id)) return notFoundMail(reply)
       const client = await fastify.db.connect()
       try {
         await client.query('BEGIN')
@@ -325,8 +358,9 @@ export default async function emailRoute(fastify) {
         reply.send({ ok: true })
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {})
-        if (err.message === 'MAPPING_NOT_FOUND') return reply.code(404).send({ error: 'Mail introuvable' })
+        if (err.message === 'MAPPING_NOT_FOUND') return notFoundMail(reply)
         if (err.message === 'NOT_PENDING')       return reply.code(409).send({ error: 'Mail déjà traité' })
+        if (isLockConflict(err))                 return reply.code(409).send({ error: 'Fil en cours de traitement, réessayez' })
         throw err
       } finally {
         client.release()

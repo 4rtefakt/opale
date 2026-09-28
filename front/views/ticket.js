@@ -11,6 +11,7 @@
 import {
   shortName, initialsOf, ticketRef, tagChip, whenHtml, fmtDateShort, fmtDateFull, dayLabel, dayKey,
   cleanLegacyHtml, statusLabel, prioLabel, nextLabel, queueNext, queuePosition, readQueue,
+  cleanSubject,
 } from '/views/ticket-shared.js'
 
 const jsArg = window.jsArg
@@ -442,7 +443,6 @@ export async function renderMailFocus(container, mappingId) {
   }))
 }
 
-function cleanSubject(s) { return String(s || '').replace(/^\s*(?:(?:re|tr|fwd|fw|aw|wg)\s*:\s*)+/i, '').trim() || t('tickets.inbox.no_subject') }
 
 function renderMail() {
   const { mapping: m, items, priority } = _mail
@@ -460,7 +460,7 @@ function renderMail() {
         </span>
       </div>
       <div class="focus-head">
-        <h1 class="focus-title" style="cursor:default">${esc(cleanSubject(m.subject))}</h1>
+        <h1 class="focus-title" style="cursor:default">${esc(cleanSubject(m.subject, t('tickets.inbox.no_subject')))}</h1>
         <div class="props">
           <div class="prop static"><div class="k">${esc(t('tickets.focus.prop.next'))}</div><div class="v needs"><span class="dotv"></span>${esc(t('tickets.mailfocus.decide'))}</div><div class="s">${esc(t('tickets.mailfocus.decide_sub'))}</div></div>
           <button class="prop" onclick="mfSetPriority()"><div class="k">${esc(t('tickets.new.priority'))}</div><div class="v ${priority === 'critical' ? 'crit' : priority === 'high' ? 'needs' : ''}">${esc(prioLabel(priority))} <i class="ti ti-chevron-down" style="font-size:11px;opacity:.6"></i></div><div class="s">${esc(t('tickets.mailfocus.carried'))}</div></button>
