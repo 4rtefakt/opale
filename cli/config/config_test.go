@@ -7,14 +7,17 @@ import (
 	"time"
 )
 
-// withTempHome surcharge $HOME pour isoler les tests dans un répertoire
-// temporaire. Garantit qu'aucun test ne touche aux vrais credentials.
+// withTempHome isole les tests dans un répertoire temporaire. Garantit
+// qu'aucun test ne touche aux vrais credentials : os.UserHomeDir lit $HOME
+// sous Unix mais %USERPROFILE% sous Windows, on surcharge donc les deux.
 func withTempHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	old := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	t.Cleanup(func() { os.Setenv("HOME", old) })
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	if home, err := os.UserHomeDir(); err != nil || home != dir {
+		t.Fatalf("home non isolé : %q (err %v), attendu %q", home, err, dir)
+	}
 	return dir
 }
 

@@ -143,3 +143,29 @@ func apiErr(resp *http.Response) error {
 	}
 	return &APIError{Status: resp.StatusCode, Message: msg}
 }
+
+// Raw envoie une requête arbitraire (corps JSON brut, peut être nil) et
+// renvoie le statut et le corps de la réponse tels quels.
+func (c *Client) Raw(method, path string, body []byte) (int, []byte, error) {
+	var r io.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, c.BaseURL+path, r)
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, b, err
+}
