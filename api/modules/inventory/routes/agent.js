@@ -1224,7 +1224,14 @@ export default async function agentRoute(fastify) {
             SELECT assigned_user_id FROM devices WHERE id = $1
           ))
           OR (j.scope = 'native_group' AND j.native_group_id IN (
-            SELECT group_id FROM group_members WHERE device_id = $1
+            -- groupes du poste ET leurs groupes parents (groupes imbriqués),
+            -- même résolution que resolveGroupDeviceIds à la création du job
+            WITH RECURSIVE anc AS (
+              SELECT group_id FROM group_members WHERE device_id = $1
+              UNION
+              SELECT gm.group_id FROM group_members gm JOIN anc ON gm.member_group_id = anc.group_id
+            )
+            SELECT group_id FROM anc
           ))
         )
       ON CONFLICT DO NOTHING

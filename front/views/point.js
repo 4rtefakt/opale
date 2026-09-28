@@ -274,7 +274,12 @@ function wireHandlers(container) {
   window.pointPrint = printReview
 }
 
+// Deux changements de période rapprochés lancent deux chargements : seul le
+// dernier lancé a le droit d'écrire le snapshot.
+let _snapshotSeq = 0
 async function refreshSnapshot() {
+  const seq = ++_snapshotSeq
+  const state = _state
   const days = daysBetween(_state.period_start, _state.period_end) || 14
   window.showToast?.(t('point.loading_data'), 'info')
   try {
@@ -283,6 +288,7 @@ async function refreshSnapshot() {
       api.getProposalsCount().catch(() => ({})),
       api.getInboxCount().catch(() => ({})),
     ])
+    if (seq !== _snapshotSeq || state !== _state) return   // dépassé par un appel plus récent (ou vue changée)
     _state.snapshot = {
       generated_at: new Date().toISOString(),
       period_days: days,

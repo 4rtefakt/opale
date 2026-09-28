@@ -210,7 +210,7 @@ class API {
   // la vue Point passe la durée de la période).
   getRapports(days)       { return this._fetch('/rapports' + (days ? `?days=${days}` : '')) }
 
-  // Points informatiques (revues périodiques — cf. migration 071)
+  // Points informatiques (revues périodiques — cf. migration 078)
   getReviews()            { return this._fetch('/reviews') }
   getReview(id)           { return this._fetch(`/reviews/${id}`) }
   createReview(body)      { return this._fetch('/reviews', { method: 'POST', body }) }

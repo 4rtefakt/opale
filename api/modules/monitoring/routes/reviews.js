@@ -1,4 +1,4 @@
-// Points informatiques — CRUD des revues périodiques (cf. migration 071).
+// Points informatiques — CRUD des revues périodiques (cf. migration 078).
 //
 // Le document est volontairement « bête » côté serveur : snapshot et sections
 // sont des JSONB opaques assemblés/édités par le front. Le serveur ne fait que

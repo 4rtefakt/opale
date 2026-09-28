@@ -2,6 +2,7 @@ import fp from 'fastify-plugin'
 import pg from 'pg'
 
 import { runMigrations, parseAutoMigrate } from '../lib/migrations.js'
+import { installPgTypeParsers } from '../lib/pg-types.js'
 
 // Timeouts du pool applicatif, en millisecondes, surchargeables par
 // variable d'environnement (0 = pas de limite) :
@@ -43,6 +44,7 @@ async function dbPlugin(fastify, opts = {}) {
     password: env.POSTGRES_PASSWORD,
     ...opts.connection,
   }
+  installPgTypeParsers()   // DATE rendue en 'YYYY-MM-DD' (cf. lib/pg-types.js)
   const pool = new pg.Pool({
     ...connection,
     max: 10,

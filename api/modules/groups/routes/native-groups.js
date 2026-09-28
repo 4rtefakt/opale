@@ -90,9 +90,16 @@ async function importEntraTree(fastify, db, opts) {
       'SELECT id FROM devices WHERE hostname = ANY($1::text[])', [hostnames]
     )
     if (mode === 'sync') {
-      // Full-replace : on efface TOUS les membres directs (devices/users/liens
-      // de sous-groupes) puis on re-pose. Les sous-groupes eux-mêmes persistent.
-      await db.query('DELETE FROM group_members WHERE group_id = $1', [grp.id])
+      // Full-replace des devices/users directs. Les liens vers des sous-groupes
+      // ne sont remplacés que s'ils viennent d'Entra ET qu'on resynchronise
+      // les sous-groupes : un sous-groupe natif ajouté à la main reste lié.
+      await db.query(
+        `DELETE FROM group_members gm
+         WHERE gm.group_id = $1
+           AND (gm.member_group_id IS NULL
+                OR ($2 AND EXISTS (SELECT 1 FROM groups g WHERE g.id = gm.member_group_id AND g.source = 'entra')))`,
+        [grp.id, recursive]
+      )
     }
     for (const d of devs) {
       await db.query('INSERT INTO group_members (group_id, device_id, added_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING', [grp.id, d.id, byUser])
@@ -376,7 +383,7 @@ export default async function nativeGroupsRoute(fastify) {
       ...group,
       devices_imported: stats.devices,
       users_imported:   stats.users,
-      nested_groups:    Math.max(0, stats.groups_created - 1),
+      nested_groups:    Math.max(0, seen.size - 1),
       unmatched:        stats.unmatched,
     })
   })
@@ -419,7 +426,7 @@ export default async function nativeGroupsRoute(fastify) {
     reply.send({
       devices_synced: stats.devices,
       users_synced:   stats.users,
-      nested_groups:  stats.groups_created,
+      nested_groups:  Math.max(0, seen.size - 1),   // sous-groupes resynchronisés (créés ou non)
       unmatched:      stats.unmatched,
     })
   })

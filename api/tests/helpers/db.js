@@ -20,6 +20,10 @@ import crypto from 'node:crypto'
 import pg from 'pg'
 
 import { runMigrations } from '../../lib/migrations.js'
+import { installPgTypeParsers } from '../../lib/pg-types.js'
+
+// Mêmes parseurs de types que le pool applicatif (DATE en 'YYYY-MM-DD').
+installPgTypeParsers()
 
 let sharedPool = null
 

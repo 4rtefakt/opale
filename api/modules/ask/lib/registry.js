@@ -171,7 +171,11 @@ const devices = {
     in_group: {
       type: 'resolve', resolve: 'group', desc: 'appartient à un groupe',
       apply: (v, ctx) =>
-        `EXISTS (SELECT 1 FROM group_members gm WHERE gm.device_id = d.id AND gm.group_id = ${ctx.param(v)})`,
+        `EXISTS (WITH RECURSIVE anc AS (
+           SELECT group_id FROM group_members WHERE device_id = d.id
+           UNION
+           SELECT gm.group_id FROM group_members gm JOIN anc ON gm.member_group_id = anc.group_id
+         ) SELECT 1 FROM anc WHERE anc.group_id = ${ctx.param(v)})`,
     },
   },
 }

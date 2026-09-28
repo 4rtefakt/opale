@@ -613,3 +613,59 @@ test('POST /:id/detach-entra — succès : source native, entra_group_id NULL + 
   const logs = await auditRows('group_detached_from_entra')
   assert.ok(logs.some(l => l.target === 'G-detach-ok'))
 })
+
+// ─── Sync Entra et sous-groupes ──────────────────────────────────────────────
+
+test('POST /:id/sync-from-entra — garde un sous-groupe natif lié à la main, resynchronise les sous-groupes Entra', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-SYNC-NESTED' })
+  graph.getGroupDeviceHostnames = async (gid) => gid === 'entra-gid-sync-child' ? [device.hostname] : []
+  graph.getGroupUserIds         = async () => []
+  graph.getGroupNestedGroups    = async (gid) => gid === 'entra-gid-sync-parent'
+    ? [{ id: 'entra-gid-sync-child', displayName: 'G-sync-child', description: null }]
+    : []
+  const token = await adminToken('oid-entra-sync-nested')
+
+  const parent = (await fastify.inject({
+    method: 'POST', url: '/api/groups/import-from-entra',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { entra_group_id: 'entra-gid-sync-parent', name: 'G-sync-parent', color: 'teal' },
+  })).json()
+  const { rows: [entraChild] } = await db.query("SELECT id FROM groups WHERE entra_group_id = 'entra-gid-sync-child'")
+
+  // Sous-groupe natif ajouté à la main sous le groupe Entra.
+  const native = (await createGroup(token, { name: 'G-sync-native-child', color: 'slate' })).json()
+  const link = await fastify.inject({
+    method: 'POST', url: `/api/groups/${parent.id}/members`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { member_group_id: native.id },
+  })
+  assert.equal(link.statusCode, 201, link.body)
+
+  const links = async () => (await db.query(
+    'SELECT member_group_id FROM group_members WHERE group_id = $1 AND member_group_id IS NOT NULL ORDER BY member_group_id',
+    [parent.id]
+  )).rows.map(r => r.member_group_id).sort()
+
+  // Sync récursive (défaut) : le lien natif survit, le lien Entra est refait.
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/groups/${parent.id}/sync-from-entra`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.json().nested_groups, 1)
+  assert.deepEqual(await links(), [entraChild.id, native.id].sort())
+
+  // Sync non récursive : aucun lien de sous-groupe n'est touché.
+  graph.getGroupNestedGroups = async () => { throw new Error('ne doit pas être appelé') }
+  const flat = await fastify.inject({
+    method: 'POST', url: `/api/groups/${parent.id}/sync-from-entra`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { recursive: false },
+  })
+  assert.equal(flat.statusCode, 200, flat.body)
+  assert.equal(flat.json().nested_groups, 0)
+  assert.deepEqual(await links(), [entraChild.id, native.id].sort())
+
+  graph.getGroupDeviceHostnames = async () => []
+  graph.getGroupNestedGroups    = async () => []
+})

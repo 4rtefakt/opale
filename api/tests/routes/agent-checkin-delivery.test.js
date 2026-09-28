@@ -19,7 +19,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { buildApp } from '../helpers/build-app.js'
 import { seedDevice } from '../fixtures/devices.js'
 import { seedAgentToken } from '../fixtures/agent-tokens.js'
-import { insertPackage, insertDeployment } from '../fixtures/packages.js'
+import { insertPackage, insertDeployment, insertDeploymentJob } from '../fixtures/packages.js'
 
 import agentRoute from '../../modules/inventory/routes/agent.js'
 
@@ -383,4 +383,31 @@ test('POST /checkin — résultat sans claim_token (agent ≤ 2.15.0) ou jeton i
   assert.equal(res.statusCode, 200, res.body)
   assert.equal(await statusOf('deployments', a.id), 'success')
   assert.equal(await statusOf('deployments', b.id), 'success')
+})
+
+// ─── Groupes imbriqués ───────────────────────────────────────────────────────
+
+test('POST /checkin — job native_group sur un groupe parent : le poste d\'un sous-groupe le reçoit', { skip: SKIP }, async () => {
+  const device = await seedDevice(db, { hostname: 'PC-NESTED-JOB' })
+  const { secret } = await seedAgentToken(db, { deviceId: device.id })
+
+  const { rows: [parent] } = await db.query(
+    "INSERT INTO groups (name, color) VALUES ('G-job-parent', 'slate') RETURNING id"
+  )
+  const { rows: [child] } = await db.query(
+    "INSERT INTO groups (name, color) VALUES ('G-job-child', 'slate') RETURNING id"
+  )
+  await db.query('INSERT INTO group_members (group_id, member_group_id) VALUES ($1, $2)', [parent.id, child.id])
+  await db.query('INSERT INTO group_members (group_id, device_id) VALUES ($1, $2)', [child.id, device.id])
+
+  const pkg = await insertPackage(db, { name: 'Pkg Nested Group', type: 'script', wingetId: null })
+  await db.query(`UPDATE packages SET install_script = 'Write-Output ok' WHERE id = $1`, [pkg.id])
+  const job = await insertDeploymentJob(db, { packageId: pkg.id, scope: 'native_group', nativeGroupId: parent.id })
+
+  const res = await checkin(secret, { hostname: device.hostname })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(res.json().deployments.map(d => d.package_id), [pkg.id])
+
+  const { rows } = await db.query('SELECT device_id FROM deployments WHERE job_id = $1', [job.id])
+  assert.deepEqual(rows, [{ device_id: device.id }])
 })
