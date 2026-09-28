@@ -11,7 +11,7 @@ export async function renderDashboard(container) {
         </div>
       </div>
       <div class="stack" id="dash-content">
-        <div class="kpi-grid">
+        <div class="kpi-grid kpi-grid-3">
           ${['','',''].map(() => `<div class="kpi"><div class="kpi-label" style="background:var(--bg-tertiary);border-radius:4px;height:11px;width:80px;"></div><div class="kpi-val">&nbsp;</div></div>`).join('')}
         </div>
       </div>

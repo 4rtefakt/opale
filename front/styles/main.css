@@ -239,13 +239,12 @@ h1, h2, h3, .font-display { font-family: var(--font-display); letter-spacing: -0
   font-family: var(--font-display); font-size: 24px; font-weight: 600; line-height: 1.2;
   color: var(--text-primary); margin: 0; white-space: nowrap;
 }
-.page-title .muted, .topbar-title .muted, .page-h1 .muted { color: var(--text-tertiary); font-weight: 500; }
+.page-title .muted, .topbar-title .muted { color: var(--text-tertiary); font-weight: 500; }
 .topbar-sub   { font-size: 13px; color: var(--text-tertiary); }
 /* Corps défilant d'une page pleine largeur ; .stack = colonne d'éléments */
 .page-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 24px 40px; display: flex; flex-direction: column; gap: 16px; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .page-inner .toolbar, .page-body .toolbar { padding: 0; }
-
 
 /* ─── BUTTONS ─── */
 .btn {
@@ -287,33 +286,17 @@ h1, h2, h3, .font-display { font-family: var(--font-display); letter-spacing: -0
 .seg-btn.active .seg-count { background: var(--blue-bg); color: var(--blue-text); }
 .seg-count.hot  { background: var(--red); color: #fff; }
 
-.notif-btn {
-  position: relative; width: 32px; height: 32px;
-  border-radius: var(--radius-md); border: 0.5px solid var(--border);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; background: transparent; transition: background 0.1s;
-}
-.notif-btn:hover { background: var(--bg-secondary); }
-.notif-btn i { font-size: 16px; color: var(--text-secondary); }
-
-/* ─── CONTENT ─── */
-.content {
-  padding: 4px 24px 40px; flex: 1;
-  display: flex; flex-direction: column; gap: 16px;
-  overflow-y: auto;
-}
-
 /* ─── KPI ─── */
 .kpi-grid   { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .kpi-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-@media (max-width: 1100px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1100px) { .kpi-grid:not(.kpi-grid-3) { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .kpi {
   background: var(--bg-primary); border-radius: 14px;
   padding: 16px 18px; border: 0.5px solid var(--border); box-shadow: var(--shadow-sm);
   display: flex; flex-direction: column; gap: 4px; min-width: 0;
 }
 .kpi-link {
-  display: block; text-decoration: none; color: inherit;
+  display: flex; text-decoration: none; color: inherit;
   transition: background 0.1s, transform 0.1s;
 }
 .kpi-link:hover { background: var(--bg-tertiary); }
@@ -500,14 +483,6 @@ h1, h2, h3, .font-display { font-family: var(--font-display); letter-spacing: -0
   border: 0.5px solid var(--border-md); background: var(--bg-primary); color: var(--text-primary); cursor: pointer; outline: none;
 }
 
-.summary-bar {
-  display: flex; align-items: center; gap: 1.5rem;
-  padding: 0 24px 10px; flex-shrink: 0; flex-wrap: wrap;
-}
-.summary-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-secondary); }
-.summary-dot  { width: 7px; height: 7px; border-radius: 50%; }
-.summary-count { font-weight: 500; color: var(--text-primary); }
-
 .bulk-bar {
   display: none; align-items: center; gap: 8px;
   margin: 0 24px 10px; padding: 8px 14px; border-radius: 12px;
@@ -519,7 +494,7 @@ h1, h2, h3, .font-display { font-family: var(--font-display); letter-spacing: -0
 .bulk-actions { display: flex; gap: 6px; margin-left: auto; }
 
 .table-wrap {
-  flex: 1; min-height: 0; overflow: auto; margin: 0 24px;
+  flex: 1; min-height: 0; overflow: auto; margin: 0 24px 20px;
   border: 0.5px solid var(--border); border-radius: 14px; background: var(--bg-primary); box-shadow: var(--shadow-sm);
 }
 .page-inner .table-wrap, .page-body .table-wrap, .panel .table-wrap { margin: 0; }
@@ -576,7 +551,7 @@ tbody tr:hover .action-btn { opacity: 1; }
 
 .pagination {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 28px 16px;
+  padding: 0 28px 16px;
   font-size: 12px; color: var(--text-secondary); flex-shrink: 0;
 }
 .page-btns { display: flex; gap: 4px; }

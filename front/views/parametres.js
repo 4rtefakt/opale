@@ -57,7 +57,8 @@ function render() {
   const s    = _data.settings
   setTimeout(paintSettingsMode, 0)
 
-  body.innerHTML = `<div class="stack" style="gap:20px">
+  body.style.gap = '20px'
+  body.innerHTML = `
     <!-- Langue -->
     <div class="panel">
       <div class="panel-header">${t('settings.language.title')}</div>
@@ -400,9 +401,7 @@ function render() {
             </button>
           </div>`).join('')
       })()}
-    </div>
-
-  </div>`
+    </div>`
 }
 
 async function saveBranding() {

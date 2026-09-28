@@ -95,11 +95,7 @@ function filterUsers() {
 // ─── Grid view ───
 
 function renderGrid(wrap) {
-  wrap.style.padding = '4px 24px 32px'
-  wrap.style.display = 'grid'
-  wrap.style.gridTemplateColumns = 'repeat(auto-fill,minmax(220px,1fr))'
-  wrap.style.gap = '14px'
-  wrap.style.alignContent = 'start'
+  wrap.style.cssText = 'flex:1;overflow-y:auto;padding:4px 24px 32px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;align-content:start'
   wrap.innerHTML = ''
   if (_observer) _observer.disconnect()
   appendPage(wrap)
@@ -136,13 +132,12 @@ function appendPage(wrap) {
 // ─── Table view ───
 
 function renderTable(wrap) {
-  wrap.style.padding = '0 24px 24px'
-  wrap.style.display = 'block'
-  wrap.style.grid = ''
-  wrap.style.gap = ''
+  // Le conteneur ne défile plus : c'est le .table-wrap (flex:1) qui défile,
+  // pour que l'en-tête sticky reste visible.
+  wrap.style.cssText = 'flex:1;min-height:0;overflow:hidden;padding:0 24px 24px;display:flex;flex-direction:column'
 
   wrap.innerHTML = `
-    <div class="table-wrap"><table class="users-table">
+    <div class="table-wrap" style="margin:0"><table class="users-table">
       <thead>
         <tr>
           <th style="width:36px"></th>

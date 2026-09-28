@@ -53,7 +53,6 @@ export default {
   'dashboard.scripts_lib':  'Library →',
   'dashboard.empty.tickets':  'No open ticket',
   'dashboard.empty.scripts':  'No saved script',
-  'dashboard.notifications.title': 'Notifications',
   'dashboard.ticket.auto_alert':   'Automatic alert',
 
   'ask.cta':               'Ask Opale…',

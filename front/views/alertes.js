@@ -94,8 +94,7 @@ function render(body, data) {
     },
   ]
 
-  body.innerHTML = `${
-    sections.filter(s => s.rows.length).map(s => {
+  body.innerHTML = sections.filter(s => s.rows.length).map(s => {
       const active  = s.rows.filter(r => !r.snoozed_until)
       const snoozed = s.rows.filter(r =>  r.snoozed_until)
       const alertType = TYPE_BY_SECTION[s.key]
@@ -112,7 +111,6 @@ function render(body, data) {
           </div>
         </div>`
     }).join('')
-  }`
 }
 
 function alertRow(r, s, alertType, isSnoozed) {

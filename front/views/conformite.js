@@ -216,10 +216,7 @@ function renderRuleDetail(body, data) {
     <div class="panel" style="padding:14px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <i class="ti ti-shield" style="font-size:24px;color:${sev.color}"></i>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:15px;font-weight:600">${esc(r.label)}</div>
-          <div style="font-size:12px;color:var(--text-tertiary)">id : <code>${esc(r.id)}</code></div>
-        </div>
+        <div style="flex:1;min-width:0;font-size:12px;color:var(--text-tertiary)">id : <code>${esc(r.id)}</code></div>
         <span class="badge" style="background:${sev.bg};color:${sev.color}">Sévérité ${sev.label.toLowerCase()}</span>
       </div>
     </div>
