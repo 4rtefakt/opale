@@ -36,17 +36,20 @@ function destroyCharts() {
 export async function renderRapports(container) {
   destroyCharts()
   container.innerHTML = `
-    <div class="topbar">
-      <h1 class="topbar-title">${t('rapports.title')}</h1>
-      <div class="topbar-actions">
-        <button class="btn" onclick="reloadRapports()">
-          <i class="ti ti-refresh"></i> ${t('settings.btn.refresh')}
-        </button>
+    <div class="page"><div class="page-inner wide">
+      <div class="page-head">
+        <div>
+          <div class="page-kicker">${esc(t('rapports.kicker'))}</div>
+          <h1 class="page-h1">${esc(t('rapports.title'))}</h1>
+        </div>
+        <div class="page-actions">
+          <button class="btn" onclick="reloadRapports()"><i class="ti ti-refresh"></i> ${t('settings.btn.refresh')}</button>
+        </div>
       </div>
-    </div>
-    <div id="rapports-body" style="flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px">
-      <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
-    </div>`
+      <div id="rapports-body" class="stack">
+        <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
+      </div>
+    </div></div>`
 
   window.reloadRapports = async () => {
     destroyCharts()

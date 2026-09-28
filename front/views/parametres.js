@@ -5,17 +5,20 @@ let _data = null
 
 export async function renderParametres(container) {
   container.innerHTML = `
-    <div class="topbar">
-      <h1 class="topbar-title">${t('settings.title')}</h1>
-      <div class="topbar-actions">
-        <button class="btn" onclick="reloadSettings()">
-          <i class="ti ti-refresh"></i> ${t('settings.btn.refresh')}
-        </button>
+    <div class="page"><div class="page-inner">
+      <div class="page-head">
+        <div>
+          <div class="page-kicker">${esc(t('settings.kicker'))}</div>
+          <h1 class="page-h1">${esc(t('settings.title'))}</h1>
+        </div>
+        <div class="page-actions">
+          <button class="btn" onclick="reloadSettings()"><i class="ti ti-refresh"></i> ${t('settings.btn.refresh')}</button>
+        </div>
       </div>
-    </div>
-    <div id="settings-body" style="flex:1;overflow-y:auto;padding:20px">
-      <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
-    </div>`
+      <div id="settings-body" class="stack">
+        <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
+      </div>
+    </div></div>`
 
   window.reloadSettings      = reloadSettings
   window.createToken         = createToken
@@ -54,7 +57,7 @@ function render() {
   const s    = _data.settings
   setTimeout(paintSettingsMode, 0)
 
-  body.innerHTML = `<div style="display:flex;flex-direction:column;gap:24px">
+  body.innerHTML = `<div class="stack" style="gap:20px">
     <!-- Langue -->
     <div class="panel">
       <div class="panel-header">${t('settings.language.title')}</div>

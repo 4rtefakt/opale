@@ -1,26 +1,21 @@
 export async function renderDashboard(container) {
   container.innerHTML = `
-    <div class="topbar">
-      <div class="topbar-left">
-        <span class="page-title">${t('dashboard.title')}</span>
+    <div class="page"><div class="page-inner wide">
+      <div class="page-head">
+        <div>
+          <div class="page-kicker">${esc(t('dashboard.kicker'))}</div>
+          <h1 class="page-h1">${esc(t('dashboard.title'))}</h1>
+        </div>
+        <div class="page-actions">
+          <button class="btn" onclick="reloadDash()"><i class="ti ti-refresh"></i> ${t('btn.sync')}</button>
+        </div>
       </div>
-      <div class="topbar-right">
-        <button class="notif-btn" title="${t('dashboard.notifications.title')}" id="notif-btn">
-          <i class="ti ti-bell"></i>
-        </button>
-        <button class="btn" onclick="reloadDash()">
-          <i class="ti ti-refresh"></i> ${t('btn.sync')}
-        </button>
-        <button class="btn btn-primary" onclick="navigateTo('/tickets')">
-          <i class="ti ti-plus"></i> ${t('btn.new_ticket')}
-        </button>
+      <div class="stack" id="dash-content">
+        <div class="kpi-grid">
+          ${['','',''].map(() => `<div class="kpi"><div class="kpi-label" style="background:var(--bg-tertiary);border-radius:4px;height:11px;width:80px;"></div><div class="kpi-val">&nbsp;</div></div>`).join('')}
+        </div>
       </div>
-    </div>
-    <div class="content" id="dash-content">
-      <div class="kpi-grid">
-        ${['','','',''].map(() => `<div class="kpi"><div class="kpi-label" style="background:var(--bg-tertiary);border-radius:4px;height:11px;width:80px;"></div></div>`).join('')}
-      </div>
-    </div>`
+    </div></div>`
 
   window.reloadDash = reloadDash
   try { await reloadDash() }

@@ -28,17 +28,20 @@ const STATUS_LABEL = {
 
 export async function renderConformite(container, { ruleId } = {}) {
   container.innerHTML = `
-    <div class="topbar">
-      <h1 class="topbar-title">Conformité</h1>
-      <div class="topbar-actions">
-        <button class="btn" onclick="window.conformiteReload()">
-          <i class="ti ti-refresh"></i> Actualiser
-        </button>
+    <div class="page"><div class="page-inner">
+      <div class="page-head">
+        <div>
+          <div class="page-kicker">${ruleId ? `<a href="#/conformite" class="nav-link">← Toutes les règles</a>` : 'État des règles de sécurité sur le parc'}</div>
+          <h1 class="page-h1" id="conformite-title">Conformité</h1>
+        </div>
+        <div class="page-actions">
+          <button class="btn" onclick="window.conformiteReload()"><i class="ti ti-refresh"></i> Actualiser</button>
+        </div>
       </div>
-    </div>
-    <div id="conformite-body" style="flex:1;overflow-y:auto;padding:20px">
-      <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
-    </div>`
+      <div id="conformite-body" class="stack">
+        <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
+      </div>
+    </div></div>`
 
   window.conformiteReload = () => renderConformite(container, { ruleId })
 
@@ -66,7 +69,7 @@ function renderAggregate(body, data) {
   const totalEval = s.devices_full_compliant + s.devices_with_failures
 
   const summaryCards = `
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px">
+    <div class="kpi-grid">
       ${kpiCard(
         'Postes conformes',
         `${s.devices_full_compliant} / ${totalEval || s.devices_total}`,
@@ -167,15 +170,10 @@ function ruleRow(r) {
 
 function kpiCard(label, value, icon, color, sublabel) {
   return `
-    <div class="panel" style="padding:14px;display:flex;align-items:center;gap:12px">
-      <div style="width:36px;height:36px;border-radius:8px;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;color:${color}">
-        <i class="ti ${icon}" style="font-size:18px"></i>
-      </div>
-      <div style="flex:1;min-width:0">
-        <div style="font-size:11px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px">${esc(label)}</div>
-        <div style="font-size:18px;font-weight:600;color:var(--text-primary)">${esc(value)}</div>
-        ${sublabel ? `<div style="font-size:11px;color:var(--text-tertiary)">${esc(sublabel)}</div>` : ''}
-      </div>
+    <div class="kpi">
+      <div class="kpi-label">${esc(label)}</div>
+      <div class="kpi-val" style="color:${color}">${esc(String(value))}</div>
+      <div class="kpi-sub"><i class="ti ${icon}"></i> ${esc(sublabel || '')}</div>
     </div>`
 }
 
@@ -212,13 +210,10 @@ function renderRuleDetail(body, data) {
     pass:           devices.filter(d => d.status === 'pass'),
   }
 
+  const title = document.getElementById('conformite-title')
+  if (title) title.textContent = r.label
   body.innerHTML = `
-    <div style="margin-bottom:16px">
-      <button class="btn btn-sm" onclick="navigateTo('/conformite')">
-        <i class="ti ti-arrow-left"></i> Toutes les règles
-      </button>
-    </div>
-    <div class="panel" style="margin-bottom:20px;padding:14px">
+    <div class="panel" style="padding:14px">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <i class="ti ti-shield" style="font-size:24px;color:${sev.color}"></i>
         <div style="flex:1;min-width:0">
@@ -237,7 +232,7 @@ function renderRuleDetail(body, data) {
 function renderStatusSection(rows, status, icon, color, bg) {
   if (!rows.length) return ''
   return `
-    <div class="panel" style="margin-bottom:16px">
+    <div class="panel">
       <div class="panel-header" style="color:${color}">
         <i class="ti ${icon}"></i> ${STATUS_LABEL[status]}
         <span class="badge" style="background:${bg};color:${color};margin-left:4px">${rows.length}</span>

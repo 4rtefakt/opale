@@ -7,19 +7,20 @@ let _recipientMap = {}
 
 export async function renderStock(container) {
   container.innerHTML = `
-    <div class="topbar">
-      <h1 class="topbar-title">${t('stock.title')}</h1>
-      <div class="topbar-actions">
-        <button class="btn btn-primary" onclick="openNewItemModal()">
-          <i class="ti ti-plus"></i> ${t('stock.btn.new')}
-        </button>
+    <div class="page"><div class="page-inner wide">
+      <div class="page-head">
+        <div>
+          <div class="page-kicker">${esc(t('stock.kicker'))}</div>
+          <h1 class="page-h1">${esc(t('stock.title'))} <span class="muted" id="stock-count"></span></h1>
+        </div>
+        <div class="page-actions">
+          <button class="btn btn-primary" onclick="openNewItemModal()"><i class="ti ti-plus"></i> ${t('stock.btn.new')}</button>
+        </div>
       </div>
-    </div>
-    <div class="content-area" style="flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px">
-      <div id="stock-kpis" class="kpi-grid" style="grid-template-columns:repeat(4,1fr)"></div>
+      <div id="stock-kpis" class="kpi-grid"></div>
       <div class="toolbar">
-        <input class="search-input" placeholder="${t('stock.search')}" oninput="filterStock(this.value)">
-        <select class="form-select" style="width:160px" onchange="filterByCategory(this.value)" id="stock-cat-filter">
+        <div class="search-bar"><i class="ti ti-search"></i><input placeholder="${t('stock.search')}" oninput="filterStock(this.value)"></div>
+        <select class="form-select" style="width:180px" onchange="filterByCategory(this.value)" id="stock-cat-filter">
           <option value="">${t('stock.all_categories')}</option>
         </select>
       </div>
@@ -39,7 +40,7 @@ export async function renderStock(container) {
           <tbody id="stock-tbody"></tbody>
         </table>
       </div>
-    </div>
+    </div></div>
     <!-- panneau glissant -->
     <div class="detail-panel" id="stock-panel">
       <div class="detail-panel-header">
@@ -76,18 +77,18 @@ function renderKpis() {
   const low       = _items.filter(i => i.quantity <= (i.threshold ?? i.alert_threshold ?? 2)).length
   const empty     = _items.filter(i => i.quantity === 0).length
   const ok        = total - low
+  const c = document.getElementById('stock-count'); if (c) c.textContent = total ? `· ${total}` : ''
   document.getElementById('stock-kpis').innerHTML = `
     ${kpi('ti-package',   total,  t('stock.kpi.total'),   '')}
     ${kpi('ti-check',     ok,     t('stock.kpi.ok'),     'green')}
-    ${kpi('ti-alert-triangle', low, t('stock.kpi.low'),  'orange')}
+    ${kpi('ti-alert-triangle', low, t('stock.kpi.low'),  'amber')}
     ${kpi('ti-circle-off',empty, t('stock.kpi.empty'),   'red')}`
 }
 
 function kpi(icon, val, label, color) {
-  return `<div class="kpi-card">
-    <div class="kpi-icon" style="${color?`color:var(--${color})`:''}"><i class="ti ${icon}"></i></div>
-    <div class="kpi-value">${val}</div>
-    <div class="kpi-label">${label}</div>
+  return `<div class="kpi">
+    <div class="kpi-label"><i class="ti ${icon}"></i> ${esc(label)}</div>
+    <div class="kpi-val" style="${color && val ? `color:var(--${color})` : ''}">${val}</div>
   </div>`
 }
 

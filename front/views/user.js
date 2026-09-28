@@ -1,14 +1,16 @@
 export async function renderUserDetail(container, id) {
   container.innerHTML = `
-    <div class="topbar">
-      <div style="display:flex;align-items:center;gap:10px">
-        <a href="#/users" class="btn btn-sm"><i class="ti ti-arrow-left"></i></a>
-        <h1 class="topbar-title" id="ud-name">…</h1>
+    <div class="page"><div class="page-inner">
+      <div class="page-head">
+        <div>
+          <div class="page-kicker"><a href="#/users" class="nav-link">← ${esc(t('users.title'))}</a></div>
+          <h1 class="page-h1" id="ud-name">…</h1>
+        </div>
       </div>
-    </div>
-    <div id="ud-body" style="flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px">
-      <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
-    </div>`
+      <div id="ud-body" class="stack">
+        <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
+      </div>
+    </div></div>`
 
   let user
   try {

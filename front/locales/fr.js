@@ -1400,4 +1400,9 @@ export default {
   'settings.appearance.motion.full':   'Actives',
   'settings.appearance.motion.reduced':'Réduites',
   'settings.appearance.motion_hint':   'Réduit les mouvements (aurore, transitions) si ça vous distrait.',
+  'dashboard.kicker': "Vue d'ensemble du parc",
+  'alertes.kicker': 'Ce qui demande une action sur le parc',
+  'stock.kicker': 'Consommables et matériel en réserve',
+  'rapports.kicker': 'Ce que le parc et l’équipe ont produit',
+  'settings.kicker': 'Réglages de l’instance et de votre compte',
 }

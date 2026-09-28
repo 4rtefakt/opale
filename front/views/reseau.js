@@ -22,8 +22,8 @@ export async function renderReseau(container) {
   container.innerHTML = `
     <div class="topbar">
       <div class="topbar-left">
-        <span class="page-title">${t('reseau.title')}</span>
-        <span id="reseau-count" style="font-size:12px;color:var(--text-tertiary)">—</span>
+        <h1 class="page-title">${t('reseau.title')}</h1>
+        <span class="topbar-sub" id="reseau-count">—</span>
       </div>
       <div class="topbar-right">
         <button class="btn btn-sm" id="btn-reseau-refresh" onclick="reseauRefresh()" title="${t('reseau.refresh_title')}">

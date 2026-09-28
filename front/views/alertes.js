@@ -9,17 +9,20 @@ const TYPE_BY_SECTION = {
 
 export async function renderAlertes(container) {
   container.innerHTML = `
-    <div class="topbar">
-      <h1 class="topbar-title">${t('alertes.title')}</h1>
-      <div class="topbar-actions">
-        <button class="btn" onclick="alertesReload()">
-          <i class="ti ti-refresh"></i> ${t('settings.btn.refresh')}
-        </button>
+    <div class="page"><div class="page-inner">
+      <div class="page-head">
+        <div>
+          <div class="page-kicker">${esc(t('alertes.kicker'))}</div>
+          <h1 class="page-h1">${esc(t('alertes.title'))} <span class="muted" id="alertes-count"></span></h1>
+        </div>
+        <div class="page-actions">
+          <button class="btn" onclick="alertesReload()"><i class="ti ti-refresh"></i> ${t('settings.btn.refresh')}</button>
+        </div>
       </div>
-    </div>
-    <div id="alertes-body" style="flex:1;overflow-y:auto;padding:20px">
-      <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
-    </div>`
+      <div id="alertes-body" class="stack">
+        <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
+      </div>
+    </div></div>`
 
   window.alertesReload = load
   await load()
@@ -43,9 +46,12 @@ function render(body, data) {
                      + (data.non_compliant || []).filter(r => r.snoozed_until).length
                      + (data.offline       || []).filter(r => r.snoozed_until).length
 
+  const countEl = document.getElementById('alertes-count')
+  if (countEl) countEl.textContent = total ? `· ${total}` : ''
+
   if (!total && !snoozedTotal) {
     body.innerHTML = `
-      <div class="empty-state" style="height:100%;justify-content:center">
+      <div class="empty-state" style="padding:4rem 1rem">
         <i class="ti ti-circle-check" style="font-size:48px;color:var(--green)"></i>
         <p style="font-size:15px;font-weight:500">${t('alertes.all_clear')}</p>
         <p style="font-size:12px;color:var(--text-tertiary)">${t('alertes.all_clear_sub')}</p>
@@ -88,7 +94,7 @@ function render(body, data) {
     },
   ]
 
-  body.innerHTML = `<div style="display:flex;flex-direction:column;gap:16px">${
+  body.innerHTML = `${
     sections.filter(s => s.rows.length).map(s => {
       const active  = s.rows.filter(r => !r.snoozed_until)
       const snoozed = s.rows.filter(r =>  r.snoozed_until)
@@ -106,7 +112,7 @@ function render(body, data) {
           </div>
         </div>`
     }).join('')
-  }</div>`
+  }`
 }
 
 function alertRow(r, s, alertType, isSnoozed) {

@@ -48,12 +48,15 @@ export async function renderAudit(container) {
 
   container.innerHTML = `
     <div class="topbar">
-      <h1 class="topbar-title">${t('settings.audit.title')}</h1>
+      <div class="topbar-left">
+        <h1 class="page-title">${t('settings.audit.title')}</h1>
+        <span class="topbar-sub" id="audit-count"></span>
+      </div>
       <div class="topbar-actions" style="gap:6px">
-        <select id="audit-filter-category" class="form-input" style="height:28px;font-size:12px;padding:0 8px" onchange="auditOnCategoryChange()">
+        <select id="audit-filter-category" class="form-select" style="width:auto;height:32px;font-size:12px;padding:0 8px" onchange="auditOnCategoryChange()">
           ${catOptions}
         </select>
-        <select id="audit-filter-level" class="form-input" style="height:28px;font-size:12px;padding:0 8px" onchange="auditLoad()">
+        <select id="audit-filter-level" class="form-select" style="width:auto;height:32px;font-size:12px;padding:0 8px" onchange="auditLoad()">
           <option value="">${t('audit.filter.all_levels')}</option>
           <option value="info">${t('audit.level.info')}</option>
           <option value="warn">${t('audit.level.warn')}</option>
@@ -64,12 +67,13 @@ export async function renderAudit(container) {
         </button>
       </div>
     </div>
-    <div id="audit-body" style="flex:1;overflow-y:auto">
-      <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
-    </div>
-    <div id="audit-footer" style="padding:8px 16px;font-size:11px;color:var(--text-tertiary);border-top:0.5px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
-      <span id="audit-count"></span>
-      <button class="btn btn-sm" id="audit-load-more" style="display:none" onclick="auditLoadMore()">${t('audit.load_more')}</button>
+    <div class="page-body">
+      <div id="audit-body" class="audit-list">
+        <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
+      </div>
+      <div id="audit-footer" style="display:flex;justify-content:center">
+        <button class="btn" id="audit-load-more" style="display:none" onclick="auditLoadMore()">${t('audit.load_more')}</button>
+      </div>
     </div>`
 
   window.auditLoad             = auditLoad

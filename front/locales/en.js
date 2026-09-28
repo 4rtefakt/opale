@@ -1394,4 +1394,9 @@ export default {
   'settings.appearance.motion.full':   'On',
   'settings.appearance.motion.reduced':'Reduced',
   'settings.appearance.motion_hint':   'Reduces motion (aurora, transitions) if it distracts you.',
+  'dashboard.kicker': 'Fleet overview',
+  'alertes.kicker': 'What needs action on the fleet',
+  'stock.kicker': 'Consumables and spare hardware',
+  'rapports.kicker': 'What the fleet and the team produced',
+  'settings.kicker': 'Instance and account settings',
 }

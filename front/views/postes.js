@@ -39,8 +39,8 @@ export async function renderPostes(container) {
   container.innerHTML = `
     <div class="topbar">
       <div class="topbar-left">
-        <span class="page-title">${t('nav.postes')}</span>
-        <span id="postes-count" style="font-size:12px;color:var(--text-tertiary)">—</span>
+        <h1 class="page-title">${t('nav.postes')} <span class="muted" id="postes-count"></span></h1>
+        <span class="topbar-sub" id="s-sync"></span>
       </div>
       <div class="topbar-right">
         <button class="btn" onclick="exportCSV()"><i class="ti ti-download"></i> Exporter CSV</button>
@@ -72,7 +72,7 @@ export async function renderPostes(container) {
         <button class="filter-btn ${_filter==='all'       ?'active':''}" data-filter="all"        onclick="postesSetFilter('all',this)">Tous <span id="count-all">—</span></button>
         <button class="filter-btn ${_filter==='online'    ?'active':''}" data-filter="online"     onclick="postesSetFilter('online',this)">En ligne <span id="count-online">—</span></button>
         <button class="filter-btn ${_filter==='offline'   ?'active':''}" data-filter="offline"    onclick="postesSetFilter('offline',this)">Hors ligne <span id="count-offline">—</span></button>
-        <button class="filter-btn ${_filter==='critical'  ?'active':''}" data-filter="critical"   onclick="postesSetFilter('critical',this)">⚠ Critique <span id="count-critical">—</span></button>
+        <button class="filter-btn ${_filter==='critical'  ?'active':''}" data-filter="critical"   onclick="postesSetFilter('critical',this)">Disque critique <span id="count-critical">—</span></button>
         <button class="filter-btn ${_filter==='unassigned'?'active':''}" data-filter="unassigned" onclick="postesSetFilter('unassigned',this)">Non assignés <span id="count-unassigned">—</span></button>
       </div>
       <div class="toolbar-right">
@@ -84,14 +84,6 @@ export async function renderPostes(container) {
           <option value="status" ${_sortBy==='status' ?'selected':''}>Trier : Statut</option>
         </select>
       </div>
-    </div>
-
-    <!-- SUMMARY -->
-    <div class="summary-bar" id="summary-bar">
-      <div class="summary-item"><div class="summary-dot" style="background:var(--green)"></div><span class="summary-count" id="s-online">—</span> en ligne</div>
-      <div class="summary-item"><div class="summary-dot" style="background:var(--gray)"></div><span class="summary-count" id="s-offline">—</span> hors ligne</div>
-      <div class="summary-item"><div class="summary-dot" style="background:var(--red)"></div><span class="summary-count" id="s-critical">—</span> disque critique <span id="s-critical-thr" style="color:var(--text-tertiary)"></span></div>
-      <div class="summary-item" style="margin-left:auto;font-size:11px;color:var(--text-tertiary)" id="s-sync"></div>
     </div>
 
     <!-- TABLE -->
@@ -173,7 +165,7 @@ function updateSummary() {
   document.getElementById('count-unassigned')&& (document.getElementById('count-unassigned').textContent = _devices.filter(d => !d.user).length)
 
   document.getElementById('postes-count') &&
-    (document.getElementById('postes-count').textContent = `${_devices.length} appareils`)
+    (document.getElementById('postes-count').textContent = `· ${_devices.length}`)
 
   const lastSeen = _devices.map(d => d.last_seen).filter(Boolean).sort().pop()
   if (lastSeen && document.getElementById('s-sync')) {

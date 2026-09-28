@@ -8,23 +8,21 @@ let _viewMode = localStorage.getItem('users-view') || 'grid' // 'grid' | 'table'
 export async function renderUsers(container) {
   container.innerHTML = `
     <div class="topbar">
-      <h1 class="topbar-title">${t('users.title')}</h1>
+      <div class="topbar-left">
+        <h1 class="page-title">${t('users.title')}</h1>
+        <span class="topbar-sub" id="user-count"></span>
+      </div>
       <div class="topbar-actions">
-        <button class="btn btn-sm" id="users-view-toggle" onclick="toggleUsersView()" title="${t('users.toggle_view')}">
+        <button class="btn" id="users-view-toggle" onclick="toggleUsersView()" title="${t('users.toggle_view')}">
           <i class="ti ${_viewMode === 'grid' ? 'ti-list' : 'ti-layout-grid'}"></i>
         </button>
       </div>
     </div>
-    <div style="padding:16px 20px 10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:0.5px solid var(--border)">
-      <div style="position:relative;flex:1;min-width:200px;max-width:340px">
-        <i class="ti ti-search" style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text-tertiary);font-size:14px;pointer-events:none"></i>
-        <input class="form-input" id="user-search" placeholder="${t('users.search')}"
-          style="padding-left:30px" oninput="filterUsers()">
-      </div>
-      <select class="form-input" id="user-dept" style="width:auto" onchange="filterUsers()">
+    <div class="toolbar">
+      <div class="search-bar"><i class="ti ti-search"></i><input id="user-search" placeholder="${t('users.search')}" oninput="filterUsers()"></div>
+      <select class="form-select" id="user-dept" style="width:auto" onchange="filterUsers()">
         <option value="">${t('users.all_depts')}</option>
       </select>
-      <span id="user-count" style="font-size:12px;color:var(--text-tertiary);margin-left:4px"></span>
     </div>
     <div id="users-container" style="flex:1;overflow-y:auto">
       <div class="empty-state">
@@ -97,7 +95,7 @@ function filterUsers() {
 // ─── Grid view ───
 
 function renderGrid(wrap) {
-  wrap.style.padding = '20px'
+  wrap.style.padding = '4px 24px 32px'
   wrap.style.display = 'grid'
   wrap.style.gridTemplateColumns = 'repeat(auto-fill,minmax(220px,1fr))'
   wrap.style.gap = '14px'
@@ -138,13 +136,13 @@ function appendPage(wrap) {
 // ─── Table view ───
 
 function renderTable(wrap) {
-  wrap.style.padding = '0'
+  wrap.style.padding = '0 24px 24px'
   wrap.style.display = 'block'
   wrap.style.grid = ''
   wrap.style.gap = ''
 
   wrap.innerHTML = `
-    <table class="users-table">
+    <div class="table-wrap"><table class="users-table">
       <thead>
         <tr>
           <th style="width:36px"></th>
@@ -158,7 +156,7 @@ function renderTable(wrap) {
       <tbody>
         ${_filtered.map(u => tableRow(u)).join('')}
       </tbody>
-    </table>`
+    </table></div>`
 
   observeTablePhotos(wrap)
 }
