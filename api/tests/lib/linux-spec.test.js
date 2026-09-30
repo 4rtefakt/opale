@@ -84,7 +84,9 @@ test('spec Linux : parité des operationIds enregistrés par le module', async (
     'linuxApproveBulk', 'linuxRejectEnrollment', 'linuxRejectBulk', 'linuxListPreregistrations',
     'linuxCreatePreregistrations', 'linuxPreregisterFromDevices', 'linuxDeletePreregistration', 'linuxRevokeDevice',
     // PR 4a : check-in, vues des postes, affectation, état de l'escrow.
-    'linuxAgentCheckin', 'linuxListDevices', 'linuxGetDevice', 'linuxUpdateDevice', 'linuxAssignBulk', 'linuxEscrowStatus']) {
+    'linuxAgentCheckin', 'linuxListDevices', 'linuxGetDevice', 'linuxUpdateDevice', 'linuxAssignBulk', 'linuxEscrowStatus',
+    // PR 4b : rapports d'application, historique, KPIs.
+    'linuxAgentReport', 'linuxListReports', 'linuxDashboard']) {
     assert.ok(registered.has(id), `${id} non enregistré`)
   }
   if (SPEC_COMPLETE) {
@@ -141,8 +143,8 @@ test('spec Linux : chaque action d’audit du code source est déclarée dans la
   }
   for (const action of ['linux_device_enrolled', 'linux_enroll_serial_conflict', 'linux_enroll_flood', 'linux_key_serial_mismatch',
     'linux_device_approved', 'linux_device_converted', 'linux_device_reenrolled', 'linux_device_rejected', 'linux_device_revoked',
-    'linux_preregistrations_imported']) {
-    assert.ok(found.has(action), `${action} attendu dans le code de la PR 2a`)
+    'linux_preregistrations_imported', 'linux_apply_failed', 'linux_apply_recovered']) {
+    assert.ok(found.has(action), `${action} attendu dans le code du module`)
   }
 })
 

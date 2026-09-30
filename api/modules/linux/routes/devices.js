@@ -1,11 +1,14 @@
 // Postes gérés par état désiré (docs/linux-fleet-design.md §5) : liste paginée,
-// détail, affectation (simple et en lot), révocation de la clé, état de la
-// clé d'escrow. Rapports et clés de récupération arrivent avec les PR suivantes.
+// détail, historique des rapports, affectation (simple et en lot), révocation
+// de la clé, état de la clé d'escrow, KPIs du parc. Les clés de récupération
+// arrivent avec la PR suivante.
 
 import { adminRoute, sendRefusal } from '../lib/admin-route.js'
 import { revokeDeviceKey } from '../lib/enrollment.js'
 import { changeAssignment, assignBulk } from '../lib/assignment.js'
 import { linuxViewContext, listLinuxDevices, loadLinuxDeviceDetail } from '../lib/device-view.js'
+import { listReports } from '../lib/reports.js'
+import { linuxDashboard } from '../lib/dashboard.js'
 import { readEscrowStatus } from '../lib/settings.js'
 import { setAssignedUser } from '../../inventory/lib/assign-user.js'
 import { lapsKey } from '../../inventory/lib/laps-key.js'
@@ -53,6 +56,11 @@ export default async function devicesRoutes(fastify) {
     return loadLinuxDeviceDetail(db, req.params.id, await context())
   })
 
+  fastify.get('/devices/:id/reports', adminRoute(fastify, 'linuxListReports'), async (req, reply) => {
+    const page = await listReports(db, req.params.id, req.query)
+    return page ?? notFound(reply)
+  })
+
   fastify.post('/devices/:id/revoke', adminRoute(fastify, 'linuxRevokeDevice'), async (req, reply) => {
     const result = await revokeDeviceKey(db, fastify.log, actor(req), req.params.id, req.body.reason)
     if (!result.ok) return sendRefusal(reply, result, REFUSAL_MESSAGES)
@@ -66,5 +74,9 @@ export default async function devicesRoutes(fastify) {
       listLinuxDevices(db, { escrow: 'missing', limit: 1 }, await linuxViewContext({ lapsKey, log: fastify.log })),
     ])
     return { ...escrow, devices_needing_escrow: needing.total }
+  })
+
+  fastify.get('/dashboard', adminRoute(fastify, 'linuxDashboard'), async () => {
+    return linuxDashboard(db, await context(), gitMirror.status().state)
   })
 }

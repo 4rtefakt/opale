@@ -571,6 +571,7 @@ export default {
   'tickets.proposals.source.script':        '⚙ Script',
   'tickets.proposals.source.email':         '✉ Mail (IA)',
   'tickets.proposals.source.manual':        'Manuel',
+  'tickets.proposals.source.linux_apply':   '⚠ Linux',
 
   'stock.title':              'Stock consommable',
   'stock.search':             'Rechercher un article...',

@@ -515,7 +515,7 @@ async function openProposalsModal() {
   document.getElementById('modal-content')?.classList.add('modal-wide')
 }
 function proposalCard(p) {
-  const sourceMap = { alert: t('tickets.proposals.source.alert'), script: t('tickets.proposals.source.script'), email: t('tickets.proposals.source.email'), manual: t('tickets.proposals.source.manual') }
+  const sourceMap = { alert: t('tickets.proposals.source.alert'), script: t('tickets.proposals.source.script'), email: t('tickets.proposals.source.email'), manual: t('tickets.proposals.source.manual'), linux_apply: t('tickets.proposals.source.linux_apply') }
   return `
     <div style="border:0.5px solid var(--border);border-radius:10px;padding:12px;background:var(--bg-secondary)">
       <div style="font-weight:600;font-size:14px">${esc(p.suggested_title)}</div>

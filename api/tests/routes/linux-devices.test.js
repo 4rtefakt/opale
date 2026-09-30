@@ -28,7 +28,7 @@ const NIL = '00000000-0000-4000-8000-000000000000'
 const SHA = c => c.repeat(40)
 const PILOT_TIP = SHA('a'), STABLE_TIP = SHA('b'), OLD = SHA('0')
 
-let db, release, app, jwt, admin, user, tmpDir, validateDevice, validateDetail
+let db, release, app, jwt, admin, user, tmpDir, validateDevice, validateDetail, validateReport
 const prevKeyPath = process.env.LAPS_PRIVATE_KEY
 // Miroir simulé : pilot installé depuis une heure (retard mesurable), stable promu à l'instant.
 const mirror = { serving: true }
@@ -77,6 +77,7 @@ before(async () => {
   addFormats(ajv)
   validateDevice = ajv.compile(deref(loadSpec().components.schemas.LinuxDevice))
   validateDetail = ajv.compile(deref(loadSpec().components.schemas.LinuxDeviceDetail))
+  validateReport = ajv.compile(deref(loadSpec().components.schemas.ApplyReport))
 })
 
 after(async () => {
@@ -236,4 +237,24 @@ test('GET /escrow/status — clé dérivée (key_id, bits), confirmation de sauv
   const confirmed = { key_id: lapsKeyId(), by: 'Admin Lxd', at: '2026-09-30T10:00:00.000Z' }
   await db.query("UPDATE settings SET value = $1 WHERE key = 'linux.escrow_backup_confirmed'", [JSON.stringify(confirmed)])
   assert.deepEqual((await api('GET', '/api/linux/escrow/status')).json().backup_confirmed, confirmed)
+})
+
+test('GET /devices/:id/reports — lignes ApplyReport du plus récent au plus ancien, filtre status, pagination, poste Windows ou inconnu → 404', { skip: SKIP }, async () => {
+  await db.query("INSERT INTO linux_apply_reports (device_id, revision, status, started_at, finished_at) VALUES ($1, $2, 'skipped', now() - interval '30 minutes', now() - interval '30 minutes')", [devices.s1.id, OLD])
+  const res = await api('GET', `/api/linux/devices/${devices.s1.id}/reports`)
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.json().total, 3)
+  assert.deepEqual(res.json().rows.map(r => r.status), ['skipped', 'failed', 'success'])
+  for (const row of res.json().rows) assert.ok(validateReport(row), JSON.stringify(validateReport.errors))
+  assert.equal(res.json().rows[1].log_tail, 'PLAY…')
+  const failed = await api('GET', `/api/linux/devices/${devices.s1.id}/reports?status=failed`)
+  assert.deepEqual([failed.json().total, failed.json().rows[0].error_summary], [1, 'TASK [x] failed'])
+  const page = await api('GET', `/api/linux/devices/${devices.s1.id}/reports?limit=1&offset=1`)
+  assert.deepEqual([page.json().total, page.json().rows.map(r => r.status)], [3, ['failed']])
+  assert.deepEqual((await api('GET', `/api/linux/devices/${devices.p1.id}/reports`)).json(), { rows: [], total: 0 })
+  assert.equal((await api('GET', `/api/linux/devices/${devices.s1.id}/reports?status=bogus`)).statusCode, 400)
+  assert.equal((await api('GET', `/api/linux/devices/${devices.s1.id}/reports?limit=0`)).statusCode, 400)
+  assert.equal((await api('GET', `/api/linux/devices/${devices.win.id}/reports`)).statusCode, 404)
+  assert.equal((await api('GET', `/api/linux/devices/${NIL}/reports`)).statusCode, 404)
+  assert.equal((await api('GET', `/api/linux/devices/${devices.s1.id}/reports`, { headers: user })).statusCode, 403)
 })

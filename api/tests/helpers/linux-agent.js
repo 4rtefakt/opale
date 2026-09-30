@@ -50,3 +50,15 @@ export function checkin(app, agent, { body = {}, ...options } = {}) {
     ...options, payload: { serial, hostname, os_version, agent_version, luks_root: false, ...body },
   })
 }
+
+// Corps ReportRequest : succès à l'instant sur une révision factice par défaut ; `body` le surcharge.
+export function report(app, agent, { body = {}, ...options } = {}) {
+  const finished = Date.now()
+  return signedPost(app, agent, '/api/linux/agent/reports', {
+    ...options,
+    payload: {
+      revision: 'a'.repeat(40), status: 'success', agent_version: agent.body.agent_version,
+      started_at: new Date(finished - 30_000).toISOString(), finished_at: new Date(finished).toISOString(), ...body,
+    },
+  })
+}
