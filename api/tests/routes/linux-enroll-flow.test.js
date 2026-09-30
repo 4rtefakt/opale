@@ -11,7 +11,8 @@ import rateLimit from '@fastify/rate-limit'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
-import { newAgent, enroll } from '../helpers/linux-agent.js'
+import { newAgent, enroll, checkin } from '../helpers/linux-agent.js'
+import { createFleetRepo } from '../helpers/linux-fleet-repo.js'
 import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 import { seedDevice } from '../fixtures/devices.js'
 import { seedAgentToken } from '../fixtures/agent-tokens.js'
@@ -24,8 +25,9 @@ import { PENDING_CAP } from '../../modules/linux/lib/enrollment.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 
-let db, release, app, jwt, admin, cli
+let db, release, app, jwt, admin, cli, repo
 const evicted = []
+const prevEnv = { LINUX_GIT_DIR: process.env.LINUX_GIT_DIR, HOME: process.env.HOME, FRONTEND_URL: process.env.FRONTEND_URL, LAPS_PRIVATE_KEY: process.env.LAPS_PRIVATE_KEY }
 
 before(async () => {
   if (SKIP) return
@@ -33,6 +35,15 @@ before(async () => {
   db = acquired.db
   release = acquired.release
   jwt = await setupTestJwks()
+  // Miroir git du module sur un dépôt de flotte temporaire (HOME vide : aucun ~/.gitconfig).
+  repo = await createFleetRepo()
+  await repo.commit({ message: 'initial', files: { 'profiles/field.yml': '---\n' } })
+  await db.query("UPDATE settings SET value = $1 WHERE key = 'linux.repo_url'", [repo.url])
+  process.env.LINUX_GIT_DIR = `${repo.root}/mirror`
+  process.env.HOME = repo.home
+  process.env.FRONTEND_URL = 'https://opale.test'
+  // Escrow indisponible quel que soit l'environnement du développeur (laps.key locale, variable exportée).
+  process.env.LAPS_PRIVATE_KEY = `${repo.root}/absent.key`
   app = await buildApp({
     db,
     jwks: jwt.jwks,
@@ -52,12 +63,19 @@ before(async () => {
   await db.query('INSERT INTO cli_tokens (entra_id, label, token_hash) VALUES ($1, $2, $3)',
     ['oid-lx-admin', 'cli', crypto.createHash('sha256').update(secret).digest('hex')])
   cli = { authorization: `Bearer opl_${secret}` }
+  await app.gitMirror.start(db)
+  assert.equal(app.gitMirror.status().state, 'ready')
 })
 
 after(async () => {
+  if (app) await linux.stopWorkers(app)
   if (app) await app.close()
   if (release) await release()
   await closeSharedPool()
+  await repo?.cleanup()
+  for (const [k, v] of Object.entries(prevEnv)) {
+    if (v === undefined) delete process.env[k]; else process.env[k] = v
+  }
 })
 
 const api = (method, url, { headers = admin, payload } = {}) => app.inject({ method, url, headers, payload })
@@ -113,6 +131,28 @@ test('série pré-inscrite → /enroll 200 approved avec le nom et l’utilisate
   assert.equal(again.statusCode, 200, again.body)
   assert.equal(again.json().device_id, device.id)
   assert.equal((await keyOf(agent)).enroll_attempts, 2)
+
+  // Check-in signé : affectation de la pré-inscription, token git du miroir prêt, puis 401 après révocation.
+  const assigned = await checkin(app, agent, { ip, body: { disk_root_pct: 12 } })
+  assert.equal(assigned.statusCode, 200, assigned.body)
+  const a = assigned.json()
+  assert.deepEqual([a.device_id, a.hostname, a.profile, a.ring], [device.id, 'lx-flow-pre', 'field', 'stable'])
+  assert.equal(a.revision, null, 'stable jamais promu')
+  assert.equal(a.git.url, 'https://opale.test/api/linux/agent/git/fleet.git')
+  const entry = app.gitTokenStore.verify(a.git.token)
+  assert.equal(entry.deviceId, device.id)
+  assert.equal(entry.expired, false)
+  assert.equal(a.escrow.status, 'unavailable', 'LAPS_PRIVATE_KEY pointe sur un fichier absent')
+  assert.deepEqual(a.escrow_needed, [], 'rien à chiffrer sans clé')
+  const { rows: [seen] } = await db.query('SELECT last_seen, disk_used_pct, hostname FROM devices WHERE id = $1', [device.id])
+  assert.ok(Date.now() - new Date(seen.last_seen).getTime() < 60_000)
+  assert.equal(Number(seen.disk_used_pct), 12)
+  assert.equal(seen.hostname, 'lx-flow-pre')
+  const revoked = await api('POST', `/api/linux/devices/${device.id}/revoke`, { payload: { reason: 'Poste perdu' } })
+  assert.equal(revoked.statusCode, 200, revoked.body)
+  const refused = await checkin(app, agent, { ip })
+  assert.equal(refused.statusCode, 401, refused.body)
+  assert.equal(refused.json().code, 'REVOKED')
 })
 
 test('série inconnue → 202 pending (code, 30 s) → file d’attente → approbation admin → poste créé, clé liée, audits → /enroll 200', { skip: SKIP }, async () => {
@@ -166,7 +206,11 @@ test('série inconnue → 202 pending (code, 30 s) → file d’attente → appr
   assert.equal(detail.laps, null)
   assert.equal(detail.last_report, null)
   assert.equal(detail.needs_escrow, false)
-  for (const field of ['ring_tip', 'lagging', 'profile_in_repo', 'last_apply_status', 'last_apply_at', 'kernel', 'luks_root']) {
+  // Miroir prêt : tête du ring et profil présent dans le dépôt ; tête trop récente pour un retard.
+  assert.equal(detail.ring_tip, app.gitMirror.heads().pilot)
+  assert.equal(detail.lagging, false)
+  assert.equal(detail.profile_in_repo, true)
+  for (const field of ['last_apply_status', 'last_apply_at', 'kernel', 'luks_root']) {
     assert.equal(detail[field], null, field)
   }
   const { rows: [device] } = await db.query('SELECT platform, managed_by, source FROM devices WHERE id = $1', [detail.id])

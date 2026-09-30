@@ -155,6 +155,20 @@ test('GET /api/compliance — agent_version=null → agent_seen_recent N/A (post
   assert.equal(live.not_applicable, 1, 'sans agent_version → N/A (poste non managé par agent)')
 })
 
+test('GET /api/compliance — poste géré par état désiré (Linux) exclu du parc évalué et du drill-down agent_seen_recent', { skip: SKIP }, async () => {
+  const token = await adminAuth()
+  const before = (await fastify.inject({ method: 'GET', url: '/api/compliance', headers: { authorization: `Bearer ${token}` } })).json()
+  await db.query(
+    `INSERT INTO devices (hostname, last_seen, platform, managed_by) VALUES ('lx-pull-compliance', now() - interval '3 days', 'linux', 'pull')`
+  )
+  const after = (await fastify.inject({ method: 'GET', url: '/api/compliance', headers: { authorization: `Bearer ${token}` } })).json()
+  assert.equal(after.summary.devices_total, before.summary.devices_total, 'non compté dans le parc')
+  assert.deepEqual(after.rules.find(r => r.id === 'agent_seen_recent'), before.rules.find(r => r.id === 'agent_seen_recent'))
+  const drill = await fastify.inject({ method: 'GET', url: '/api/compliance/rules/agent_seen_recent', headers: { authorization: `Bearer ${token}` } })
+  assert.equal(drill.statusCode, 200)
+  assert.ok(!drill.json().devices.some(d => d.hostname === 'lx-pull-compliance'), 'absent du drill-down')
+})
+
 // ─── GET /api/compliance/rules/:rule_id (drill-down) ───────────────────────
 
 test('GET /rules/:rule_id — règle inconnue → 404', { skip: SKIP }, async () => {

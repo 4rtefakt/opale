@@ -90,6 +90,16 @@ test('GET / — kpis.parc a total + active_7d', { skip: SKIP }, async () => {
   assert.equal(typeof kpis.parc.active_7d, 'number')
 })
 
+test('GET / — kpis.parc compte un poste Linux géré par état désiré (last_seen écrit par son check-in)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-rpt-pull')
+  const read = async () => (await fastify.inject({ method: 'GET', url: '/api/rapports/', headers: { authorization: `Bearer ${token}` } })).json().kpis.parc
+  const before = await read()
+  await db.query(`INSERT INTO devices (hostname, platform, managed_by, last_seen) VALUES ('lx-rapport-pull', 'linux', 'pull', now() - interval '1 day')`)
+  const after = await read()
+  assert.equal(after.total, before.total + 1)
+  assert.equal(after.active_7d, before.active_7d + 1)
+})
+
 test('GET / — kpis.time_saved a minutes + eur + hourly_rate + annual_eur', { skip: SKIP }, async () => {
   const token = await adminToken('oid-rpt-timesaved')
   const res = await fastify.inject({

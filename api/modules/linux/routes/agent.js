@@ -1,10 +1,13 @@
 // Routes appelées par l'agent Linux (requêtes signées Ed25519).
 // Le plugin device-auth (parser JSON brut + preValidation) est enregistré ici
-// pour rester encapsulé dans ce scope. Cette PR : /enroll uniquement.
+// pour rester encapsulé dans ce scope. Cette PR : /enroll et /checkin.
 
 import deviceAuthPlugin from '../plugins/device-auth.js'
 import { schemaFor } from '../lib/spec.js'
 import { enrollDevice } from '../lib/enrollment.js'
+import { checkin } from '../lib/checkin.js'
+import { createDeviceRateLimiter } from '../lib/device-rate.js'
+import { lapsKey } from '../../inventory/lib/laps-key.js'
 import { ipOnlyKey } from '../../../lib/rate-limit.js'
 
 const REFUSED = {
@@ -15,6 +18,7 @@ const REFUSED = {
 
 export default async function agentRoutes(fastify) {
   await deviceAuthPlugin(fastify)
+  const { db, gitMirror, gitTokenStore } = fastify
 
   // Clé inconnue acceptée ici seulement : la signature est vérifiée contre
   // `public_key` du corps, dont l'empreinte doit égaler x-opale-key.
@@ -43,5 +47,23 @@ export default async function agentRoutes(fastify) {
       return { status: 'approved', device_id: result.device.id, hostname: result.device.hostname }
     }
     return reply.code(403).send({ status: result.status, ...REFUSED[result.status] })
+  })
+
+  // Clé approuvée seulement ; 12 check-ins par heure et par poste, comptés
+  // après vérification de la signature (design §1).
+  const checkinRate = createDeviceRateLimiter({ max: 12, windowMs: 3600_000 })
+  fastify.post('/checkin', {
+    schema: schemaFor('linuxAgentCheckin'),
+    config: { rateLimit: { max: 60, timeWindow: '1 minute', keyGenerator: ipOnlyKey }, operationId: 'linuxAgentCheckin' },
+    preValidation: fastify.deviceAuth(),
+  }, async (req, reply) => {
+    const limit = checkinRate.hit(req.deviceKey.device_id)
+    if (!limit.ok) {
+      return reply.code(429).header('Retry-After', Math.ceil(limit.retry_after_ms / 1000))
+        .send({ error: 'Trop de check-ins pour ce poste', code: 'DEVICE_RATE_LIMIT', retry_after_ms: limit.retry_after_ms })
+    }
+    const result = await checkin(db, fastify.log, { key: req.deviceKey, body: req.body }, { gitMirror, gitTokenStore, lapsKey })
+    if (result.status === 'serial_mismatch') return reply.code(403).send(REFUSED.serial_mismatch)
+    return result.assignment
   })
 }

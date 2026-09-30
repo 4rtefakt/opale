@@ -82,7 +82,9 @@ test('spec Linux : parité des operationIds enregistrés par le module', async (
   // PR 2a : enrôlement, file d'attente, pré-inscriptions, révocation.
   for (const id of ['linuxAgentEnroll', 'linuxListEnrollments', 'linuxCountEnrollments', 'linuxApproveEnrollment',
     'linuxApproveBulk', 'linuxRejectEnrollment', 'linuxRejectBulk', 'linuxListPreregistrations',
-    'linuxCreatePreregistrations', 'linuxPreregisterFromDevices', 'linuxDeletePreregistration', 'linuxRevokeDevice']) {
+    'linuxCreatePreregistrations', 'linuxPreregisterFromDevices', 'linuxDeletePreregistration', 'linuxRevokeDevice',
+    // PR 4a : check-in, vues des postes, affectation, état de l'escrow.
+    'linuxAgentCheckin', 'linuxListDevices', 'linuxGetDevice', 'linuxUpdateDevice', 'linuxAssignBulk', 'linuxEscrowStatus']) {
     assert.ok(registered.has(id), `${id} non enregistré`)
   }
   if (SPEC_COMPLETE) {

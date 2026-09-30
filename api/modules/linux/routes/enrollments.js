@@ -4,7 +4,8 @@
 
 import { adminRoute, sendRefusal } from '../lib/admin-route.js'
 import { approveEnrollment, approveEnrollments, rejectEnrollment, rejectEnrollments } from '../lib/enrollment.js'
-import { listEnrollments, loadEnrollment, loadLinuxDeviceDetail } from '../lib/device-view.js'
+import { linuxViewContext, listEnrollments, loadEnrollment, loadLinuxDeviceDetail } from '../lib/device-view.js'
+import { lapsKey } from '../../inventory/lib/laps-key.js'
 
 export const REFUSAL_MESSAGES = {
   NOT_FOUND:       'Demande d’enrôlement introuvable',
@@ -53,7 +54,7 @@ export default async function enrollmentsRoutes(fastify) {
     // Conversion : le tube WS de l'ancien agent Windows est fermé après COMMIT
     // (ses tokens sont révoqués dans la transaction).
     if (result.converted) fastify.agentWs?.evictDevice(result.device.id, 'converted-to-pull')
-    return loadLinuxDeviceDetail(db, result.device.id)
+    return loadLinuxDeviceDetail(db, result.device.id, await linuxViewContext({ gitMirror: fastify.gitMirror, lapsKey, log: fastify.log }))
   })
 
   // Corps optionnel dans la spec (requestBody.required: false) : sans corps,

@@ -125,6 +125,21 @@ test('GET / — devices_total + devices_online reflètent les devices en DB', { 
   assert.ok(kpis.devices_offline >= 1, 'au moins 1 device offline')
 })
 
+test('GET / — poste Linux géré par état désiré : absent du panneau des versions agent, compté hors ligne quand silencieux', { skip: SKIP }, async () => {
+  await db.query(`
+    INSERT INTO devices (hostname, platform, managed_by, agent_version, last_seen) VALUES
+      ('lx-dash-pull', 'linux', 'pull', NULL, now() - interval '2 hours'),
+      ('PC-DASH-VERSION', NULL, NULL, '2.15.3', now())
+  `)
+  const token = await adminToken('oid-dash-pull')
+  const res = await fastify.inject({ method: 'GET', url: '/api/dashboard/', headers: { authorization: `Bearer ${token}` } })
+  assert.equal(res.statusCode, 200)
+  const { kpis, agent_versions } = res.json()
+  assert.ok(agent_versions.distribution.some(v => v.agent_version === '2.15.3'))
+  assert.ok(agent_versions.distribution.every(v => v.agent_version !== null), 'aucune entrée sans version (postes pull)')
+  assert.ok(kpis.devices_offline >= 1, 'le poste pull silencieux compte hors ligne')
+})
+
 test('GET / — tickets_open reflète les tickets ouverts', { skip: SKIP }, async () => {
   await db.query(`
     INSERT INTO tickets (title, status, priority) VALUES

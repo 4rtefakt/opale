@@ -24,6 +24,8 @@ test('module Linux : contrat du chargeur, désactivé par défaut et enregistrab
   await app.ready()
   assert.deepEqual(messages, [`[linux] Module chargé, enrôlement et miroir git actifs (${operations().length} opérations dans la spec)`])
   assert.ok(routes.includes('POST /api/linux/agent/enroll'))
+  assert.ok(routes.includes('POST /api/linux/agent/checkin'))
+  assert.ok(routes.includes('PATCH /api/linux/devices/:id'))
   assert.ok(routes.includes('POST /api/linux/enrollments/:id/approve'))
   assert.ok(routes.includes('DELETE /api/linux/preregistrations/:id'))
   assert.ok(routes.includes('POST /api/linux/devices/:id/revoke'))

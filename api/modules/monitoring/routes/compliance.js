@@ -62,9 +62,10 @@ export default async function complianceRoute(fastify) {
     }
 
     // 2) Devices managés (= ceux qu'on évalue). On compte aussi pour le
-    //    summary parc.
+    //    summary parc. Les postes gérés par état désiré (Linux) n'ont pas de
+    //    règles Windows : exclus du parc évalué.
     const { rows: devRows } = await fastify.db.query(`
-      SELECT id, source, last_seen, agent_version FROM devices
+      SELECT id, source, last_seen, agent_version FROM devices WHERE managed_by IS DISTINCT FROM 'pull'
     `)
     const devicesTotal = devRows.length
 
@@ -173,6 +174,7 @@ export default async function complianceRoute(fastify) {
                u.display_name AS user_name
         FROM devices d
         LEFT JOIN users_cache u ON u.entra_id = d.assigned_user_id
+        WHERE d.managed_by IS DISTINCT FROM 'pull'
         ORDER BY d.hostname
       `)
       const devices = rows.map(r => {

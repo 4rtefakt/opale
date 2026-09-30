@@ -1,3 +1,8 @@
+import { lapsKey } from '../../inventory/lib/laps-key.js'
+import { parseBackupConfirmation } from './checkin.js'
+
+// Réglages du dépôt et des rings (lus aussi par le miroir) ; l'état d'escrow
+// est composé à part par les routes, voir readEscrowStatus.
 export async function readLinuxSettings(db) {
   const { rows } = await db.query("SELECT key, value FROM settings WHERE key LIKE 'linux.%' OR key = 'agent.laps_recovery_username'")
   const values = Object.fromEntries(rows.map(row => [row.key, row.value]))
@@ -11,9 +16,16 @@ export async function readLinuxSettings(db) {
     },
     // Même défaut que /api/agent/runtime-config (agent Windows).
     local_admin_username: values['agent.laps_recovery_username'] || 'opale-recovery',
-    // Stub jusqu'à la PR 5 (clé d'escrow) : l'état réel remplacera cet objet.
-    escrow: { status: 'unavailable', key_id: null, bits: null, backup_confirmed: null },
   }
+}
+
+// EscrowStatus de la spec (sans le compteur de postes) : clé LAPS de l'instance
+// et confirmation de sauvegarde (`linux.escrow_backup_confirmed`). Une seule
+// définition pour GET /settings et GET /escrow/status.
+export async function readEscrowStatus(db, log) {
+  const { status, key_id, bits } = lapsKey.info(log)
+  const { rows: [row] } = await db.query("SELECT value FROM settings WHERE key = 'linux.escrow_backup_confirmed'")
+  return { status, key_id, bits, backup_confirmed: parseBackupConfirmation(row?.value) }
 }
 
 // Validation au-delà du schéma : URL https sans identifiants, nom de branche
