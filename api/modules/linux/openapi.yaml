@@ -232,7 +232,7 @@ paths:
       description: |
         Only `service=git-upload-pack` is served (`403` for any other service). Proxied to
         `git http-backend` on the mirror with a fixed `PATH_INFO`. `503` + `Retry-After` while the mirror is
-        not ready or when the concurrency cap (4 children) is reached. Dumb-protocol paths (`/HEAD`,
+        not ready or when the concurrency cap (8 children) is reached. Dumb-protocol paths (`/HEAD`,
         `/objects/*`) and `git-receive-pack` are not routed (404).
       parameters:
         - name: service

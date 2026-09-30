@@ -70,6 +70,13 @@ services:
       # Procédure complète de mise à jour : docs/UPGRADING.md.
       - attachments_data:/app/data/ticket-attachments
 
+      # ─ Miroir git du dépôt de flotte Linux (module linux) ──────────────
+      # Écrit par l'API (clone/fetch de LINUX_GIT_DIR, défaut /app/data/git),
+      # servi aux agents Linux en lecture seule. Reconstructible depuis
+      # l'upstream, mais un volume évite de re-cloner à chaque redémarrage
+      # et conserve les branches de ring (pilot/stable).
+      - git_mirror:/app/data/git
+
   db:
     image: postgres:16-alpine
     container_name: opale-db
@@ -183,6 +190,7 @@ services:
 volumes:
   pgdata:
   attachments_data:
+  git_mirror:
   # ollama_models:    # décommenter si le profile email-bridge est utilisé
   # caddy_data:
   # caddy_config:
