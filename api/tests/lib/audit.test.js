@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { logAudit } from '../../modules/core/lib/audit.js'
+import { logAudit, insertAudit } from '../../modules/core/lib/audit.js'
 
 // ── Helpers de mock ────────────────────────────────────────────────────────
 
@@ -115,4 +115,23 @@ test('log undefined → silent (aucune throw)', async () => {
   await assert.doesNotReject(() =>
     logAudit(db, undefined, { action: 'test_action' })
   )
+})
+
+// ── insertAudit (variante fail-closed) ─────────────────────────────────────
+
+test('insertAudit — même INSERT sur le client fourni, details stringifiés, null si absents', async () => {
+  const client = makeDb()
+  const details = { reason: { category: 'audit', note: 'vérification' }, outcome: 'ok' }
+  await insertAudit(client, { action: 'laps_viewed', byUser: 'a@b', target: 'dev-1', details })
+  await insertAudit(client, { action: 'laps_viewed' })
+
+  assert.equal(client.calls.length, 2)
+  assert.match(client.calls[0][0], /INSERT INTO audit_logs/)
+  assert.deepEqual(client.calls[0][1], ['laps_viewed', 'a@b', 'dev-1', JSON.stringify(details)])
+  assert.deepEqual(client.calls[1][1], ['laps_viewed', null, null, null])
+})
+
+test('insertAudit — l’erreur d’écriture remonte (contrairement à logAudit)', async () => {
+  const client = makeDb({ rejects: 'audit refusé' })
+  await assert.rejects(() => insertAudit(client, { action: 'laps_viewed' }), /audit refusé/)
 })

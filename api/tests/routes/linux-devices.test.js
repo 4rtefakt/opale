@@ -22,6 +22,7 @@ import { insertAdminCredential } from '../fixtures/admin-credentials.js'
 import { loadSpec, deref } from '../../modules/linux/lib/spec.js'
 import { lapsKeyId } from '../../modules/inventory/lib/laps-key.js'
 import devicesRoutes from '../../modules/linux/routes/devices.js'
+import escrowRoutes from '../../modules/linux/routes/escrow.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 const NIL = '00000000-0000-4000-8000-000000000000'
@@ -50,7 +51,13 @@ before(async () => {
   db = acquired.db
   release = acquired.release
   jwt = await setupTestJwks()
-  app = await buildApp({ db, jwks: jwt.jwks, decorators: { gitMirror }, routes: f => f.register(devicesRoutes, { prefix: '/api/linux' }) })
+  app = await buildApp({
+    db, jwks: jwt.jwks, decorators: { gitMirror },
+    routes: async f => {
+      await f.register(devicesRoutes, { prefix: '/api/linux' })
+      await f.register(escrowRoutes,  { prefix: '/api/linux' })
+    },
+  })
   const a = await seedAdmin(db, { entraId: 'oid-lxd-admin', displayName: 'Admin Lxd', email: 'admin-lxd@x' })
   admin = { authorization: `Bearer ${await jwt.sign({ oid: a.entraId, name: a.displayName, preferred_username: a.email })}` }
   const u = await seedNonAdmin(db, { entraId: 'oid-lxd-user', displayName: 'Marie Curie', email: 'm.curie@example.org' })

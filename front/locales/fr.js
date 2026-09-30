@@ -369,6 +369,9 @@ export default {
   'remote.reason.note_placeholder': 'ex: alerte disque critique remontée à 14h sur ce poste',
   'remote.reason.err_too_short':    'Note trop courte (min. 5 caractères).',
   'remote.reason.open':             'Ouvrir',
+  'remote.reason.title_laps':       'Révéler le mot de passe de récupération de {host}',
+  'remote.reason.warn_laps':        'Secret sensible. Consultation tracée avec le motif pour conformité RGPD et sécurité.',
+  'remote.reason.reveal':           'Révéler',
 
   'tickets.title':            'Tickets',
   'tickets.search':           'Rechercher un ticket...',

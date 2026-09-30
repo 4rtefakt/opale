@@ -181,6 +181,9 @@ export default {
   'remote.reason.note_placeholder': 'e.g. critical disk alert reported at 14:00 for this device',
   'remote.reason.err_too_short':    'Note too short (min 5 chars).',
   'remote.reason.open':             'Open',
+  'remote.reason.title_laps':       'Reveal the recovery password of {host}',
+  'remote.reason.warn_laps':        'Sensitive secret. Access is logged with the reason for GDPR / security compliance.',
+  'remote.reason.reveal':           'Reveal',
 
   'tickets.title':            'Tickets',
   'tickets.search':           'Search a ticket...',

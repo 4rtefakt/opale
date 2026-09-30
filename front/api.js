@@ -50,8 +50,9 @@ class API {
   resetSshHostKey(id)  { return this._fetch(`/devices/${id}/ssh-host-key`, { method: 'DELETE' }) }
   forceSyncDevices(ids)    { return this._fetch('/devices/force-sync',    { method: 'POST', body: { ids } }) }
   forceCheckinDevices(ids) { return this._fetch('/devices/force-checkin', { method: 'POST', body: { ids } }) }
-  getAdminCredential(deviceId)    { return this._fetch(`/admin-credentials/${deviceId}`) }
-  rotateAdminCredential(deviceId) { return this._fetch(`/admin-credentials/${deviceId}/rotate`, { method: 'POST', body: {} }) }
+  // Motif { category, note } obligatoire : même contrat que les sessions distantes.
+  revealAdminCredential(deviceId, reason) { return this._fetch(`/admin-credentials/${deviceId}/reveal`, { method: 'POST', body: { reason } }) }
+  rotateAdminCredential(deviceId)         { return this._fetch(`/admin-credentials/${deviceId}/rotate`, { method: 'POST', body: {} }) }
 
   // Tickets
   getTickets(params)   {

@@ -3,6 +3,7 @@
 // sont ignorées, mais chaque champ requis doit être présent (null compris).
 
 import { CHECKIN_INTERVAL_S } from './checkin.js'
+import { recoveryKeyRows } from './recovery-keys.js'
 
 const USER_REF = alias => `CASE WHEN ${alias}.entra_id IS NULL THEN NULL ELSE
   jsonb_build_object('entra_id', ${alias}.entra_id, 'display_name', ${alias}.display_name, 'email', ${alias}.email) END`
@@ -109,7 +110,7 @@ export async function listLinuxDevices(db, filters = {}, ctx = IDLE_CONTEXT) {
 export async function loadLinuxDeviceDetail(db, id, ctx = IDLE_CONTEXT) {
   const { rows: [device] } = await db.query(`SELECT v.* FROM (${VIEW}) v WHERE v.id = $7`, [...contextParams(ctx), id])
   if (!device) return null
-  const [{ rows: [laps] }, { rows: [report] }, { rows: recoveryKeys }] = await Promise.all([
+  const [{ rows: [laps] }, { rows: [report] }, recoveryKeys] = await Promise.all([
     // Même forme que le champ `laps` de GET /api/devices/:id.
     db.query(`
       SELECT c.username, c.password_changed_at, c.rotation_requested_at,
@@ -122,13 +123,7 @@ export async function loadLinuxDeviceDetail(db, id, ctx = IDLE_CONTEXT) {
       FROM linux_apply_reports WHERE device_id = $1
       ORDER BY started_at DESC NULLS LAST, received_at DESC LIMIT 1
     `, [id]),
-    db.query(`
-      SELECT r.id, r.kind, r.label, r.key_id, r.created_at, r.superseded_at,
-        (r.superseded_at IS NULL AND r.key_id = $2::text) AS current,
-        r.last_viewed_at, u.display_name AS last_viewed_by_name
-      FROM device_recovery_keys r LEFT JOIN users_cache u ON u.entra_id = r.last_viewed_by
-      WHERE r.device_id = $1 ORDER BY r.created_at DESC, r.id
-    `, [id, ctx.keyId]),
+    recoveryKeyRows(db, id, ctx.keyId),
   ])
   return {
     ...formatRow(device, ctx),
