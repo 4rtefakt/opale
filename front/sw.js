@@ -1,4 +1,4 @@
-const CACHE_NAME = 'opale-v12'
+const CACHE_NAME = 'opale-v13'
 
 // Charge window/self.ENV pour récupérer le branding (fallback titre push).
 // importScripts est synchrone et ne bloque pas l'install si l'endpoint échoue.

@@ -31,7 +31,7 @@ function deviceStatus(s, d) {
   if (d.disk_used_pct >= t.warn) return 'warn'
   return 'online'
 }
-// platform / managed_by : mêmes champs que l'API (module linux désactivé en démo → parc Windows).
+// platform / managed_by : mêmes champs que l'API (deux postes Debian gérés par état désiré, le reste Windows).
 function deviceRow(s, d) { return { ...d, platform: d.platform ?? 'windows', managed_by: d.managed_by ?? null, status: deviceStatus(s, d) } }
 
 // Règles de conformité : verdict déterministe par poste (pas d'aléa entre
@@ -456,6 +456,151 @@ on('POST', '/groups/:id/detach-entra', ({ s, p }) => { const g = s.groups.find(x
 // Conformité
 on('GET', '/compliance', ({ s }) => complianceSummary(s))
 on('GET', '/compliance/rules/:id', ({ s, p }) => { const rule = RULES.find(r => r.id === p.id) || notFound('Règle introuvable'); return { rule, devices: s.devices.map(d => { const st = ruleResult(d, rule); return { device_id: d.id, hostname: d.hostname, user_name: d.user_name, status: st, value: st === 'fail' ? { protection_status: 'off' } : {} } }).sort((a, b) => (a.status === 'fail' ? 0 : 1) - (b.status === 'fail' ? 0 : 1)) } })
+
+// ── Parc Linux (état désiré) : mêmes formes que api/modules/linux/openapi.yaml ──
+const ONLINE_MS = 3_600_000
+const pullDevices = (s) => s.devices.filter(d => d.managed_by === 'pull')
+const linuxDevice = (s, id) => pullDevices(s).find(d => d.id === id) || notFound('Poste Linux introuvable')
+const userRef = (u) => (u ? { entra_id: u.entra_id ?? u.id, display_name: u.display_name ?? u.name, email: u.email } : null)
+function linuxRow(s, d) {
+  const lx = s.linux
+  const { luks_root = false, ...key } = lx.keys[d.id] || {}
+  const tip = d.ring ? lx.git.heads[d.ring] : null
+  const rev = d.last_successful_revision || null
+  const needs_escrow = luks_root && !(lx.recoveryKeys[d.id] || []).some(k => k.current)
+  return { id: d.id, hostname: d.hostname, serial: d.serial, platform: 'linux', managed_by: 'pull', profile: d.profile, profile_in_repo: lx.profiles.includes(d.profile), ring: d.ring,
+    assigned_user: userRef(d.user), os: d.os, last_seen: d.last_seen, online: Date.now() - Date.parse(d.last_seen) < ONLINE_MS, disk_used_pct: d.disk_used_pct, key: lx.keys[d.id] ? key : null,
+    last_revision_applied: d.last_revision_applied || null, last_successful_revision: rev, last_apply_status: d.last_apply_status, last_apply_at: d.last_apply_at,
+    ring_tip: tip, lagging: !!(tip && rev !== tip), needs_escrow }
+}
+function linuxDetail(s, d) {
+  const lx = s.linux
+  return { ...linuxRow(s, d), kernel: '6.12.22-amd64', luks_root: !!lx.keys[d.id]?.luks_root, last_report: (lx.reports[d.id] || [])[0] || null, laps: lx.laps[d.id] || null, recovery_keys: lx.recoveryKeys[d.id] || [], converted_from_windows: d.hostname === 'LT-EMMA' }
+}
+const bulkResult = () => ({ ok: 0, skipped: 0, errors: [] })
+const PROFILE_RE = /^[a-z0-9][a-z0-9-]{0,63}$/, HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/
+const validRing = (r) => ['pilot', 'stable'].includes(r)
+function ringInfo(s, ring) {
+  const lx = s.linux, tip = lx.git.heads[ring], devs = pullDevices(s).filter(d => d.ring === ring)
+  const success = (sha, r) => pullDevices(s).filter(d => d.ring === r && (lx.reports[d.id] || []).some(x => x.revision === sha && x.status === 'success')).length
+  const stableIdx = lx.log.findIndex(c => c.sha === lx.git.heads.stable)
+  return { ring, branch: lx.settings.rings[ring].branch, tip, tip_since: lx.tipSince[ring], upstream_head: lx.git.heads.upstream[lx.settings.rings[ring].branch] ?? null,
+    devices: { total: devs.length, on_tip: devs.filter(d => d.last_successful_revision === tip).length, lagging: devs.filter(d => d.last_successful_revision !== tip).length, failed: devs.filter(d => ['failed', 'partial'].includes(d.last_apply_status)).length },
+    candidates: ring === 'stable' ? lx.log.map((c, i) => ({ ...c, success_pilot: success(c.sha, 'pilot'), success_stable: success(c.sha, 'stable'), is_ancestor_of_stable: stableIdx !== -1 && i > stableIdx })) : [] }
+}
+on('GET', '/linux/devices', ({ s, q }) => {
+  let rows = pullDevices(s).map(d => linuxRow(s, d))
+  if (q.status) rows = rows.filter(d => d.key?.status === q.status)
+  if (q.profile) rows = rows.filter(d => d.profile === q.profile)
+  if (q.ring) rows = rows.filter(d => d.ring === q.ring)
+  if (q.lagging) rows = rows.filter(d => d.lagging === (q.lagging === 'true'))
+  if (q.apply_status) rows = rows.filter(d => d.last_apply_status === q.apply_status)
+  if (q.escrow) rows = rows.filter(d => d.needs_escrow === (q.escrow === 'missing'))
+  if (q.online) rows = rows.filter(d => d.online === (q.online === 'true'))
+  const search = lc(q.q); if (search) rows = rows.filter(d => lc(d.hostname).includes(search) || lc(d.serial).includes(search) || lc(d.assigned_user?.display_name).includes(search))
+  rows.sort((a, b) => a.hostname.localeCompare(b.hostname))
+  const off = num(q.offset, 0); return { rows: rows.slice(off, off + num(q.limit, 100)), total: rows.length }
+})
+on('POST', '/linux/devices/assign-bulk', ({ s, b }) => {
+  const r = bulkResult(); if (b.profile === undefined && b.ring === undefined) throw new ApiErr(400, 'Indiquer un profil et/ou un ring', { code: 'NOTHING_TO_ASSIGN' })
+  for (const id of b.ids || []) { const d = s.devices.find(x => x.id === id); if (!d || d.managed_by !== 'pull') { r.errors.push({ id, code: d ? 'NOT_PULL' : 'NOT_FOUND' }); continue } if (b.profile) d.profile = b.profile; if (b.ring) d.ring = b.ring; audit(s, 'linux_assignment_changed', d.hostname, { hostname: d.hostname, after: { profile: d.profile, ring: d.ring } }); r.ok++ }
+  r.skipped = r.errors.length; return r
+})
+on('GET', '/linux/devices/:id', ({ s, p }) => linuxDetail(s, linuxDevice(s, p.id)))
+on('PATCH', '/linux/devices/:id', ({ s, p, b }) => {
+  const d = linuxDevice(s, p.id)
+  if (b.profile !== undefined) d.profile = b.profile
+  if (b.ring !== undefined) d.ring = b.ring
+  if (b.assigned_user_id !== undefined) { const u = b.assigned_user_id ? (s.users.find(x => x.entra_id === b.assigned_user_id) || (() => { throw new ApiErr(400, 'Utilisateur inconnu', { code: 'UNKNOWN_USER' }) })()) : null; d.user = u ? { id: u.entra_id, name: u.display_name, email: u.email, job_title: u.job_title } : null; d.user_name = u?.display_name || null; d.assigned_user_id = u?.entra_id || null }
+  audit(s, 'linux_assignment_changed', d.hostname, { hostname: d.hostname, after: { profile: d.profile, ring: d.ring } }); return linuxDetail(s, d)
+})
+on('POST', '/linux/devices/:id/revoke', ({ s, p, b }) => {
+  const d = linuxDevice(s, p.id); const k = s.linux.keys[d.id]
+  if (String(b.reason || '').trim().length < 5) throw new ApiErr(400, 'Motif requis (5 caractères minimum)')
+  if (!k || k.status !== 'approved') throw new ApiErr(409, 'Aucune clé approuvée à révoquer', { code: 'NO_ACTIVE_KEY' })
+  Object.assign(k, { status: 'revoked', revoked_at: now(), revoked_by: ME.displayName, revoke_reason: b.reason }); audit(s, 'linux_device_revoked', d.hostname, { hostname: d.hostname, reason: b.reason }); return linuxDetail(s, d)
+})
+on('GET', '/linux/devices/:id/reports', ({ s, p, q }) => { const d = linuxDevice(s, p.id); let rows = s.linux.reports[d.id] || []; if (q.status) rows = rows.filter(r => r.status === q.status); const off = num(q.offset, 0); return { rows: rows.slice(off, off + num(q.limit, 50)), total: rows.length } })
+on('GET', '/linux/devices/:id/recovery-keys', ({ s, p }) => ({ rows: s.linux.recoveryKeys[linuxDevice(s, p.id).id] || [] }))
+on('POST', '/linux/devices/:id/recovery-keys/:kid/reveal', () => nope('Révélation indisponible dans la démo (aucune clé d’escrow réelle)'))
+on('GET', '/linux/dashboard', ({ s }) => {
+  const rows = pullDevices(s).map(d => linuxRow(s, d)); const days = thresholds(s).offline_days; const byRev = {}
+  rows.forEach(d => { const k = `${d.last_successful_revision}|${d.ring}`; byRev[k] = byRev[k] || { revision: d.last_successful_revision, ring: d.ring, count: 0 }; byRev[k].count++ })
+  return { devices_total: rows.length, by_revision: Object.values(byRev), lagging: rows.filter(d => d.lagging).length, offline: { days, count: rows.filter(d => Date.now() - Date.parse(d.last_seen) > days * 86_400_000).length }, failed_applies: rows.filter(d => ['failed', 'partial'].includes(d.last_apply_status)).length, pending_approvals: s.linux.enrollments.filter(e => e.status === 'pending').length, not_escrowed: rows.filter(d => d.needs_escrow).length, mirror_state: s.linux.git.state }
+})
+// File d'enrôlement : approuver crée le poste Debian dans l'inventaire commun.
+const enrollment = (s, id) => s.linux.enrollments.find(e => e.id === id) || notFound('Enrôlement introuvable')
+function approveEnrollment(s, e, b) {
+  if (e.status !== 'pending') throw new ApiErr(409, 'Enrôlement déjà traité', { code: 'NOT_PENDING' })
+  if (e.conflict) throw new ApiErr(409, 'Conflit à résoudre (conversion ou remplacement)', { code: 'CONFLICT' })
+  const hostname = b.hostname || `lx-${lc(e.serial_claimed || e.code)}`
+  if (s.devices.some(d => lc(d.hostname) === lc(hostname))) throw new ApiErr(409, `${hostname} existe déjà`, { code: 'HOSTNAME_TAKEN' })
+  const u = b.assigned_user_id ? s.users.find(x => x.entra_id === b.assigned_user_id) : null
+  const d = { id: nextId(s, 'd'), hostname, model: 'ThinkPad T14 Gen 5', manufacturer: 'Lenovo', platform: 'linux', managed_by: 'pull', profile: b.profile, ring: b.ring, last_apply_status: null, last_apply_at: null, last_revision_applied: null, last_successful_revision: null,
+    os: e.os_version, os_build: null, ram_gb: 16, cpu: 'Intel Core Ultra 7 155U', disk_used_pct: 12, user: u ? { id: u.entra_id, name: u.display_name, email: u.email, job_title: u.job_title } : null, user_name: u?.display_name || null, assigned_user_id: u?.entra_id || null,
+    ip_netbird: null, agent_version: null, last_seen: now(), status: 'online', serial: e.serial_claimed, compliance_state: null, join_type: null, enrolled_at: now(), intune_last_sync: null, bios_version: null, ssh_host_key_fp: null, ssh_host_key_learned_at: null, ssh_host_key_policy: null }
+  s.devices.push(d)
+  s.linux.keys[d.id] = { id: nextId(s, 'lk'), fingerprint: e.fingerprint, key_backing: e.key_backing, status: 'approved', agent_version: e.agent_version, os_version: e.os_version, last_seen_at: e.last_seen_at, approved_at: now(), approved_by: ME.displayName, revoked_at: null, revoked_by: null, revoke_reason: null, luks_root: true }
+  Object.assign(e, { status: 'approved', device_id: d.id, approved_at: now(), approved_by: ME.displayName })
+  audit(s, 'linux_device_approved', hostname, { hostname, serial: e.serial_claimed, profile: b.profile, ring: b.ring }); return d
+}
+on('GET', '/linux/enrollments/count', ({ s }) => ({ pending: s.linux.enrollments.filter(e => e.status === 'pending').length }))
+on('GET', '/linux/enrollments', ({ s, q }) => { const rows = s.linux.enrollments.filter(e => e.status === (q.status || 'pending')); const off = num(q.offset, 0); return { rows: rows.slice(off, off + num(q.limit, 100)), total: rows.length } })
+on('POST', '/linux/enrollments/approve-bulk', ({ s, b }) => { const r = bulkResult(); for (const id of b.ids || []) { try { approveEnrollment(s, enrollment(s, id), { profile: b.profile, ring: b.ring }); r.ok++ } catch (err) { r.errors.push({ id, code: err.extra?.code || 'ERROR', message: err.message }) } } r.skipped = r.errors.length; return r })
+on('POST', '/linux/enrollments/reject-bulk', ({ s, b }) => { const r = bulkResult(); for (const id of b.ids || []) { const e = s.linux.enrollments.find(x => x.id === id); if (!e || e.status !== 'pending') { r.errors.push({ id, code: e ? 'NOT_PENDING' : 'NOT_FOUND' }); continue } Object.assign(e, { status: 'rejected', rejected_at: now(), rejected_by: ME.displayName }); r.ok++ } r.skipped = r.errors.length; return r })
+on('POST', '/linux/enrollments/:id/approve', ({ s, p, b }) => linuxDetail(s, approveEnrollment(s, enrollment(s, p.id), b)))
+on('POST', '/linux/enrollments/:id/reject', ({ s, p, b }) => { const e = enrollment(s, p.id); if (e.status !== 'pending') throw new ApiErr(409, 'Enrôlement déjà traité', { code: 'NOT_PENDING' }); Object.assign(e, { status: 'rejected', rejected_at: now(), rejected_by: ME.displayName }); audit(s, 'linux_device_rejected', e.code, { serial_claimed: e.serial_claimed, reason: b.reason || null }); return e })
+// Pré-inscriptions : validation ligne à ligne (lot non atomique), même codes que l'API.
+on('GET', '/linux/preregistrations', ({ s, q }) => { const rows = s.linux.preregistrations.filter(p => !!p.consumed_at === (q.consumed === 'true')).map(p => ({ ...p, matches_device: (() => { const d = s.devices.find(x => lc(x.serial) === lc(p.serial)); return d ? { id: d.id, hostname: d.hostname, platform: d.platform ?? 'windows', managed_by: d.managed_by ?? null } : null })() })); const off = num(q.offset, 0); return { rows: rows.slice(off, off + num(q.limit, 100)), total: rows.length } })
+on('POST', '/linux/preregistrations', ({ s, b }) => {
+  const r = bulkResult(); const seen = new Set()
+  ;(b.rows || []).forEach((row, i) => {
+    const serial = String(row.serial || '').trim().toUpperCase(); let code = null
+    if (!serial) code = 'INVALID_SERIAL'
+    else if (/^(TO BE FILLED|DEFAULT STRING|SYSTEM SERIAL|NONE|N\/A)/.test(serial)) code = 'PLACEHOLDER_SERIAL'
+    else if (seen.has(serial) || s.linux.preregistrations.some(p => p.serial === serial)) code = 'DUPLICATE_SERIAL'
+    else if (!PROFILE_RE.test(row.profile || '') || !validRing(row.ring)) code = 'INVALID_PROFILE'
+    else if (row.hostname && !HOSTNAME_RE.test(row.hostname)) code = 'INVALID_HOSTNAME'
+    else if (row.hostname && (s.devices.some(d => lc(d.hostname) === lc(row.hostname) && lc(d.serial) !== lc(serial)) || s.linux.preregistrations.some(p => lc(p.hostname) === lc(row.hostname)))) code = 'HOSTNAME_TAKEN'
+    const u = row.email ? s.users.find(x => lc(x.email) === lc(row.email)) : null
+    if (!code && row.email && !u) code = 'UNKNOWN_USER'
+    seen.add(serial)
+    if (code) { r.errors.push({ id: String(i), code }); return }
+    s.linux.preregistrations.unshift({ id: nextId(s, 'pr'), serial, hostname: row.hostname || null, profile: row.profile, ring: row.ring, assigned_user: userRef(u), note: row.note || null, created_by: ME.displayName, created_at: now(), consumed_at: null, consumed_by_key_id: null, matches_device: null }); r.ok++
+  })
+  r.skipped = r.errors.length; audit(s, 'linux_preregistrations_imported', null, { ok: r.ok, skipped: r.skipped }); return r
+})
+on('POST', '/linux/preregistrations/from-devices', ({ s, b }) => {
+  const r = bulkResult()
+  for (const id of b.device_ids || []) {
+    const d = s.devices.find(x => x.id === id); const serial = d?.serial ? d.serial.trim().toUpperCase() : null
+    const code = !d ? 'NOT_FOUND' : d.managed_by === 'pull' ? 'PULL_MANAGED' : !serial ? 'NO_SERIAL' : s.linux.preregistrations.some(p => p.serial === serial) ? 'ALREADY_PREREGISTERED' : null
+    if (code) { r.errors.push({ id, code }); continue }
+    s.linux.preregistrations.unshift({ id: nextId(s, 'pr'), serial, hostname: d.hostname, profile: b.profile, ring: b.ring, assigned_user: userRef(d.user), note: null, created_by: ME.displayName, created_at: now(), consumed_at: null, consumed_by_key_id: null, matches_device: null }); r.ok++
+  }
+  r.skipped = r.errors.length; audit(s, 'linux_preregistrations_imported', null, { ok: r.ok, skipped: r.skipped, source: 'devices' }); return r
+})
+on('DELETE', '/linux/preregistrations/:id', ({ s, p }) => { const i = s.linux.preregistrations.findIndex(x => x.id === p.id && !x.consumed_at); if (i === -1) notFound('Pré-inscription introuvable ou déjà consommée'); s.linux.preregistrations.splice(i, 1); return null })
+// Miroir git, anneaux, réglages, escrow : la promotion, la synchronisation, la
+// confirmation de sauvegarde et la révélation impliquent un effet réel → 403.
+on('GET', '/linux/profiles', ({ s }) => ({ rows: s.linux.profiles.map(slug => ({ slug, in_pilot: true, in_stable: slug !== 'admin', devices: pullDevices(s).filter(d => d.profile === slug).length })), mirror_state: s.linux.git.state }))
+on('GET', '/linux/rings', ({ s }) => ({ pilot: ringInfo(s, 'pilot'), stable: ringInfo(s, 'stable'), mirror_state: s.linux.git.state }))
+on('POST', '/linux/rings/stable/promote', () => nope('Promotion indisponible dans la démo (aucun dépôt git réel)'))
+on('GET', '/linux/git/status', ({ s }) => s.linux.git)
+on('POST', '/linux/git/sync', () => nope('Synchronisation indisponible dans la démo (aucun dépôt git réel)'))
+const escrowStatus = (s) => ({ ...s.linux.escrow, devices_needing_escrow: pullDevices(s).filter(d => linuxRow(s, d).needs_escrow).length })
+on('GET', '/linux/settings', ({ s }) => ({ ...s.linux.settings, escrow: escrowStatus(s) }))
+on('PATCH', '/linux/settings', ({ s, b }) => {
+  const st = s.linux.settings; const changes = {}
+  if (b.repo_url !== undefined) { if (!/^https:\/\//.test(b.repo_url)) throw new ApiErr(400, 'Dépôt : https uniquement en v1, sans identifiants dans l’URL', { code: 'VALIDATION' }); changes.repo_url = { before: st.repo_url, after: b.repo_url }; st.repo_url = b.repo_url; s.linux.git.upstream = b.repo_url }
+  if (b.allowed_signers !== undefined) { changes.allowed_signers = { before: st.allowed_signers, after: b.allowed_signers }; st.allowed_signers = b.allowed_signers }
+  if (b.alerts_enabled !== undefined) { changes.alerts_enabled = { before: st.alerts_enabled, after: !!b.alerts_enabled }; st.alerts_enabled = !!b.alerts_enabled }
+  for (const ring of ['pilot', 'stable']) { const branch = b.rings?.[ring]?.branch; if (branch !== undefined) { if (!s.linux.git.heads.upstream[branch]) throw new ApiErr(400, `Branche inconnue : ${branch}`, { code: 'VALIDATION' }); changes[`rings.${ring}.branch`] = { before: st.rings[ring].branch, after: branch }; st.rings[ring].branch = branch } }
+  if (Object.keys(changes).length) audit(s, 'linux_settings_changed', null, { changes })
+  return { ...st, escrow: escrowStatus(s) }
+})
+on('GET', '/linux/escrow/status', ({ s }) => escrowStatus(s))
+on('POST', '/linux/escrow/confirm-backup', () => nope('Confirmation indisponible dans la démo (aucune clé d’escrow réelle)'))
 
 // Accès distant : pas de réseau derrière la démo
 on('POST', '/ssh/grant', () => nope('SSH indisponible dans la démo (aucun agent réel derrière ces postes)'))

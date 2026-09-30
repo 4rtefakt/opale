@@ -1,5 +1,6 @@
 // Vue Paramètres — tokens, seuils, sync Intune, admins, audit
 import { getLocale } from '/i18n.js'
+import { shortSha } from '/views/linux.js'
 
 let _data = null
 
@@ -40,6 +41,12 @@ export async function renderParametres(container) {
   window.showNewTokenModal   = showNewTokenModal
   window.pickTheme           = pickTheme
   window.settingsTab         = settingsTab
+  window.linuxSaveSettings   = linuxSaveSettings
+  window.linuxSaveAlerts     = linuxSaveAlerts
+  window.linuxSyncNow        = linuxSyncNow
+  window.linuxPromote        = linuxPromote
+  window.linuxConfirmBackup  = linuxConfirmBackup
+  window.linuxReloadSettings = loadLinuxSettings
 
   await reloadSettings()
 }
@@ -48,6 +55,7 @@ async function reloadSettings() {
   const body = document.getElementById('settings-body')
   try {
     _data = await window.api.getSettings()
+    _linux = null   // « Actualiser » recharge aussi la section Linux (sinon servie depuis le cache)
     render()
   } catch (err) {
     body.innerHTML = `<div class="empty-state"><i class="ti ti-lock"></i><p>${t('error.forbidden')}</p></div>`
@@ -412,12 +420,22 @@ function render() {
           </div>`).join('')
       })()}
     </div>
-    </section>`
+    </section>
+    ${LINUX_ENABLED ? `<section class="settings-tab" data-tab="linux" id="settings-linux">
+      <div class="empty-state"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
+    </section>` : ''}`
   applyTab()
+  // Section Linux chargée à la demande (4 GET) : repeinte depuis le cache si
+  // déjà chargée, sinon seulement quand son onglet est visible.
+  if (LINUX_ENABLED) {
+    if (_linux) renderLinuxSettings()
+    else if (_tab === 'linux') loadLinuxSettings()
+  }
 }
 
 // Onglets : une seule famille de réglages à l'écran à la fois (mémorisé).
-const SETTINGS_TABS = ['appearance', 'instance', 'integrations', 'security']
+const LINUX_ENABLED = window.OPALE.moduleEnabled('linux')
+const SETTINGS_TABS = ['appearance', 'instance', 'integrations', 'security', ...(LINUX_ENABLED ? ['linux'] : [])]
 let _tab = SETTINGS_TABS.includes(localStorage.getItem('settings-tab')) ? localStorage.getItem('settings-tab') : 'appearance'
 function renderTabs() {
   const el = document.getElementById('settings-tabs')
@@ -431,6 +449,7 @@ function settingsTab(k) {
   localStorage.setItem('settings-tab', k)
   document.querySelectorAll('#settings-tabs .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === k))
   applyTab()
+  if (k === 'linux' && !_linux) loadLinuxSettings()
   document.getElementById('settings-body')?.closest('.page')?.scrollTo({ top: 0 })
 }
 function applyTab() {
@@ -772,3 +791,285 @@ function pickTheme(id) {
   showToast(t('settings.appearance.toast'), 'success')
 }
 window.setThemeMotion = (motion) => { window.OpaleTheme?.save(window.api, { motion }); paintSettingsMode() }
+
+// ── Linux / état désiré ─────────────────────────────────────────────────────
+// Dépôt de flotte (miroir git), signataires côté serveur, anneaux (branche
+// amont, promotion de stable), alertes, clé d'escrow et confirmation de sa
+// sauvegarde. Les écritures passent par PATCH /api/linux/settings avec les
+// seuls champs modifiés.
+let _linux = null   // { settings, git, rings, escrow }
+
+async function loadLinuxSettings() {
+  const el = document.getElementById('settings-linux')
+  if (!el) return
+  try {
+    const [settings, git, rings, escrow] = await Promise.all([
+      window.api.getLinuxSettings(), window.api.getLinuxGitStatus(), window.api.getLinuxRings(), window.api.getLinuxEscrowStatus(),
+    ])
+    _linux = { settings, git, rings, escrow }
+    renderLinuxSettings()
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><p>${esc(err.message || t('error.generic'))}</p><button class="btn" onclick="linuxReloadSettings()">${esc(t('settings.btn.refresh'))}</button></div>`
+  }
+}
+
+const _mirrorBadge = state => {
+  const cls = state === 'ready' ? 'badge-green' : state === 'stale' || state === 'cloning' ? 'badge-orange' : state === 'absent' ? 'badge-gray' : 'badge-red'
+  return `<span class="badge ${cls}">${esc(t('settings.linux.mirror.' + state))}</span>`
+}
+const _signedBadge = signed => signed === null
+  ? `<span class="badge badge-gray">${esc(t('settings.linux.rings.unverified'))}</span>`
+  : signed ? `<span class="badge badge-green">${esc(t('settings.linux.rings.signed'))}</span>` : `<span class="badge badge-red">${esc(t('settings.linux.rings.unsigned'))}</span>`
+
+function renderLinuxSettings() {
+  const el = document.getElementById('settings-linux')
+  if (!el || !_linux) return
+  const { settings: s, git, rings, escrow } = _linux
+  el.innerHTML = linuxRepoPanel(s, git) + linuxRingsPanel(s, rings) + linuxAlertsPanel(s) + linuxEscrowPanel(s, escrow)
+}
+
+// Re-rendu après une action ponctuelle (synchronisation, promotion, escrow)
+// sans perdre les modifications non enregistrées des champs éditables.
+function rerenderLinuxSettings() {
+  const ids = ['linux-repo-url', 'linux-signers', 'linux-branch-pilot', 'linux-branch-stable']
+  const edits = ids.map(id => [id, document.getElementById(id)?.value])
+  renderLinuxSettings()
+  for (const [id, value] of edits) {
+    const input = document.getElementById(id)
+    if (input && value !== undefined) input.value = value
+  }
+}
+
+// Bouton d'enregistrement (diff seulement), répété sous chaque panneau éditable.
+const linuxSaveRow = () => `
+        <div style="display:flex;align-items:center;gap:12px">
+          <button class="btn btn-primary" onclick="linuxSaveSettings()"><i class="ti ti-device-floppy"></i> ${esc(t('settings.btn.save'))}</button>
+          <span style="font-size:11px;color:var(--text-tertiary)">${esc(t('settings.linux.save_note'))}</span>
+        </div>`
+
+function linuxRepoPanel(s, git) {
+  return `
+    <!-- Dépôt de flotte -->
+    <div class="panel">
+      <div class="panel-header">${esc(t('settings.linux.repo.title'))}</div>
+      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:14px">
+        <p style="font-size:12px;color:var(--text-tertiary);margin:0">${esc(t('settings.linux.repo.desc'))}</p>
+        <div class="form-row">
+          <label class="form-label" for="linux-repo-url">${esc(t('settings.linux.repo.url'))}</label>
+          <input class="form-input" id="linux-repo-url" type="url" maxlength="500" placeholder="https://git.example.org/it/fleet.git" value="${esc(s.repo_url || '')}">
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--text-secondary)">
+          ${_mirrorBadge(git.state)}
+          <span>${esc(t('settings.linux.repo.last_fetch'))} ${esc(git.last_fetch_at ? formatRelative(git.last_fetch_at) : t('settings.linux.repo.never'))}</span>
+          ${git.upstream ? `<span style="color:var(--text-tertiary);font-family:var(--font-mono,monospace);font-size:11px">${esc(git.upstream)}</span>` : ''}
+          ${git.binaries_ok === false ? `<span class="badge badge-red">${esc(t('settings.linux.repo.binaries_missing'))}</span>` : ''}
+          <button class="btn btn-sm" id="linux-sync-btn" onclick="linuxSyncNow()" style="margin-left:auto"><i class="ti ti-refresh"></i> ${esc(t('settings.linux.repo.sync'))}</button>
+        </div>
+        ${git.last_error ? `<div style="font-size:12px;color:var(--red);font-family:var(--font-mono,monospace);word-break:break-all">${esc(git.last_error)}</div>` : ''}
+        <div class="form-row">
+          <label class="form-label" for="linux-signers">${esc(t('settings.linux.signers.label'))}</label>
+          <textarea class="form-textarea" id="linux-signers" rows="4" style="font-family:var(--font-mono,monospace);font-size:11px" placeholder="ops@example.org ssh-ed25519 AAAA…">${esc(s.allowed_signers.join('\n'))}</textarea>
+          <span style="font-size:11px;color:var(--text-tertiary)">${esc(t('settings.linux.signers.hint'))}</span>
+        </div>
+        ${linuxSaveRow()}
+      </div>
+    </div>`
+}
+
+function linuxRingsPanel(s, rings) {
+  const ringBlock = ring => {
+    const r = rings[ring]
+    return `
+      <div style="border-top:0.5px solid var(--border);padding-top:14px;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:600;min-width:60px">${esc(t('linux.queue.ring.' + ring))}</span>
+          <div class="form-row" style="width:220px">
+            <label class="form-label" for="linux-branch-${ring}">${esc(t('settings.linux.rings.branch'))}</label>
+            <input class="form-input" id="linux-branch-${ring}" maxlength="200" value="${esc(s.rings[ring].branch)}">
+          </div>
+          <span style="font-size:12px;color:var(--text-secondary)">${esc(t('settings.linux.rings.tip'))} ${shortSha(r.tip)}${r.tip_since ? ` <span style="color:var(--text-tertiary)">${esc(t('settings.linux.rings.since', { when: formatRelative(r.tip_since) }))}</span>` : ''}${r.upstream_head && r.upstream_head !== r.tip ? ` · ${esc(t('settings.linux.rings.upstream'))} ${shortSha(r.upstream_head)}` : ''}</span>
+          <span style="font-size:12px;color:var(--text-tertiary)">${esc(t('settings.linux.rings.devices', { total: r.devices.total, on_tip: r.devices.on_tip, lagging: r.devices.lagging, failed: r.devices.failed }))}</span>
+        </div>
+        ${ring === 'stable' ? (r.candidates.length ? `
+          <div class="table-wrap"><table>
+            <thead><tr>${['sha', 'subject', 'author', 'date', 'signed', 'success', 'actions'].map(k => `<th>${esc(t('settings.linux.rings.col.' + k))}</th>`).join('')}</tr></thead>
+            <tbody>${r.candidates.map(c => `
+              <tr class="${c.sha === r.tip ? 'selected' : ''}">
+                <td>${shortSha(c.sha)}${c.sha === r.tip ? ` <span class="badge badge-blue">${esc(t('settings.linux.rings.current'))}</span>` : ''}${c.is_ancestor_of_stable ? ` <span class="badge badge-orange">${esc(t('settings.linux.rings.rollback'))}</span>` : ''}</td>
+                <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.subject)}">${esc(c.subject)}</td>
+                <td style="font-size:12px;color:var(--text-secondary)">${esc(c.author)}</td>
+                <td style="font-size:11px;color:var(--text-tertiary);white-space:nowrap">${esc(formatRelative(c.date))}</td>
+                <td>${_signedBadge(c.signed)}</td>
+                <td style="font-size:12px;white-space:nowrap">${esc(t('settings.linux.rings.success_counts', { pilot: c.success_pilot, stable: c.success_stable }))}</td>
+                <td style="text-align:right">${c.sha === r.tip ? '' : `<button class="btn btn-sm btn-primary" onclick="linuxPromote(${jsArg(c.sha)})"><i class="ti ti-arrow-up-circle"></i> ${esc(t('settings.linux.rings.promote'))}</button>`}</td>
+              </tr>`).join('')}</tbody>
+          </table></div>` : `<p style="font-size:12px;color:var(--text-tertiary);margin:0">${esc(t('settings.linux.rings.no_candidates'))}</p>`) : ''}
+      </div>`
+  }
+  return `
+    <!-- Anneaux -->
+    <div class="panel">
+      <div class="panel-header">${esc(t('settings.linux.rings.title'))} ${_mirrorBadge(rings.mirror_state)}</div>
+      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:14px">
+        <p style="font-size:12px;color:var(--text-tertiary);margin:0">${esc(t('settings.linux.rings.desc'))}</p>
+        ${ringBlock('pilot')}
+        ${ringBlock('stable')}
+        ${linuxSaveRow()}
+      </div>
+    </div>`
+}
+
+function linuxAlertsPanel(s) {
+  return `
+    <!-- Alertes -->
+    <div class="panel">
+      <div class="panel-header">${esc(t('settings.linux.alerts.title'))}</div>
+      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <input type="checkbox" id="linux-alerts-toggle" ${s.alerts_enabled ? 'checked' : ''} onchange="linuxSaveAlerts(this.checked)">
+          <label for="linux-alerts-toggle" style="font-size:13px;cursor:pointer;user-select:none">${esc(t('settings.linux.alerts.label'))}</label>
+        </div>
+        <p style="font-size:12px;color:var(--text-tertiary);margin:0">${esc(t('settings.linux.alerts.hint'))}</p>
+      </div>
+    </div>`
+}
+
+function linuxEscrowPanel(s, escrow) {
+  const backup = escrow.backup_confirmed && escrow.backup_confirmed.key_id === escrow.key_id ? escrow.backup_confirmed : null
+  return `
+    <!-- Escrow -->
+    <div class="panel">
+      <div class="panel-header">${esc(t('settings.linux.escrow.title'))}
+        ${escrow.status === 'ok' ? `<span class="badge badge-green">${esc(t('settings.linux.escrow.ok'))}</span>` : `<span class="badge badge-red">${esc(t('settings.linux.escrow.unavailable'))}</span>`}
+      </div>
+      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text-secondary)">
+          <span>${esc(t('settings.linux.escrow.key_id'))} <code>${esc(escrow.key_id ? escrow.key_id.slice(0, 12) : '—')}</code></span>
+          <span>${esc(t('settings.linux.escrow.bits'))} ${esc(escrow.bits ?? '—')}</span>
+          <a href="#/linux?escrow=missing" class="nav-link" style="${escrow.devices_needing_escrow ? 'color:var(--red)' : ''}">${esc(t('settings.linux.escrow.needing', { n: escrow.devices_needing_escrow ?? 0 }))}</a>
+          <span>${esc(t('settings.linux.escrow.local_admin', { user: s.local_admin_username }))}</span>
+        </div>
+        ${backup ? `
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:var(--bg-tertiary);border-left:3px solid var(--green);border-radius:var(--radius-md);font-size:12px;color:var(--text-secondary);line-height:1.55">
+            <i class="ti ti-shield-check" style="color:var(--green);margin-top:2px;flex-shrink:0"></i>
+            <div>${esc(t('settings.linux.escrow.confirmed', { by: backup.by, when: formatRelative(backup.at) }))}</div>
+          </div>` : `
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:var(--bg-tertiary);border-left:3px solid var(--orange);border-radius:var(--radius-md);font-size:12px;color:var(--text-secondary);line-height:1.55">
+            <i class="ti ti-alert-triangle" style="color:var(--orange);margin-top:2px;flex-shrink:0"></i>
+            <div>
+              <div style="font-weight:500;margin-bottom:6px">${esc(t('settings.linux.escrow.backup_title'))}</div>
+              <ol style="margin:0 0 8px;padding-left:18px">
+                <li>${esc(t('settings.linux.escrow.step1'))} <code>openssl rsa -in agent-go/keys/laps.key -check</code></li>
+                <li>${esc(t('settings.linux.escrow.step2'))}</li>
+                <li>${esc(t('settings.linux.escrow.step3'))}</li>
+              </ol>
+              <button class="btn btn-sm btn-primary" onclick="linuxConfirmBackup()" ${escrow.status === 'ok' && escrow.key_id ? '' : 'disabled'}><i class="ti ti-shield-check"></i> ${esc(t('settings.linux.escrow.confirm'))}</button>
+            </div>
+          </div>`}
+      </div>
+    </div>`
+}
+
+// Diff des champs modifiés seulement (repo_url, allowed_signers, rings.*.branch).
+async function linuxSaveSettings() {
+  if (!_linux) return
+  const s = _linux.settings
+  const patch = {}
+  const url = document.getElementById('linux-repo-url')?.value.trim() ?? ''
+  if (url !== (s.repo_url || '')) {
+    if (!/^https:\/\/[^\s@/]+(\/[^\s]*)?$/.test(url)) { showToast(t('settings.linux.repo.url_error'), 'error'); return }
+    patch.repo_url = url
+  }
+  const signers = (document.getElementById('linux-signers')?.value || '').split('\n').map(l => l.trim()).filter(Boolean)
+  if (JSON.stringify(signers) !== JSON.stringify(s.allowed_signers)) patch.allowed_signers = signers
+  for (const ring of ['pilot', 'stable']) {
+    const branch = document.getElementById(`linux-branch-${ring}`)?.value.trim()
+    if (branch && branch !== s.rings[ring].branch) (patch.rings ??= {})[ring] = { branch }
+  }
+  if (!Object.keys(patch).length) { showToast(t('settings.linux.unchanged'), 'info'); return }
+  try {
+    _linux.settings = await window.api.updateLinuxSettings(patch)
+    showToast(t('settings.toast.saved'), 'success')
+    await loadLinuxSettings()
+  } catch (err) { showToast(err.message || t('error.generic'), 'error') }
+}
+
+async function linuxSaveAlerts(checked) {
+  try {
+    _linux.settings = await window.api.updateLinuxSettings({ alerts_enabled: checked })
+    showToast(t('settings.toast.saved'), 'success')
+  } catch (err) {
+    showToast(err.message || t('error.generic'), 'error')
+    const el = document.getElementById('linux-alerts-toggle')
+    if (el) el.checked = !checked
+  }
+}
+
+async function linuxSyncNow() {
+  const btn = document.getElementById('linux-sync-btn')
+  if (btn) btn.disabled = true
+  try {
+    _linux.git = await window.api.syncLinuxGit()
+    showToast(t('settings.linux.repo.sync_started'), 'success')
+    rerenderLinuxSettings()
+  } catch (err) {
+    showToast(err.message || t('error.generic'), 'error')
+    if (btn) btn.disabled = false
+  }
+}
+
+// Promotion de stable : confirmation avec la révision, case « retour arrière »
+// seulement pour un ancêtre de la tête actuelle ; les 409 (NOT_ON_BRANCH,
+// UNSIGNED, ROLLBACK, MIRROR_NOT_READY) sont affichés dans la modale.
+function linuxPromote(sha) {
+  const stable = _linux?.rings.stable
+  const c = stable?.candidates.find(x => x.sha === sha)
+  if (!c) return
+  showModal(`
+    <form id="linux-promote-form">
+      <div class="modal-title">${esc(t('settings.linux.rings.promote_title'))}</div>
+      <div style="display:flex;flex-direction:column;gap:10px;font-size:13px">
+        <div><code>${esc(sha.slice(0, 12))}</code> ${_signedBadge(c.signed)}</div>
+        <div style="font-weight:500">${esc(c.subject)}</div>
+        <div style="font-size:12px;color:var(--text-tertiary)">${esc(c.author)} · ${esc(formatRelative(c.date))} · ${esc(t('settings.linux.rings.success_counts', { pilot: c.success_pilot, stable: c.success_stable }))}</div>
+        <p class="modal-sub" style="margin:4px 0 0">${esc(t('settings.linux.rings.promote_desc', { from: stable.tip ? stable.tip.slice(0, 7) : '—' }))}</p>
+        ${c.is_ancestor_of_stable ? `<label style="display:flex;align-items:center;gap:8px;color:var(--orange)"><input type="checkbox" id="linux-promote-rollback"> ${esc(t('settings.linux.rings.allow_rollback'))}</label>` : ''}
+        <p id="linux-promote-error" role="alert" style="color:var(--red);margin:0;font-size:12px"></p>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn" onclick="closeModal()">${esc(t('btn.cancel'))}</button><button type="submit" class="btn btn-primary">${esc(t('settings.linux.rings.promote'))}</button></div>
+    </form>`)
+  const form = document.getElementById('linux-promote-form')
+  form.addEventListener('submit', async event => {
+    event.preventDefault()
+    const button = form.querySelector('button[type=submit]')
+    const error = form.querySelector('#linux-promote-error')
+    button.disabled = true
+    try {
+      _linux.rings.stable = await window.api.promoteLinuxStable({ revision: sha, allow_rollback: !!form.querySelector('#linux-promote-rollback')?.checked })
+      closeModal()
+      showToast(t('settings.linux.rings.promoted', { sha: sha.slice(0, 7) }), 'success')
+      rerenderLinuxSettings()
+    } catch (err) {
+      const code = err.body?.code
+      const key = 'linux.code.' + code
+      error.textContent = code && t(key) !== key ? t(key) : (err.message || t('error.generic'))
+      button.disabled = false
+    }
+  })
+}
+
+async function linuxConfirmBackup() {
+  const escrow = _linux?.escrow
+  if (!escrow?.key_id) return
+  if (!confirm(t('settings.linux.escrow.confirm_prompt', { key_id: escrow.key_id.slice(0, 12) }))) return
+  try {
+    _linux.escrow = await window.api.confirmLinuxEscrowBackup(escrow.key_id)
+    showToast(t('settings.linux.escrow.confirmed_toast'), 'success')
+    rerenderLinuxSettings()
+  } catch (err) {
+    const code = err.body?.code
+    const key = 'linux.code.' + code
+    showToast(code && t(key) !== key ? t(key) : (err.message || t('error.generic')), 'error')
+    if (code === 'KEY_ID_MISMATCH') loadLinuxSettings()
+  }
+}

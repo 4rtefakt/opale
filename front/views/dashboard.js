@@ -30,14 +30,19 @@ async function reloadDash() {
   const scriptsPromise = window.OPALE.moduleEnabled('inventory')
     ? window.api.getScripts().catch(() => [])
     : Promise.resolve([])
-  const [data, scripts] = await Promise.all([
+  // KPIs du parc Linux : module optionnel, échec silencieux (la ligne disparaît).
+  const linuxPromise = window.OPALE.moduleEnabled('linux')
+    ? window.api.getLinuxDashboard().catch(() => null)
+    : Promise.resolve(null)
+  const [data, scripts, linux] = await Promise.all([
     window.api.getDashboard(),
     scriptsPromise,
+    linuxPromise,
   ])
-  renderDashboardData(data, scripts)
+  renderDashboardData(data, scripts, linux)
 }
 
-function renderDashboardData(data, scripts = []) {
+function renderDashboardData(data, scripts = [], linux = null) {
   const el = document.getElementById('dash-content')
   if (!el) return
 
@@ -141,6 +146,8 @@ function renderDashboardData(data, scripts = []) {
       })}
     </div>
 
+    ${linux ? linuxKpiRow(linux) : ''}
+
     <!-- Zone 3 : détail 2 colonnes -->
     <div class="main-grid">
       <div class="left-col">
@@ -166,6 +173,59 @@ function kpiCard({ label, value, valueClass = '', icon, sub, href, dim, bar }) {
       ${bar ? `<div class="disk-bar" style="width:100%;margin-top:6px"><div class="disk-fill ${bar.fill}" style="width:${bar.pct}%"></div></div>` : ''}
       <div class="kpi-sub">${icon ? `<i class="ti ${icon}"></i>` : ''} ${esc(sub || '')}</div>
     </a>`
+}
+
+// ─── Ligne KPI : parc Linux (GET /api/linux/dashboard) ───
+function linuxKpiRow(l) {
+  return `
+    <div>
+      <div class="page-kicker" style="margin-bottom:8px">${esc(t('dashboard.linux.title'))}</div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(5,minmax(0,1fr))">
+        ${kpiCard({
+          label: t('dashboard.linux.devices'),
+          value: l.devices_total,
+          icon: 'ti-brand-debian',
+          sub: t('dashboard.linux.devices_sub', { n: l.offline?.count ?? 0, days: l.offline?.days ?? 7 }),
+          href: '#/linux',
+        })}
+        ${kpiCard({
+          label: t('dashboard.linux.lagging'),
+          value: l.lagging,
+          valueClass: l.lagging > 0 ? 'c-warn' : 'c-ok',
+          icon: 'ti-git-commit',
+          sub: t('dashboard.linux.lagging_sub'),
+          href: '#/linux?lagging=true',
+          dim: l.lagging === 0,
+        })}
+        ${kpiCard({
+          label: t('dashboard.linux.failed'),
+          value: l.failed_applies,
+          valueClass: l.failed_applies > 0 ? 'c-danger' : 'c-ok',
+          icon: 'ti-alert-octagon',
+          sub: t('dashboard.linux.failed_sub'),
+          href: '#/linux?apply_status=failed',
+          dim: l.failed_applies === 0,
+        })}
+        ${kpiCard({
+          label: t('dashboard.linux.pending'),
+          value: l.pending_approvals,
+          valueClass: l.pending_approvals > 0 ? 'c-warn' : '',
+          icon: 'ti-user-check',
+          sub: t('dashboard.linux.pending_sub'),
+          href: '#/linux?tab=queue',
+          dim: l.pending_approvals === 0,
+        })}
+        ${kpiCard({
+          label: t('dashboard.linux.not_escrowed'),
+          value: l.not_escrowed,
+          valueClass: l.not_escrowed > 0 ? 'c-danger' : 'c-ok',
+          icon: 'ti-lock-off',
+          sub: t('dashboard.linux.not_escrowed_sub'),
+          href: '#/linux?escrow=missing',
+          dim: l.not_escrowed === 0,
+        })}
+      </div>
+    </div>`
 }
 
 // ─── Panel : Postes à surveiller ───
@@ -276,6 +336,16 @@ const _ACTIVITY_ICON = {
   linux_device_rejected: 'ti-x',
   linux_device_revoked: 'ti-key-off',
   linux_preregistrations_imported: 'ti-file-import',
+  linux_assignment_changed: 'ti-file-settings',
+  linux_apply_failed: 'ti-alert-octagon',
+  linux_apply_recovered: 'ti-circle-check',
+  linux_recovery_key_escrowed: 'ti-lock',
+  linux_recovery_key_viewed: 'ti-eye',
+  linux_escrow_backup_confirmed: 'ti-shield-check',
+  linux_settings_changed: 'ti-settings',
+  linux_ring_promoted: 'ti-arrow-up-circle',
+  linux_git_synced: 'ti-git-branch',
+  laps_viewed: 'ti-eye',
   device_assigned: 'ti-user-check',
 
   agent_console_open:        'ti-terminal-2',

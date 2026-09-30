@@ -170,8 +170,8 @@ test('postes : les formes liste et détail conservent la plateforme et l’état
   const s = seed()
   const { data: list } = await call(s, 'GET', '/devices')
   const linux = list.devices.filter(d => d.platform === 'linux')
-  assert.equal(linux.length, 1)
-  const d = linux[0]
+  assert.equal(linux.length, 2)
+  const d = linux.find(x => x.hostname === 'LT-PRET-02')
   assert.equal(d.managed_by, 'pull')
   assert.equal(d.profile, 'field-researcher')
   assert.equal(d.ring, 'stable')
@@ -184,11 +184,79 @@ test('postes : les formes liste et détail conservent la plateforme et l’état
   assert.equal(detail.health_signals, null)
   assert.equal(detail.laps, null)
   assert.equal(detail.disks[0].letter, '/')
-  const windows = list.devices.filter(row => row.id !== d.id)
+  const windows = list.devices.filter(row => row.platform !== 'linux')
   assert.ok(windows.every(row => row.platform === 'windows' && row.managed_by === null))
   const { data: winDetail } = await call(s, 'GET', '/devices/' + windows[0].id)
   assert.equal(winDetail.platform, 'windows')
   assert.equal(winDetail.managed_by, null)
   assert.ok(winDetail.health_signals.bitlocker)
   assert.equal(winDetail.disks[0].letter, 'C:')
+})
+
+test('parc Linux : liste, fiche, rapports, file, pré-inscriptions et réglages ont la forme de la spec', async () => {
+  const s = seed()
+  const { data: list } = await call(s, 'GET', '/linux/devices')
+  assert.equal(list.total, 2); assert.equal(list.rows.length, 2)
+  for (const row of list.rows) {
+    for (const k of ['id', 'hostname', 'serial', 'platform', 'managed_by', 'profile', 'ring', 'assigned_user', 'os', 'last_seen', 'online', 'disk_used_pct', 'key', 'last_revision_applied', 'last_successful_revision', 'last_apply_status', 'last_apply_at', 'ring_tip', 'lagging', 'needs_escrow']) assert.ok(k in row, k)
+    assert.equal(row.platform, 'linux'); assert.equal(row.managed_by, 'pull'); assert.equal(row.key.status, 'approved'); assert.equal('luks_root' in row.key, false)
+  }
+  const onTip = list.rows.find(r => r.hostname === 'LT-PRET-02'), lagging = list.rows.find(r => r.hostname === 'LT-EMMA')
+  assert.equal(onTip.lagging, false); assert.equal(onTip.needs_escrow, false)
+  assert.equal(lagging.lagging, true); assert.equal(lagging.needs_escrow, true); assert.equal(lagging.last_apply_status, 'failed')
+  assert.equal((await call(s, 'GET', '/linux/devices?apply_status=failed')).data.total, 1)
+  assert.equal((await call(s, 'GET', '/linux/devices?escrow=missing')).data.rows[0].hostname, 'LT-EMMA')
+  assert.equal((await call(s, 'GET', '/linux/devices?q=pret')).data.total, 1)
+
+  const { data: detail } = await call(s, 'GET', '/linux/devices/' + lagging.id)
+  for (const k of ['kernel', 'luks_root', 'last_report', 'laps', 'recovery_keys', 'converted_from_windows']) assert.ok(k in detail, k)
+  assert.equal(detail.last_report.status, 'failed'); assert.ok(detail.last_report.log_tail.length > 20)
+  const { data: reports } = await call(s, 'GET', `/linux/devices/${lagging.id}/reports?status=success`)
+  assert.ok(reports.total >= 1 && reports.rows.every(r => r.status === 'success'))
+  assert.equal((await call(s, 'GET', `/linux/devices/${onTip.id}/recovery-keys`)).data.rows[0].current, true)
+  assert.equal((await call(s, 'POST', `/linux/devices/${onTip.id}/recovery-keys/rk-1/reveal`, { reason: { category: 'audit', note: 'vérification' } })).status, 403)
+
+  const patched = await call(s, 'PATCH', `/linux/devices/${lagging.id}`, { ring: 'stable', assigned_user_id: s.users[0].entra_id })
+  assert.equal(patched.data.ring, 'stable'); assert.equal(patched.data.assigned_user.entra_id, s.users[0].entra_id)
+  assert.equal((await call(s, 'POST', `/linux/devices/${lagging.id}/revoke`, { reason: 'trop' })).status, 400)
+  const revoked = await call(s, 'POST', `/linux/devices/${lagging.id}/revoke`, { reason: 'Poste perdu, déclaration #42' })
+  assert.equal(revoked.data.key.status, 'revoked')
+  assert.equal((await call(s, 'POST', `/linux/devices/${lagging.id}/revoke`, { reason: 'Encore une fois' })).status, 409)
+
+  assert.equal((await call(s, 'GET', '/linux/enrollments/count')).data.pending, 1)
+  const pending = (await call(s, 'GET', '/linux/enrollments')).data.rows[0]
+  const approved = await call(s, 'POST', `/linux/enrollments/${pending.id}/approve`, { profile: 'office', ring: 'pilot', hostname: 'lx-nouveau' })
+  assert.equal(approved.status, 200); assert.equal(approved.data.hostname, 'lx-nouveau'); assert.equal(approved.data.profile, 'office')
+  assert.equal((await call(s, 'GET', '/linux/enrollments/count')).data.pending, 0)
+  assert.equal((await call(s, 'GET', '/linux/devices')).data.total, 3)
+
+  const imported = await call(s, 'POST', '/linux/preregistrations', { rows: [
+    { serial: 'NEW00001', profile: 'office', ring: 'stable', email: s.users[1].email },
+    { serial: 'PF3ABC12', profile: 'office', ring: 'stable' },
+    { serial: 'NEW00002', profile: 'Office!', ring: 'stable' },
+    { serial: 'NEW00003', profile: 'office', ring: 'stable', email: 'personne@nulle.part' },
+  ] })
+  assert.equal(imported.data.ok, 1); assert.equal(imported.data.skipped, 3)
+  assert.deepEqual(imported.data.errors.map(e => [e.id, e.code]), [['1', 'DUPLICATE_SERIAL'], ['2', 'INVALID_PROFILE'], ['3', 'UNKNOWN_USER']])
+  const prereg = (await call(s, 'GET', '/linux/preregistrations')).data
+  assert.equal(prereg.total, 2); assert.ok('matches_device' in prereg.rows[0])
+  const fromDevices = await call(s, 'POST', '/linux/preregistrations/from-devices', { device_ids: [s.devices[0].id, onTip.id], profile: 'office', ring: 'pilot' })
+  assert.equal(fromDevices.data.ok, 1); assert.deepEqual(fromDevices.data.errors[0].code, 'PULL_MANAGED')
+  assert.equal((await call(s, 'GET', '/linux/preregistrations')).data.rows[0].matches_device.hostname, s.devices[0].hostname)
+  assert.equal((await call(s, 'DELETE', `/linux/preregistrations/${prereg.rows[0].id}`)).status, 204)
+
+  const rings = (await call(s, 'GET', '/linux/rings')).data
+  assert.ok(rings.stable.candidates.length >= 3 && rings.stable.candidates.some(c => c.is_ancestor_of_stable))
+  assert.equal(rings.pilot.candidates.length, 0); assert.equal(rings.mirror_state, 'ready')
+  assert.equal((await call(s, 'POST', '/linux/rings/stable/promote', { revision: rings.stable.candidates[0].sha })).status, 403)
+  const settings = (await call(s, 'GET', '/linux/settings')).data
+  for (const k of ['repo_url', 'allowed_signers', 'alerts_enabled', 'rings', 'local_admin_username', 'escrow']) assert.ok(k in settings, k)
+  assert.equal((await call(s, 'PATCH', '/linux/settings', { repo_url: 'http://insecure' })).status, 400)
+  assert.equal((await call(s, 'PATCH', '/linux/settings', { alerts_enabled: false })).data.alerts_enabled, false)
+  const escrow = (await call(s, 'GET', '/linux/escrow/status')).data
+  assert.equal(escrow.status, 'ok'); assert.equal(typeof escrow.devices_needing_escrow, 'number')
+  assert.equal((await call(s, 'POST', '/linux/escrow/confirm-backup', { key_id: escrow.key_id, confirmed: true })).status, 403)
+  const dash = (await call(s, 'GET', '/linux/dashboard')).data
+  for (const k of ['devices_total', 'lagging', 'failed_applies', 'pending_approvals', 'not_escrowed']) assert.equal(typeof dash[k], 'number', k)
+  assert.equal(dash.pending_approvals, 0); assert.equal(dash.devices_total, 3)
 })

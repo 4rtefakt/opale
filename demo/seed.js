@@ -56,10 +56,21 @@ export function seed() {
   devices.push(mk(22, { hostname: 'PC-SALLE-REU', disk: 25, age: 400 }))
   devices.push(mk(23, { hostname: 'LT-PRET-01', disk: 18, age: 0.2 }))
   devices.push(mk(24, { hostname: 'LT-PRET-02', disk: 21, age: 60 }))
-  // Un poste Debian dans l'inventaire commun ; la file Linux reste désactivée.
+  // Deux postes Debian gérés par état désiré (parc Linux) : l'un à jour sur
+  // stable, l'autre en pilote avec une application en échec et sans escrow.
+  const SHA = (n) => n.toString(16).padStart(2, '0').repeat(20)
+  const REV = { head: SHA(0xa1), stable: SHA(0xb2), previous: SHA(0xc3), initial: SHA(0xd4) }
   Object.assign(devices.find(d => d.hostname === 'LT-PRET-02'), {
     platform: 'linux', managed_by: 'pull', os: 'Debian 13', os_build: null,
     profile: 'field-researcher', ring: 'stable', last_apply_status: 'success', last_apply_at: H(1),
+    last_revision_applied: REV.stable, last_successful_revision: REV.stable,
+    ip_netbird: null, agent_version: null, compliance_state: null, join_type: null, intune_last_sync: null,
+    ssh_host_key_fp: null, ssh_host_key_learned_at: null,
+  })
+  Object.assign(devices.find(d => d.hostname === 'LT-EMMA'), {
+    platform: 'linux', managed_by: 'pull', os: 'Debian 13', os_build: null,
+    profile: 'office', ring: 'pilot', last_apply_status: 'failed', last_apply_at: H(3),
+    last_revision_applied: REV.head, last_successful_revision: REV.previous,
     ip_netbird: null, agent_version: null, compliance_state: null, join_type: null, intune_last_sync: null,
     ssh_host_key_fp: null, ssh_host_key_learned_at: null,
   })
@@ -268,8 +279,53 @@ export function seed() {
     admins: [{ entra_id: ME.entraId, display_name: ME.displayName, email: ME.email, is_admin: true }, { entra_id: byName['Hugo Blanc'].entra_id, display_name: 'Hugo Blanc', email: byName['Hugo Blanc'].email, is_admin: true }],
   }
 
+  // ── Parc Linux : clés des postes, file d'enrôlement, pré-inscriptions,
+  //    rapports d'application, clés de récupération, miroir git, réglages ──
+  const ESCROW_KEY_ID = '0f3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c'
+  const fp = (seed) => seed.repeat(8).slice(0, 64)
+  const key = (id, backing, seed, extra = {}) => ({ id, fingerprint: fp(seed), key_backing: backing, status: 'approved', agent_version: '0.3.1', os_version: 'Debian GNU/Linux 13 (trixie)', last_seen_at: H(0.2), approved_at: H(400), approved_by: ME.displayName, revoked_at: null, revoked_by: null, revoke_reason: null, luks_root: true, ...extra })
+  const report = (id, revision, status, age, extra = {}) => ({ id, revision, status, started_at: H(age + 0.02), finished_at: H(age), error_summary: null, log_tail: null, agent_version: '0.3.1', received_at: H(age), ...extra })
+  const linux = {
+    keys: {
+      [dev('LT-PRET-02').id]: key('lk-1', 'tpm', '3f9a1c22'),
+      [dev('LT-EMMA').id]: key('lk-2', 'software', '7c0d21aa', { last_seen_at: H(3.1) }),
+    },
+    enrollments: [
+      { id: 'en-1', fingerprint: fp('9e4b77c1'), code: '9e4b77c1', key_backing: 'software', serial_claimed: '5CG4990X', hostname_claimed: 'debian', os_version: 'Debian GNU/Linux 13 (trixie)', agent_version: '0.3.1', status: 'pending', source: 'manual', conflict: null, preregistration: null, device_id: null, first_seen_at: H(1.5), last_seen_at: H(0.05), enroll_attempts: 9, approved_at: null, approved_by: null, rejected_at: null, rejected_by: null, revoked_at: null, revoked_by: null, revoke_reason: null },
+    ],
+    preregistrations: [
+      { id: 'pr-1', serial: 'PF3ABC12', hostname: 'lx-yanis', profile: 'office', ring: 'stable', assigned_user: { entra_id: byName['Yanis Petit'].entra_id, display_name: 'Yanis Petit', email: byName['Yanis Petit'].email }, note: 'Portable de prêt en attendant la commande', created_by: ME.displayName, created_at: H(48), consumed_at: null, consumed_by_key_id: null, matches_device: null },
+    ],
+    reports: {
+      [dev('LT-PRET-02').id]: [report('rp-1', REV.stable, 'skipped', 1), report('rp-2', REV.stable, 'success', 25), report('rp-3', REV.previous, 'success', 73)],
+      [dev('LT-EMMA').id]: [
+        report('rp-4', REV.head, 'failed', 3, { error_summary: 'TASK [office : install printer driver] — apt: Unable to locate package hplip-plugin', log_tail: 'PLAY [localhost] *********************************************************\n\nTASK [base : apt update] ***************************************************\nok: [localhost]\n\nTASK [office : install printer driver] ************************************\nfatal: [localhost]: FAILED! => {"msg": "No package matching \'hplip-plugin\' is available"}\n\nPLAY RECAP ****************************************************************\nlocalhost : ok=1 changed=0 unreachable=0 failed=1 skipped=0' }),
+        report('rp-5', REV.previous, 'success', 27), report('rp-6', REV.previous, 'success', 51),
+      ],
+    },
+    recoveryKeys: {
+      [dev('LT-PRET-02').id]: [{ id: 'rk-1', kind: 'luks_recovery', label: '/', key_id: ESCROW_KEY_ID, created_at: H(300), superseded_at: null, current: true, last_viewed_at: H(100), last_viewed_by_name: 'Hugo Blanc' }],
+      [dev('LT-EMMA').id]: [],
+    },
+    laps: {
+      [dev('LT-PRET-02').id]: { username: 'opale-recovery', password_changed_at: H(70), rotation_requested_at: null, last_viewed_at: null, last_viewed_by_name: null },
+      [dev('LT-EMMA').id]: { username: 'opale-recovery', password_changed_at: H(90), rotation_requested_at: null, last_viewed_at: H(100), last_viewed_by_name: 'Hugo Blanc' },
+    },
+    profiles: ['admin', 'field-researcher', 'office'],
+    settings: { repo_url: 'https://git.demo.opale.fr/it/fleet.git', allowed_signers: ['ops@demo.opale.fr ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoSignerKeyDemoSignerKeyDemoSignerKey'], alerts_enabled: true, rings: { pilot: { branch: 'main' }, stable: { branch: 'main' } }, local_admin_username: 'opale-recovery' },
+    escrow: { status: 'ok', key_id: ESCROW_KEY_ID, bits: 3072, backup_confirmed: null },
+    git: { state: 'ready', upstream: 'https://git.demo.opale.fr/it/fleet.git', last_fetch_at: H(0.05), fetch_age_s: 180, last_error: null, heads: { pilot: REV.head, stable: REV.stable, upstream: { main: REV.head } }, children: 0, binaries_ok: true },
+    tipSince: { pilot: H(2), stable: H(30) },
+    log: [
+      { sha: REV.head, author: 'Hugo Blanc', date: H(2), subject: 'office: pilote HP via hplip-plugin', signed: true },
+      { sha: REV.stable, author: 'Camille Roussel', date: H(30), subject: 'field-researcher: QGIS 3.40 + profils GPS', signed: true },
+      { sha: REV.previous, author: 'Hugo Blanc', date: H(80), subject: 'base: durcissement sshd, unattended-upgrades', signed: true },
+      { sha: REV.initial, author: 'Camille Roussel', date: H(200), subject: 'Dépôt de flotte initial', signed: false },
+    ],
+  }
+
   return {
     users, devices, tags, tickets: T, inbox, proposals, snoozes, scripts, executions, packages, deployments, stock, movements,
-    groups, groupMembers, onboardings, reviews, audit, settings, prefs: {}, nextId: 1000,
+    groups, groupMembers, onboardings, reviews, audit, settings, linux, prefs: {}, nextId: 1000,
   }
 }
