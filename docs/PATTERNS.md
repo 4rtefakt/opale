@@ -151,3 +151,18 @@ const { ok, grant, error } = store.consume(nonce)
 
 Stockage en RAM, mono-instance. Pour scale-out futur : swap Redis SETEX
 (la signature publique est stable).
+
+## Authentification device (module linux)
+
+La vérification Ed25519 et le helper de signature sont dans
+[`api/modules/linux/lib/device-auth.js`](../api/modules/linux/lib/device-auth.js).
+Installer le [plugin device-auth](../api/modules/linux/plugins/device-auth.js) dans le scope
+des routes agent, puis utiliser `preValidation: fastify.deviceAuth()` : le parser conserve
+les octets JSON reçus dans `req.rawBody`, et l'authentification précède la validation du schéma.
+Un JSON syntaxiquement invalide reste rejeté par le parser (400).
+Le cache de nonces est borné, en RAM, mono-instance ; seuls les nonces signés valides sont enregistrés.
+
+Toute route marquée `x-opale-interactive: true` dans la spec doit ajouter
+[`fastify.requireInteractive`](../api/plugins/auth.js) après `authenticate` et `requireAdmin`.
+`req.authKind` distingue `jwt` et `cli` ; les tokens CLI non scopés, valables 90 jours,
+reçoivent `403 INTERACTIVE_ONLY` pour ces actions sensibles et révélations de secrets.
