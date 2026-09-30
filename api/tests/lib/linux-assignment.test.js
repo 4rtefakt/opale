@@ -50,7 +50,7 @@ test('assignBulk : groupe natif récursif, lignes non pull et inconnues comptée
   await db.query('INSERT INTO group_members (group_id, device_id) VALUES ($1, $2)', [child.id, b.id])
   const byGroup = await assignBulk(db, null, 'Admin', { groupId: parent.id, profile: 'admin' })
   assert.deepEqual(byGroup, { ok: 2, skipped: 1, errors: [{ id: win.id, code: 'NOT_PULL_MANAGED' }] })
-  const { rows } = await db.query('SELECT hostname, profile, ring FROM devices WHERE id = ANY($1::uuid[]) ORDER BY hostname', [[a.id, b.id, win.id]])
+  const { rows } = await db.query('SELECT hostname, profile, ring FROM devices WHERE id = ANY($1::uuid[]) ORDER BY hostname COLLATE "C"', [[a.id, b.id, win.id]])
   assert.deepEqual(rows, [{ hostname: 'PC-BULK', profile: null, ring: null }, { hostname: 'lx-bulk-a', profile: 'admin', ring: 'pilot' }, { hostname: 'lx-bulk-b', profile: 'admin', ring: 'pilot' }])
   const byIds = await assignBulk(db, null, 'Admin', { ids: [a.id, a.id, NIL], ring: 'stable' })
   assert.deepEqual(byIds, { ok: 1, skipped: 1, errors: [{ id: NIL, code: 'NOT_FOUND' }] })

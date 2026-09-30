@@ -217,7 +217,7 @@ test('POST /devices/assign-bulk â€” par groupe natif avec lignes non pull ignorÃ
   const res = await api('POST', '/api/linux/devices/assign-bulk', { payload: { group_id: group.id, ring: 'stable' } })
   assert.equal(res.statusCode, 200, res.body)
   assert.deepEqual(res.json(), { ok: 2, skipped: 1, errors: [{ id: devices.win.id, code: 'NOT_PULL_MANAGED' }] })
-  const { rows } = await db.query('SELECT hostname, ring FROM devices WHERE id = ANY($1::uuid[]) ORDER BY hostname', [[devices.p1.id, devices.s1.id, devices.win.id]])
+  const { rows } = await db.query('SELECT hostname, ring FROM devices WHERE id = ANY($1::uuid[]) ORDER BY hostname COLLATE "C"', [[devices.p1.id, devices.s1.id, devices.win.id]])
   assert.deepEqual(rows, [{ hostname: 'PC-WIN', ring: null }, { hostname: 'lx-p1', ring: 'stable' }, { hostname: 'lx-s1', ring: 'stable' }])
   const { rows: audits } = await db.query("SELECT target FROM audit_logs WHERE action = 'linux_assignment_changed' AND details->'after'->>'ring' = 'stable' AND target = $1", [devices.p1.id])
   assert.equal(audits.length, 1, 'audit par poste')
