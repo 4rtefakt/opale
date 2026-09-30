@@ -71,7 +71,7 @@ test('POST /setup-log — un Bearer aléatoire par requête n\'ouvre plus un com
   assert.equal(other.statusCode, 204)
 })
 
-test('POST /setup-log — réponse 429 lisible (pas une 500)', { skip: SKIP }, async () => {
+test('POST /setup-log — réponse 429 lisible avec délai de nouvelle tentative', { skip: SKIP }, async () => {
   let res
   for (let i = 0; i < 61; i++) {
     res = await fastify.inject({
@@ -82,6 +82,9 @@ test('POST /setup-log — réponse 429 lisible (pas une 500)', { skip: SKIP }, a
   }
   assert.equal(res.statusCode, 429)
   assert.equal(res.json().error, 'Trop de requêtes')
+  assert.equal(typeof res.json().retry_after_ms, 'number')
+  assert.ok(res.json().retry_after_ms > 0)
+  assert.ok(Number(res.headers['retry-after']) > 0)
 })
 
 test('POST /setup-log — body > 64 Kio → 413, rien n\'est journalisé', { skip: SKIP }, async () => {

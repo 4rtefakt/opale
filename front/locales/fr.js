@@ -92,6 +92,7 @@ export default {
   'dashboard.activity.action.token_rotated':            'Token renouvelé',
   'dashboard.activity.action.admin_granted':            'Admin accordé',
   'dashboard.activity.action.admin_revoked':            'Admin révoqué',
+  'dashboard.activity.action.settings_changed':         'Paramètres modifiés',
   'dashboard.activity.action.package_deployed':         'Package déployé',
   'dashboard.activity.action.compliance_changed':       'Conformité modifiée',
   'dashboard.activity.action.tamper_detected':          'Falsification détectée',

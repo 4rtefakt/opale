@@ -155,7 +155,7 @@ the product name.
 |---|---|---|---|
 | `disk_warn_pct` | int | `80` | Disk usage % above which a warning alert fires and a push notification is sent |
 | `disk_critical_pct` | int | `90` | Disk usage % above which a critical alert fires |
-| `agent_offline_days` | int | `2` | Days of silence before a device is flagged offline |
+| `agent_offline_days` | int | `7` | Days of silence before a device is flagged offline |
 
 ### 2.3 Microsoft Graph user listing filter
 
@@ -274,7 +274,7 @@ All under `/api/agent/`, agent-token Bearer auth (token created from
 | `GET` | `/binary` | Latest agent binary, signed; arch selected via UA `windows/<arch>` or `?arch=` |
 | `GET` | `/binary/meta` | `{ arch, version, sha256, signature_ed25519, size }` — used by the agent before downloading |
 
-Binary signature: ed25519 over the SHA-256 of the binary. The agent
+Binary signature: ed25519 over the raw binary bytes (SHA-256 is a separate sidecar). The agent
 embeds the public key at compile time and refuses any binary it can't
 verify.
 

@@ -130,6 +130,7 @@ async function _fetch(append) {
 }
 
 const _BADGE = {
+  settings_changed:          ['b-prog',   'ti-settings'],
   agent_checkin:             ['b-done',   'ti-device-laptop'],
   setup_script:              ['b-open',   'ti-script'],
   intune_sync:               ['b-open',   'ti-cloud-download'],
@@ -163,6 +164,7 @@ const _BADGE = {
 // Libellés FR pour les actions remontées dans les badges. Si absent,
 // on tombe sur le nom brut de l'action (forward-compat).
 const _ACTION_LABEL = {
+  settings_changed:       'Paramètres modifiés',
   agent_console_open:     'console ouverte',
   agent_console_close:    'console fermée',
   agent_console_takeover: 'console reprise',
@@ -216,6 +218,7 @@ function _truncate(s, n) {
 
 function _summary(action, details) {
   if (!details) return ''
+  if (action === 'settings_changed') return Object.keys(details.changed || {}).join(', ')
   if (action === 'intune_sync')   return t('audit.summary.intune', { ok: details.upserted ?? 0, errors: details.errors ?? 0 })
   if (action === 'agent_checkin') {
     let s = t('audit.summary.agent_checkin', { disks: details.disks ?? 0 })

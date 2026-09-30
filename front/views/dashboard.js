@@ -265,6 +265,7 @@ function activityPanel(rows) {
 
 // Subset des badges/labels audit.js — affichage compact pour le dashboard.
 const _ACTIVITY_ICON = {
+  settings_changed:          'ti-settings',
   agent_console_open:        'ti-terminal-2',
   agent_console_close:       'ti-terminal-2',
   agent_console_takeover:    'ti-hand-grab',

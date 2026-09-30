@@ -32,6 +32,9 @@ async function errorHandlerPlugin(fastify) {
     // `reply.code(...).send({ error: ... })` pour les cas contrôlés,
     // donc cet handler attrape surtout l'inattendu validation.
     req.log.warn({ err: err.message, route: req.routeOptions?.url, status }, 'request error')
+    if (err.statusCode === 429 && typeof err.retry_after_ms === 'number') {
+      return reply.code(status).send({ error: err.message, retry_after_ms: err.retry_after_ms })
+    }
     reply.code(status).send({ error: err.message || 'Requête invalide' })
   })
 }
