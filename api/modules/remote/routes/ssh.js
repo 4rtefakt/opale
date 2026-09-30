@@ -6,6 +6,7 @@ import { attachSystemEventToOpenTicketsOfDevice } from '../../tickets/lib/ticket
 import { logAudit } from '../../core/lib/audit.js'
 import { createGrantStore } from '../lib/one-shot-grant.js'
 import { hostKeyGuard } from '../lib/ssh-host-key.js'
+import { isPullManaged } from '../../inventory/lib/pull-managed.js'
 
 function sshKey() {
   const b64 = process.env.SSH_PRIVATE_KEY_B64
@@ -40,6 +41,9 @@ export default async function sshRoute(fastify) {
       'SELECT id FROM devices WHERE id = $1', [deviceId]
     )
     if (!rows[0]) return reply.code(404).send({ error: 'Poste introuvable' })
+    if (await isPullManaged(fastify.db, deviceId)) {
+      return reply.code(409).send({ error: 'Poste géré par état désiré (Linux) : pas de terminal SSH', code: 'PULL_MANAGED' })
+    }
 
     const identity = fastify.getUserIdentity(req)
     const { nonce, expires_in } = grants.create({

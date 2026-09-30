@@ -283,6 +283,9 @@ const SETUP_LOG_STORED_MAX = 8 * 1024
 // n'est JAMAIS accepté ici : il ne sert qu'à /exchange-token. Sinon il
 // permettait de checkin (et de se lier) comme n'importe quel poste, ou
 // d'obtenir via /rotate-token un token perso non lié.
+// Un token lié à un poste converti en gestion par état désiré (Linux,
+// managed_by = 'pull') est refusé même si sa révocation a échoué : ce poste
+// n'a plus d'agent legacy.
 async function authToken(fastify, req) {
   const auth = req.headers.authorization || ''
   if (!auth.startsWith('Bearer ')) return null
@@ -293,7 +296,8 @@ async function authToken(fastify, req) {
        WHERE token_hash = $1
          AND is_bootstrap = FALSE
          AND revoked_at IS NULL
-         AND (expires_at IS NULL OR expires_at > now())`,
+         AND (expires_at IS NULL OR expires_at > now())
+         AND NOT EXISTS (SELECT 1 FROM devices d WHERE d.id = agent_tokens.device_id AND d.managed_by = 'pull')`,
     [hash]
   )
   return rows[0] || null
@@ -368,7 +372,7 @@ export default async function agentRoute(fastify) {
       let deviceId
       let revokedUnused = []
       const { rows: dev } = await client.query(
-        'SELECT id, serial FROM devices WHERE hostname = $1 FOR UPDATE', [hostname]
+        'SELECT id, serial, managed_by FROM devices WHERE hostname = $1 FOR UPDATE', [hostname]
       )
       if (dev[0]) {
         const refusal = await checkDeviceClaim(client, { device: dev[0], serial })
@@ -776,11 +780,11 @@ export default async function agentRoute(fastify) {
     // → fail unique constraint sur hostname. Avec le fallback, on tombe
     // sur la row Intune et on l'UPDATE normalement.
     let lookup = serial
-      ? await fastify.db.query(`SELECT id, hostname, serial, source, disk_used_pct, compliance_state, agent_version FROM devices WHERE serial = $1`, [serial])
-      : await fastify.db.query(`SELECT id, hostname, serial, source, disk_used_pct, compliance_state, agent_version FROM devices WHERE hostname = $1`, [hostname])
+      ? await fastify.db.query(`SELECT id, hostname, serial, source, disk_used_pct, compliance_state, agent_version, managed_by FROM devices WHERE serial = $1`, [serial])
+      : await fastify.db.query(`SELECT id, hostname, serial, source, disk_used_pct, compliance_state, agent_version, managed_by FROM devices WHERE hostname = $1`, [hostname])
     if (serial && !lookup.rows.length) {
       lookup = await fastify.db.query(
-        `SELECT id, hostname, serial, source, disk_used_pct, compliance_state, agent_version FROM devices WHERE hostname = $1`,
+        `SELECT id, hostname, serial, source, disk_used_pct, compliance_state, agent_version, managed_by FROM devices WHERE hostname = $1`,
         [hostname]
       )
     }
@@ -812,7 +816,7 @@ export default async function agentRoute(fastify) {
       try {
         await client.query('BEGIN')
         const { rows: [locked] } = await client.query(
-          'SELECT id, serial FROM devices WHERE id = $1 FOR UPDATE', [lookup.rows[0].id]
+          'SELECT id, serial, managed_by FROM devices WHERE id = $1 FOR UPDATE', [lookup.rows[0].id]
         )
         refusal = await checkDeviceClaim(client, {
           device: locked || lookup.rows[0], serial, excludeTokenId: token.id,

@@ -38,7 +38,7 @@ const js = (code) => new Response(code, { headers: { 'Content-Type': 'applicatio
 const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers } })
 
 const BRANDING = { org_name: 'Démo Opale', product_name: 'Opale', tagline: 'Open RMM platform — démo', default_role_label: 'IT' }
-const MODULES = { core: true, inventory: true, monitoring: true, remote: true, tickets: true, onboarding: true, groups: true, 'email-bridge': true, ask: true }
+const MODULES = { core: true, inventory: true, monitoring: true, remote: true, tickets: true, onboarding: true, groups: true, 'email-bridge': true, ask: true, linux: false }
 
 function envScript() {
   const env = { ENTRA_TENANT_ID: '', ENTRA_CLIENT_ID: '', API_BASE_URL: '/api', SSH_USER: 'opale', SSH_PORT: 22, BRANDING, DEMO: true }

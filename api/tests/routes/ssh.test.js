@@ -160,6 +160,19 @@ test('POST /grant — happy path → 200 + nonce 64 hex + expires_in 30s', { ski
   assert.equal(body.expires_in, 30)
 })
 
+test('POST /grant — poste géré par état désiré (Linux) → 409 PULL_MANAGED, aucun nonce', { skip: SKIP }, async () => {
+  const { token } = await adminJwt('oid-ssh-pull')
+  const device = await seedDevice(db, { hostname: 'lx-ssh-pull', ipNetbird: '100.64.0.2', platform: 'linux', managed_by: 'pull' })
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/ssh/grant',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { deviceId: device.id, reason: { category: 'maintenance', note: 'maintenance disque' } },
+  })
+  assert.equal(res.statusCode, 409, res.body)
+  assert.equal(res.json().code, 'PULL_MANAGED')
+  assert.equal(res.json().nonce, undefined)
+})
+
 // Ouverture du terminal : ip_netbird est remonté par l'agent. Un nom d'hôte
 // (agent compromis, valeur antérieure à la validation du checkin) ne doit
 // jamais devenir la cible du SSH : ni session journalisée, ni connexion.

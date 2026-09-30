@@ -90,6 +90,29 @@ test('ordre — clé inconnue, statut, horloge, nonce, signature', async () => {
   assert.equal((await verifyDeviceRequest({ ...req, nonceStore: createNonceStore() })).code, 'SIGNATURE_INVALID')
 })
 
+// /enroll : clé inconnue du serveur, signature vérifiée contre le
+// `public_key` du corps dont l'empreinte doit égaler x-opale-key.
+test('allowUnknown — clé inconnue acceptée si le corps porte la clé publique de l’empreinte', async () => {
+  const body = Buffer.from(JSON.stringify({ public_key: raw.toString('base64'), serial: 'SN' }))
+  const headers = signRequest({ privateKey: pair.privateKey, fingerprint, method: 'POST', target, body, timestamp: now })
+  const base = { method: 'POST', target, rawBody: body, headers, now, lookupKey: async () => null, allowStatuses: ['pending'] }
+  const ok = await verifyDeviceRequest({ ...base, allowUnknown: true, nonceStore: createNonceStore() })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.key, null, 'aucune ligne de clé : req.deviceKey = null')
+  assert.equal((await verifyDeviceRequest({ ...base, nonceStore: createNonceStore() })).code, 'UNKNOWN_KEY')
+  // Clé publique d'une autre paire, ou corps non JSON : refusé comme une signature invalide.
+  const other = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'der' }).subarray(-32)
+  const forged = Buffer.from(JSON.stringify({ public_key: other.toString('base64') }))
+  const forgedHeaders = signRequest({ privateKey: pair.privateKey, fingerprint, method: 'POST', target, body: forged, timestamp: now })
+  assert.equal((await verifyDeviceRequest({ ...base, rawBody: forged, headers: forgedHeaders, allowUnknown: true, nonceStore: createNonceStore() })).code, 'SIGNATURE_INVALID')
+  const garbage = Buffer.from('{')
+  const garbageHeaders = signRequest({ privateKey: pair.privateKey, fingerprint, method: 'POST', target, body: garbage, timestamp: now })
+  assert.equal((await verifyDeviceRequest({ ...base, rawBody: garbage, headers: garbageHeaders, allowUnknown: true, nonceStore: createNonceStore() })).code, 'SIGNATURE_INVALID')
+  // Clé connue : le statut reste contrôlé même avec allowUnknown.
+  const revoked = await verifyDeviceRequest({ ...base, allowUnknown: true, nonceStore: createNonceStore(), lookupKey: async () => ({ ...key, status: 'revoked' }) })
+  assert.equal(revoked.code, 'REVOKED')
+})
+
 test('allowStatuses — les quatre statuts peuvent être autorisés pour enroll', async () => {
   const allowStatuses = ['approved', 'pending', 'rejected', 'revoked']
   for (const status of allowStatuses) {

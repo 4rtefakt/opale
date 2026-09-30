@@ -3,6 +3,7 @@ import { parseReason, formatReasonLine } from '../lib/remote-reason.js'
 import { attachSystemEventToOpenTicketsOfDevice } from '../../tickets/lib/ticket-events.js'
 import { logAudit } from '../../core/lib/audit.js'
 import { createGrantStore } from '../lib/one-shot-grant.js'
+import { isPullManaged } from '../../inventory/lib/pull-managed.js'
 
 // Console-via-agent : terminal interactif sur un poste Windows, servi via
 // l'agent Go (qui tourne déjà en SYSTEM avec un token authentifié), sans
@@ -55,6 +56,9 @@ export default async function consoleRoute(fastify) {
       'SELECT id FROM devices WHERE id = $1', [deviceId]
     )
     if (!rows[0]) return reply.code(404).send({ error: 'Poste introuvable' })
+    if (await isPullManaged(fastify.db, deviceId)) {
+      return reply.code(409).send({ error: 'Poste géré par état désiré (Linux) : pas de console via agent', code: 'PULL_MANAGED' })
+    }
 
     const conn = fastify.agentWs.get(deviceId)
     if (!conn) {

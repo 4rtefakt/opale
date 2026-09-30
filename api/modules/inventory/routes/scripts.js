@@ -2,6 +2,7 @@ import { isIP } from 'node:net'
 import { Client } from 'ssh2'
 import { resolveGroupDeviceIds } from '../../groups/lib/groups.js'
 import { scriptOutputForDb } from '../lib/script-output.js'
+import { isPullManaged, NOT_PULL_MANAGED_SQL } from '../lib/pull-managed.js'
 import { hostKeyGuard } from '../../remote/lib/ssh-host-key.js'
 
 function sshKey() {
@@ -185,8 +186,11 @@ export default async function scriptsRoute(fastify) {
       if (!targetIds.length) return reply.code(400).send({ error: 'Groupe natif vide ou ne contient aucun poste' })
     }
 
+    // Les postes gérés par état désiré (Linux) ne reçoivent jamais de script :
+    // filtrés ici comme les postes sans IP.
     const { rows: candidates } = await fastify.db.query(
-      `SELECT id, hostname, ip_netbird FROM devices WHERE id = ANY($1::uuid[]) AND ip_netbird IS NOT NULL`,
+      `SELECT id, hostname, ip_netbird FROM devices
+        WHERE id = ANY($1::uuid[]) AND ip_netbird IS NOT NULL AND ${NOT_PULL_MANAGED_SQL}`,
       [targetIds]
     )
     // ip_netbird est remonté par l'agent : on n'ouvre le SSH que vers une IP
@@ -268,6 +272,10 @@ export default async function scriptsRoute(fastify) {
     const { rows: scripts } = await fastify.db.query('SELECT * FROM scripts WHERE id = $1', [req.params.id])
     if (!scripts.length) return reply.code(404).send({ error: 'Script introuvable' })
     const script = scripts[0]
+
+    if (await isPullManaged(fastify.db, device_id)) {
+      return reply.code(409).send({ error: 'Poste géré par état désiré (Linux) : aucun script à distance', code: 'PULL_MANAGED' })
+    }
 
     const { rows } = await fastify.db.query(`
       INSERT INTO script_executions

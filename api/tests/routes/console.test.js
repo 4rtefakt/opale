@@ -303,3 +303,17 @@ test('POST /grant — takeover=true sur session active → 200 (signal "remplace
   assert.equal(res.statusCode, 200)
   assert.match(res.json().nonce, /^[0-9a-f]{64}$/)
 })
+
+test('POST /grant — poste géré par état désiré (Linux) → 409 PULL_MANAGED, même avec un agent connecté', { skip: SKIP }, async () => {
+  const { token } = await adminJwt('oid-grant-pull')
+  const device = await seedDevice(db, { hostname: 'lx-grant-pull', platform: 'linux', managed_by: 'pull' })
+  agentWsFake.set(device.id, { capabilities: ['console'], agentVersion: '2.14.0' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/console/grant',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { deviceId: device.id, reason: { category: 'audit', note: 'revue trimestrielle' } },
+  })
+  assert.equal(res.statusCode, 409, res.body)
+  assert.equal(res.json().code, 'PULL_MANAGED')
+})

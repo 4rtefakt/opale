@@ -23,6 +23,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
 import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
+import { seedDevice } from '../fixtures/devices.js'
 
 import devicesRoute from '../../modules/inventory/routes/devices.js'
 import { startFakeSshServer, sshClientEnv, trackUnhandledRejections } from '../helpers/fake-ssh.js'
@@ -502,4 +503,118 @@ test('GET /:id — expose l\'empreinte d\'hôte SSH apprise (fiche du poste)', {
   assert.equal(res.json().ssh_host_key_fp, 'empreinte-fiche')
   assert.ok(res.json().ssh_host_key_learned_at)
   assert.equal(res.json().ssh_host_key_policy, 'tofu')
+})
+
+// ─── Gestion par état désiré (Linux) : champs exposés, chokepoints ──────────
+
+test('GET / et GET /:id — platform / managed_by exposés ; la fiche ajoute profile, ring, last_apply_* et recovery_keys_count', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-dev-platform')
+  const headers = { authorization: `Bearer ${token}` }
+  const win = await seedDevice(db, { hostname: 'PC-PLATFORM-WIN' })
+  const pull = await seedDevice(db, { hostname: 'lx-platform-pull', platform: 'linux', managed_by: 'pull', profile: 'field', ring: 'pilot' })
+  await db.query(`UPDATE devices SET last_apply_status = 'success', last_apply_at = now() WHERE id = $1`, [pull.id])
+  await db.query(`
+    INSERT INTO device_recovery_keys (device_id, kind, label, ciphertext, key_id)
+    VALUES ($1, 'luks_recovery', 'root', '\\x00', 'k1')
+  `, [pull.id])
+
+  const list = await fastify.inject({ method: 'GET', url: '/api/devices?search=platform', headers })
+  assert.equal(list.statusCode, 200)
+  const byHost = Object.fromEntries(list.json().devices.map(d => [d.hostname, d]))
+  assert.deepEqual([byHost['PC-PLATFORM-WIN'].platform, byHost['PC-PLATFORM-WIN'].managed_by], [null, null])
+  assert.deepEqual([byHost['lx-platform-pull'].platform, byHost['lx-platform-pull'].managed_by], ['linux', 'pull'])
+
+  const detail = await fastify.inject({ method: 'GET', url: `/api/devices/${pull.id}`, headers })
+  assert.equal(detail.statusCode, 200)
+  const body = detail.json()
+  assert.equal(body.platform, 'linux')
+  assert.equal(body.managed_by, 'pull')
+  assert.equal(body.profile, 'field')
+  assert.equal(body.ring, 'pilot')
+  assert.equal(body.last_apply_status, 'success')
+  assert.ok(body.last_apply_at)
+  assert.equal(body.recovery_keys_count, 1)
+  const winDetail = await fastify.inject({ method: 'GET', url: `/api/devices/${win.id}`, headers })
+  assert.equal(winDetail.json().recovery_keys_count, 0)
+  assert.equal(winDetail.json().last_apply_status, null)
+})
+
+test('POST /force-checkin — poste pull ignoré (skipped) avant toute connexion SSH', { skip: SKIP }, async (t) => {
+  // Clé SSH valide et IP littérale : sans le garde, la route tenterait le SSH
+  // vers le port fermé et rapporterait une erreur au lieu d'ignorer le poste.
+  let key
+  for (let i = 0; i < 20 && !key; i++) {
+    const k = sshUtils.generateKeyPairSync('ed25519')
+    if (!(sshUtils.parseKey(k.private) instanceof Error)) key = k
+  }
+  const closedPort = await new Promise((resolve) => {
+    const srv = net.createServer().listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)) })
+  })
+  const saved = { SSH_PRIVATE_KEY_B64: process.env.SSH_PRIVATE_KEY_B64, SSH_PORT: process.env.SSH_PORT }
+  process.env.SSH_PRIVATE_KEY_B64 = Buffer.from(key.private).toString('base64')
+  process.env.SSH_PORT = String(closedPort)
+  t.after(() => {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  })
+  const { token } = await adminAuth('oid-dev-force-pull')
+  const pull = await seedDevice(db, { hostname: 'lx-force-pull', ipNetbird: '127.0.0.1', platform: 'linux', managed_by: 'pull' })
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/devices/force-checkin',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { ids: [pull.id] },
+  })
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(res.json(), { ok: 0, skipped: 1, errors: [] })
+})
+
+// ─── PATCH /:id — assignation d'un utilisateur (contrat deviceSetAssignedUser) ─
+
+test('PATCH /:id — sans Bearer → 401 ; non-admin → 403 ; corps hors schéma → 400', { skip: SKIP }, async () => {
+  const id = await insertDevice({ hostname: 'PC-ASSIGN-AUTH' })
+  assert.equal((await fastify.inject({ method: 'PATCH', url: `/api/devices/${id}`, payload: { assigned_user_id: null } })).statusCode, 401)
+  const u = await seedNonAdmin(db, { entraId: 'oid-dev-assign-user' })
+  const userToken = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const forbidden = await fastify.inject({
+    method: 'PATCH', url: `/api/devices/${id}`, headers: { authorization: `Bearer ${userToken}` }, payload: { assigned_user_id: null },
+  })
+  assert.equal(forbidden.statusCode, 403)
+  const { token } = await adminAuth('oid-dev-assign-admin')
+  for (const payload of [{}, { assigned_user_id: 'x', extra: 1 }, { assigned_user_id: 42 }]) {
+    const res = await fastify.inject({ method: 'PATCH', url: `/api/devices/${id}`, headers: { authorization: `Bearer ${token}` }, payload })
+    assert.equal(res.statusCode, 400, res.body)
+  }
+})
+
+test('PATCH /:id — assigne puis désassigne, audit device_assigned ; utilisateur inconnu → 400 ; poste inconnu → 404', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-dev-assign-ok')
+  const headers = { authorization: `Bearer ${token}` }
+  await seedNonAdmin(db, { entraId: 'oid-dev-assignee', displayName: 'Assignee' })
+  const id = await insertDevice({ hostname: 'PC-ASSIGN-OK' })
+
+  const assigned = await fastify.inject({ method: 'PATCH', url: `/api/devices/${id}`, headers, payload: { assigned_user_id: 'oid-dev-assignee' } })
+  assert.equal(assigned.statusCode, 200, assigned.body)
+  assert.deepEqual(assigned.json(), { id, assigned_user_id: 'oid-dev-assignee', assigned_user_name: 'Assignee' })
+  const { rows: [row] } = await db.query('SELECT assigned_user_id FROM devices WHERE id = $1', [id])
+  assert.equal(row.assigned_user_id, 'oid-dev-assignee')
+
+  const unknown = await fastify.inject({ method: 'PATCH', url: `/api/devices/${id}`, headers, payload: { assigned_user_id: 'oid-nobody' } })
+  assert.equal(unknown.statusCode, 400)
+  assert.equal(unknown.json().code, 'UNKNOWN_USER')
+
+  const cleared = await fastify.inject({ method: 'PATCH', url: `/api/devices/${id}`, headers, payload: { assigned_user_id: null } })
+  assert.equal(cleared.statusCode, 200, cleared.body)
+  assert.deepEqual(cleared.json(), { id, assigned_user_id: null, assigned_user_name: null })
+
+  const missing = await fastify.inject({
+    method: 'PATCH', url: '/api/devices/00000000-0000-4000-8000-000000000000', headers, payload: { assigned_user_id: null },
+  })
+  assert.equal(missing.statusCode, 404)
+  assert.equal(missing.json().code, 'NOT_FOUND')
+
+  const { rows: audits } = await db.query(
+    "SELECT by_user, details FROM audit_logs WHERE action = 'device_assigned' AND target = $1 ORDER BY created_at, id", [id]
+  )
+  assert.deepEqual(audits.map(a => a.details), [{ before: null, after: 'oid-dev-assignee' }, { before: 'oid-dev-assignee', after: null }])
+  assert.equal(audits[0].by_user, 'Admin Test')
 })

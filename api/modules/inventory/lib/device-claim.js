@@ -38,10 +38,13 @@ export function normalizeSerial(serial) {
 }
 
 // Retourne null si le device peut être revendiqué, sinon
-// { reason: 'serial_missing' | 'serial_mismatch' | 'active_token', token_id? }.
-// `device` = { id, serial } ; `serial` = série envoyée par le poste.
+// { reason: 'pull_managed' | 'serial_missing' | 'serial_mismatch' | 'active_token', token_id? }.
+// `device` = { id, serial, managed_by } ; `serial` = série envoyée par le poste.
 // `excludeTokenId` : token en cours de rattachement, ignoré dans le check 2.
+// Un poste géré par état désiré (Linux, managed_by = 'pull') n'a plus de
+// token agent legacy : aucun bootstrap ni token non lié ne peut le revendiquer.
 export async function checkDeviceClaim(db, { device, serial, excludeTokenId = null }) {
+  if (device.managed_by === 'pull') return { reason: 'pull_managed' }
   const deviceSerial = normalizeSerial(device.serial)
   if (deviceSerial) {
     const sent = normalizeSerial(serial)
@@ -67,6 +70,7 @@ export async function checkDeviceClaim(db, { device, serial, excludeTokenId = nu
 // Messages renvoyés au poste (loggés par l'installeur) — volontairement
 // actionnables pour l'admin qui lira le log.
 export const CLAIM_REFUSAL_MESSAGES = {
+  pull_managed:    'Poste géré par état désiré (Linux) : enrôlement legacy refusé',
   serial_missing:  'Poste déjà connu avec un numéro de série : série absente de la requête — enrôlement refusé',
   serial_mismatch: 'Poste déjà connu avec un autre numéro de série — enrôlement refusé',
   active_token:    'Poste déjà enrôlé (token actif) — un admin doit révoquer l\'ancien token avant réenrôlement',

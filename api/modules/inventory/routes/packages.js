@@ -1,6 +1,7 @@
 import { getGroupDeviceHostnames } from '../../core/lib/graph.js'
 import { resolveGroupDeviceIds } from '../../groups/lib/groups.js'
 import { SNAPSHOT_COLUMNS, SNAPSHOT_UPSERT, snapshotSelect } from '../lib/deployment-snapshots.js'
+import { filterPullManaged } from '../lib/pull-managed.js'
 
 // Gestion des packages déployables (winget ou script PowerShell)
 
@@ -400,8 +401,15 @@ export default async function packagesRoute(fastify) {
       return reply.code(400).send({ error: 'scope invalide — valeurs acceptées : device, group, native_group, all, user' })
     }
 
+    // Les postes gérés par état désiré (Linux) ne reçoivent pas de package :
+    // écartés de tout scope (multi-sélection comprise) et comptés, jamais
+    // refusés. Le seuil de confirmation est calculé après ce filtre.
+    const filtered = await filterPullManaged(fastify.db, resolvedDeviceIds)
+    resolvedDeviceIds = filtered.kept
+    const skippedPull = filtered.skipped
+
     if (resolvedDeviceIds.length === 0 && scope !== 'user') {
-      return reply.code(400).send({ error: 'Aucun device managé trouvé pour ce scope', unmatched })
+      return reply.code(400).send({ error: 'Aucun device managé trouvé pour ce scope', unmatched, skipped_pull: skippedPull })
     }
 
     // Garde : plus de 10 devices nécessite confirmation explicite.
@@ -413,6 +421,7 @@ export default async function packagesRoute(fastify) {
         requires_confirmation: true,
         count: resolvedDeviceIds.length,
         unmatched,
+        skipped_pull: skippedPull,
         message: `Déploiement sur ${resolvedDeviceIds.length} postes — confirmez en ajoutant "confirmed": true`,
       })
     }
@@ -463,7 +472,7 @@ export default async function packagesRoute(fastify) {
       }
     }
 
-    const resp = { queued, total: resolvedDeviceIds.length }
+    const resp = { queued, total: resolvedDeviceIds.length, skipped_pull: skippedPull }
     if (unmatched) resp.unmatched = unmatched
     if (job) resp.job_id = job.id
     reply.code(201).send(resp)
