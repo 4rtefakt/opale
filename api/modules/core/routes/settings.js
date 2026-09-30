@@ -332,8 +332,9 @@ export default async function settingsRoute(fastify) {
   // POST /api/settings/sync-intune — sync complète depuis Intune
   fastify.post('/sync-intune', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
     const { displayName } = fastify.getUserIdentity(req)
-    let upserted   = 0
-    let errors     = 0
+    let upserted     = 0
+    let errors       = 0
+    let skipped_pull = 0
     const errorLog = []
 
     try {
@@ -397,7 +398,9 @@ export default async function settingsRoute(fastify) {
               assigned_user_id         = COALESCE(EXCLUDED.assigned_user_id, devices.assigned_user_id)`
 
         try {
-          await fastify.db.query(`
+          // Design Linux §2 : une réinstallation en pull ne doit jamais
+          // être écrasée par Intune, quel que soit le conflit (série ou hostname).
+          const result = await fastify.db.query(`
             INSERT INTO devices (
               hostname, serial, model, manufacturer, os, os_build,
               ram_gb, disk_used_pct, disk_total_gb,
@@ -406,6 +409,7 @@ export default async function settingsRoute(fastify) {
               assigned_user_id
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$12)
             ${conflictClause} DO UPDATE SET ${updateSet}
+            WHERE devices.managed_by IS DISTINCT FROM 'pull'
           `, [
             d.deviceName       || null,
             serial,
@@ -424,7 +428,8 @@ export default async function settingsRoute(fastify) {
             d.lastSyncDateTime || null,
             d.enrolledDateTime || null,
           ])
-          upserted++
+          if (result.rowCount) upserted++
+          else skipped_pull++
         } catch (err) {
           errors++
           errorLog.push(`[${d.deviceName || '?'}] ${err.message}`)
@@ -437,9 +442,9 @@ export default async function settingsRoute(fastify) {
     await logAudit(fastify.db, fastify.log, {
       action:  'intune_sync',
       byUser:  displayName,
-      details: { upserted, errors, ...(errorLog.length ? { log: errorLog.join('\n') } : {}) },
+      details: { upserted, errors, skipped_pull, ...(errorLog.length ? { log: errorLog.join('\n') } : {}) },
     })
 
-    reply.send({ upserted, errors })
+    reply.send({ upserted, errors, skipped_pull })
   })
 }

@@ -9,6 +9,7 @@ import Fastify from 'fastify'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import cleanupPlugin, { runCleanup } from '../../plugins/cleanup.js'
 import * as retention from '../../lib/retention.js'
+import { seedLinuxDeviceKey } from '../fixtures/linux-device-keys.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
 const silentLog = { info() {}, warn() {}, error() {} }
@@ -78,6 +79,31 @@ test('lib/retention.js : une règle par table, tables et colonnes existantes', {
     assert.equal(retention.retentionDays(table), days)
   }
   assert.throws(() => retention.retentionDays('inconnue'), /inconnue/)
+  assert.equal(retention.retentionDays('linux_apply_reports'), 90)
+  assert.equal(retention.retentionDays('linux_device_keys'), 7)
+  assert.equal(rules.find(r => r.table === 'linux_device_keys').where, "status = 'pending'")
+})
+
+test('Linux : purge des clés en attente après 7 jours et des rapports après 90 jours', { skip: SKIP }, async () => {
+  const kept = []
+  for (const status of ['pending', 'approved', 'rejected', 'revoked']) {
+    const key = await seedLinuxDeviceKey(db, { deviceId, status })
+    await db.query(`UPDATE linux_device_keys SET last_seen_at = ${ago(8)} WHERE id = $1`, [key.id])
+    if (status !== 'pending') kept.push(key.id)
+  }
+  const recent = await seedLinuxDeviceKey(db)
+  await db.query(`UPDATE linux_device_keys SET last_seen_at = ${ago(6)} WHERE id = $1`, [recent.id])
+  kept.push(recent.id)
+  // Seule la date de réception fait foi, même si le démarrage est récent/ancien.
+  await db.query(`INSERT INTO linux_apply_reports (device_id, status, received_at, started_at)
+    VALUES ($1, 'success', ${ago(91)}, now()), ($1, 'failed', ${ago(89)}, ${ago(100)})`, [deviceId])
+
+  await runCleanup({ db, log: silentLog })
+
+  const keys = await db.query('SELECT id FROM linux_device_keys')
+  assert.deepEqual(keys.rows.map(r => r.id).sort(), kept.sort())
+  const reports = await db.query('SELECT status FROM linux_apply_reports')
+  assert.deepEqual(reports.rows, [{ status: 'failed' }])
 })
 
 // ── Exécutions bloquées en 'running' ─────────────────────────────────────────

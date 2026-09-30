@@ -1,0 +1,1697 @@
+openapi: 3.1.0
+# Opale — Linux fleet management (pull-based). SOURCE OF TRUTH for the `linux` module.
+#
+# Rules for this file (enforced by api/tests/lib/linux-spec.test.js):
+#   - Loaded at runtime by api/modules/linux/lib/spec.js; every route in the module takes its Fastify
+#     `schema` from here (schemaFor(operationId)). Do not write ad-hoc schemas in route files.
+#   - JSON-Schema keywords are restricted to what Fastify 5 / Ajv draft-07 strict accepts:
+#     use `examples` (never `example`), type arrays for null (never `nullable`), no `discriminator`,
+#     `prefixItems`, `unevaluatedProperties`, `readOnly`, `deprecated`. `$ref` only to #/components/schemas/*.
+#   - Every operation must exist in the module and vice-versa (parity test); every `examples` entry
+#     must validate against its schema; unknown request fields are STRIPPED by Fastify (removeAdditional),
+#     so handlers destructure only documented fields.
+#   - x-opale-module: which module registers the route (default: linux). x-opale-raw: true = the
+#     route bypasses JSON body handling (git smart HTTP); only parity is checked.
+#   - Design: docs/linux-fleet-design.md.
+info:
+  title: Opale Linux fleet API
+  version: 1.0.0
+  description: |
+    Control plane for Debian workstations managed by pull: devices enrol with a self-generated Ed25519
+    key, are approved (or auto-approved by serial pre-registration), fetch their assignment at each
+    check-in, pull their goal state from Opale's read-only git mirror with `ansible-pull`, and report
+    the result. Opale never runs code on a Linux device: it only chooses which *signed* revision each
+    ring applies.
+
+    ## Device authentication (all `/api/linux/agent/*` operations except the git smart-HTTP routes)
+    Every request carries:
+    - `x-opale-key`: device key fingerprint = hex(sha256(raw 32-byte Ed25519 public key))
+    - `x-opale-timestamp`: unix seconds
+    - `x-opale-nonce`: 16 random bytes, hex
+    - `x-opale-signature`: base64(Ed25519.sign(private_key, canonical))
+
+    `canonical = "opale-linux-v1\n" + METHOD + "\n" + path_with_query + "\n" + timestamp + "\n" + nonce + "\n" + hex(sha256(raw_request_body))`
+    (`path_with_query` is the request target as sent, e.g. `/api/linux/agent/checkin`; an empty body hashes as sha256 of zero bytes.)
+
+    Server checks, in order: key row exists (on `/enroll` any status; elsewhere status must be `approved`),
+    `|now - timestamp| <= 300 s` (else 401 `CLOCK_SKEW` with `server_time`), nonce unseen in the last 10
+    minutes, signature valid over the exact bytes received. Failures are 401 with a `code`.
+
+    ## Git smart HTTP
+    `ansible-pull` talks to `/api/linux/agent/git/fleet.git` with the short-lived bearer token returned by
+    `/checkin` (`git.token`), injected through `GIT_CONFIG_*` env (`http.<git.url>.extraHeader`). Only
+    `upload-pack` is served; the ring branches `refs/heads/pilot` and `refs/heads/stable` are owned by Opale.
+
+    ## Trust root
+    Commit signatures are verified on the device against `/etc/opale-agent/allowed_signers`, which is
+    installed by the image and rotated only through signed commits (`.opale/allowed_signers` in the fleet
+    repo). Opale never sends signer keys to devices.
+  x-opale-audit-actions:
+    - linux_device_enrolled
+    - linux_enroll_serial_conflict
+    - linux_enroll_flood
+    - linux_key_serial_mismatch
+    - linux_device_approved
+    - linux_device_converted
+    - linux_device_reenrolled
+    - linux_device_rejected
+    - linux_device_revoked
+    - linux_assignment_changed
+    - linux_apply_failed
+    - linux_apply_recovered
+    - linux_recovery_key_escrowed
+    - linux_recovery_key_viewed
+    - linux_escrow_backup_confirmed
+    - linux_settings_changed
+    - linux_ring_promoted
+    - linux_git_synced
+    - linux_preregistrations_imported
+    - device_assigned
+    - laps_rotated
+    - laps_viewed
+
+servers:
+  - url: /api
+
+tags:
+  - name: linux-agent
+    description: Called by the device agent (signed requests or git token).
+  - name: linux-admin
+    description: Called by the web UI / CLI (Entra JWT or CLI token; `requireInteractive` where noted).
+  - name: inventory
+    description: Routes added to the existing inventory module by this feature.
+
+security:
+  - deviceSignature: []
+
+paths:
+
+  # ───────────────────────────── AGENT ─────────────────────────────
+
+  /linux/agent/enroll:
+    post:
+      operationId: linuxAgentEnroll
+      tags: [linux-agent]
+      summary: First contact / poll for approval (idempotent)
+      description: |
+        Signed with the device key even though the key is unknown to the server on first contact.
+        The server derives the fingerprint from `public_key` and requires it to equal `x-opale-key`.
+
+        Outcomes:
+        - unknown key → a `pending` enrolment is created (`202`), unless the normalized serial matches a
+          pre-registration AND no existing device / approved key carries that serial → auto-approved (`200`).
+        - serial matches an existing device (any platform) or an approved key → `202` with `conflict`,
+          the pre-registration is NOT consumed; an admin decides (convert / supersede / reject).
+        - pending key → `202` (retry after `retry_after_s`); approved → `200`; rejected/revoked → `403`.
+        - approved key presenting a different normalized serial → `403 SERIAL_MISMATCH`.
+        - more than 500 pending enrolments → `429` (`linux_enroll_flood` audited); re-contacts of existing
+          keys are never blocked.
+      x-opale-rate-limit: "30/min per IP (ipOnlyKey); never keyed by fingerprint"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnrollRequest' }
+      responses:
+        '200':
+          description: Approved — the device may call `/checkin`.
+          content: { application/json: { schema: { $ref: '#/components/schemas/EnrollApproved' } } }
+        '202':
+          description: Pending approval.
+          content: { application/json: { schema: { $ref: '#/components/schemas/EnrollPending' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Rejected, revoked, or serial mismatch.
+          content: { application/json: { schema: { $ref: '#/components/schemas/EnrollRefused' } } }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /linux/agent/checkin:
+    post:
+      operationId: linuxAgentCheckin
+      tags: [linux-agent]
+      summary: Report liveness and fetch the assignment
+      description: |
+        Writes `devices.last_seen`, `devices.os`, `devices.disk_used_pct` and the key row's
+        `last_seen_at/agent_version/os_version`. Never writes `devices.hostname` or `devices.agent_version`.
+        `serial` is compared (normalized) with the enrolled serial: a mismatch is refused with
+        `403 SERIAL_MISMATCH` and audited (`linux_key_serial_mismatch`, throttled). A NULL/placeholder
+        enrolled serial adopts the first real serial seen.
+
+        The agent applies `hostname`, then runs immediately (same cycle):
+        `ansible-pull -U <git.url> -C <ring> --verify-commit --only-if-changed -e opale_profile=… profiles/<profile>.yml`
+        with `GIT_TERMINAL_PROMPT=0` and `GIT_CONFIG_*` = `http.<git.url>.extraHeader`, `gpg.format=ssh`,
+        `gpg.ssh.allowedSignersFile=/etc/opale-agent/allowed_signers`. If the git stage fails, wait 30 s,
+        check in again (fresh token) and retry once before reporting `failed`. `git` is `null` while the
+        mirror is not ready: skip the apply, do not report, retry after `retry_after_s`.
+      x-opale-rate-limit: "IP 60/min; 12/hour per device enforced in the handler"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CheckinRequest' }
+      responses:
+        '200':
+          description: The assignment.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Assignment' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Serial mismatch.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /linux/agent/reports:
+    post:
+      operationId: linuxAgentReport
+      tags: [linux-agent]
+      summary: Report the outcome of an ansible-pull run
+      description: |
+        Appends to `linux_apply_reports` (append-only, 90-day retention). `log_tail` is discarded when
+        `status` is `success` and truncated (head+tail) to 8 KiB otherwise. `skipped` = `--only-if-changed`
+        found nothing to do, or "no hosts matched"; send it without a log. Updates
+        `devices.last_revision_applied / last_successful_revision / last_apply_status / last_apply_at`.
+        Only transitions are audited (`linux_apply_failed`, `linux_apply_recovered`); a failure may also
+        raise a push notification and a ticket proposal when `linux.alerts_enabled` is on.
+      x-opale-rate-limit: "IP 60/min; 12/hour per device enforced in the handler"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportRequest' }
+      responses:
+        '201':
+          description: Stored.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ReportAck' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /linux/agent/escrow:
+    post:
+      operationId: linuxAgentEscrow
+      tags: [linux-agent]
+      summary: Escrow a secret encrypted to the instance escrow key
+      description: |
+        `ciphertext` is base64 of RSA-OAEP-SHA256(plaintext) under `escrow.public_key_pem` from the last
+        check-in (decoded size 200..1024 bytes; keep plaintext ≤ 150 bytes). `escrow_key_id` must equal the
+        served `escrow.key_id` (else `409 ESCROW_KEY_MISMATCH`).
+
+        - `local_admin`: `username` must equal the assignment's `local_admin_username`; `rotated_at` must be
+          later than the stored `password_changed_at` (else `409 ESCROW_STALE`). Upserts the device's row in
+          `device_admin_credentials` (same table and reveal route as Windows LAPS), clears
+          `rotation_requested_at`, audits `laps_rotated`.
+        - `luks_recovery`: inserts a new `device_recovery_keys` row; a previous row with the same `label`
+          is marked superseded (history kept). Refused with `409 ESCROW_BACKUP_UNCONFIRMED` until an admin
+          has confirmed the off-box backup of the escrow key (`POST /linux/escrow/confirm-backup`).
+
+        Escrow first, then apply locally (the agent must never hold a secret the server does not).
+      x-opale-rate-limit: "IP 60/min; 6/min per device enforced in the handler"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EscrowRequest' }
+      responses:
+        '201':
+          description: Stored.
+          content: { application/json: { schema: { $ref: '#/components/schemas/EscrowAck' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: ESCROW_KEY_MISMATCH, ESCROW_STALE or ESCROW_BACKUP_UNCONFIRMED.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '503':
+          description: ESCROW_UNAVAILABLE — the escrow private key is unreadable on the server.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /linux/agent/git/fleet.git/info/refs:
+    get:
+      operationId: linuxAgentGitInfoRefs
+      tags: [linux-agent]
+      summary: git smart HTTP — reference advertisement
+      x-opale-raw: true
+      security: [ { gitToken: [] } ]
+      description: |
+        Only `service=git-upload-pack` is served (`403` for any other service). Proxied to
+        `git http-backend` on the mirror with a fixed `PATH_INFO`. `503` + `Retry-After` while the mirror is
+        not ready or when the concurrency cap (4 children) is reached. Dumb-protocol paths (`/HEAD`,
+        `/objects/*`) and `git-receive-pack` are not routed (404).
+      parameters:
+        - name: service
+          in: query
+          required: true
+          schema: { type: string, enum: [git-upload-pack] }
+      responses:
+        '200': { description: "application/x-git-upload-pack-advertisement" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Service not allowed. }
+        '503': { description: Mirror not ready or busy (Retry-After). }
+
+  /linux/agent/git/fleet.git/git-upload-pack:
+    post:
+      operationId: linuxAgentGitUploadPack
+      tags: [linux-agent]
+      summary: git smart HTTP — fetch negotiation / pack
+      x-opale-raw: true
+      security: [ { gitToken: [] } ]
+      description: |
+        Body `application/x-git-upload-pack-request` (possibly `Content-Encoding: gzip`, inflated by
+        `git http-backend`) is streamed to the child; own byte cap 4 MiB (`413`). Same 503 rules as
+        `info/refs`.
+      responses:
+        '200': { description: "application/x-git-upload-pack-result" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { description: Request body too large. }
+        '503': { description: Mirror not ready or busy (Retry-After). }
+
+  # ───────────────────────────── ADMIN ─────────────────────────────
+
+  /linux/devices:
+    get:
+      operationId: linuxListDevices
+      tags: [linux-admin]
+      summary: List pull-managed devices (server paged)
+      security: [ { entraJwt: [] } ]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [approved, revoked] } }
+        - { name: profile, in: query, schema: { type: string, maxLength: 64 } }
+        - { name: ring, in: query, schema: { $ref: '#/components/schemas/Ring' } }
+        - { name: lagging, in: query, schema: { type: boolean } }
+        - { name: apply_status, in: query, schema: { $ref: '#/components/schemas/ApplyStatus' } }
+        - { name: escrow, in: query, schema: { type: string, enum: [ok, missing] }, description: "`missing` = LUKS root detected but no current recovery key" }
+        - { name: online, in: query, schema: { type: boolean }, description: "last_seen within 1 hour" }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 }, description: "hostname / serial / user substring" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, total]
+                properties:
+                  rows: { type: array, items: { $ref: '#/components/schemas/LinuxDevice' } }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/devices/assign-bulk:
+    post:
+      operationId: linuxAssignBulk
+      tags: [linux-admin]
+      summary: Assign profile and/or ring to many devices
+      security: [ { entraJwt: [] } ]
+      description: Targets are `ids` or all pull-managed members of `group_id` (native group, recursive). Non-pull rows are skipped and counted. Audits `linux_assignment_changed` per device.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                ids: { type: array, items: { type: string, format: uuid }, maxItems: 500 }
+                group_id: { type: string, format: uuid }
+                profile: { $ref: '#/components/schemas/ProfileSlug' }
+                ring: { $ref: '#/components/schemas/Ring' }
+              anyOf:
+                - { required: [ids] }
+                - { required: [group_id] }
+      responses:
+        '200':
+          description: Counts.
+          content: { application/json: { schema: { $ref: '#/components/schemas/BulkResult' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/devices/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: linuxGetDevice
+      tags: [linux-admin]
+      summary: Device detail
+      security: [ { entraJwt: [] } ]
+      responses:
+        '200':
+          description: Device.
+          content: { application/json: { schema: { $ref: '#/components/schemas/LinuxDeviceDetail' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: linuxUpdateDevice
+      tags: [linux-admin]
+      summary: Change assignment (profile, ring, user)
+      security: [ { entraJwt: [] } ]
+      description: Takes effect at the device's next check-in. `assigned_user_id` goes through the shared inventory helper (audit `device_assigned`); profile/ring audit `linux_assignment_changed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                profile: { $ref: '#/components/schemas/ProfileSlug' }
+                ring: { $ref: '#/components/schemas/Ring' }
+                assigned_user_id: { type: [string, 'null'], maxLength: 100, description: "users_cache.entra_id or null to unassign" }
+      responses:
+        '200':
+          description: Updated device.
+          content: { application/json: { schema: { $ref: '#/components/schemas/LinuxDeviceDetail' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /linux/devices/{id}/revoke:
+    post:
+      operationId: linuxRevokeDevice
+      tags: [linux-admin]
+      summary: Revoke the device's key (device row kept)
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5, maxLength: 500 }
+      responses:
+        '200':
+          description: Revoked.
+          content: { application/json: { schema: { $ref: '#/components/schemas/LinuxDeviceDetail' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: No approved key to revoke.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /linux/devices/{id}/reports:
+    get:
+      operationId: linuxListReports
+      tags: [linux-admin]
+      summary: Apply history of a device (newest first)
+      security: [ { entraJwt: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/ApplyStatus' } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, total]
+                properties:
+                  rows: { type: array, items: { $ref: '#/components/schemas/ApplyReport' } }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /linux/devices/{id}/recovery-keys:
+    get:
+      operationId: linuxListRecoveryKeys
+      tags: [linux-admin]
+      summary: Recovery-key metadata (never the secret)
+      security: [ { entraJwt: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Keys, current first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows]
+                properties:
+                  rows: { type: array, items: { $ref: '#/components/schemas/RecoveryKeyMeta' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /linux/devices/{id}/recovery-keys/{kid}/reveal:
+    post:
+      operationId: linuxRevealRecoveryKey
+      tags: [linux-admin]
+      summary: Reveal a recovery key (reason required, fail-closed audit)
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      x-opale-rate-limit: "10/min"
+      description: The audit row (`linux_recovery_key_viewed`, with the reason) and `last_viewed_*` are committed in one transaction BEFORE the plaintext is sent; if that commit fails the secret is not returned. Decryption happens in memory with the mounted escrow private key.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: kid, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { $ref: '#/components/schemas/Reason' }
+      responses:
+        '200':
+          description: The secret. Display for at most 30 s client-side.
+          content: { application/json: { schema: { $ref: '#/components/schemas/RevealedSecret' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500':
+          description: Decryption failed (key_id mismatch or unreadable escrow key); audited as failed.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /linux/enrollments:
+    get:
+      operationId: linuxListEnrollments
+      tags: [linux-admin]
+      summary: Enrolment queue
+      security: [ { entraJwt: [] } ]
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/EnrollmentStatus' }, description: "default: pending" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, total]
+                properties:
+                  rows: { type: array, items: { $ref: '#/components/schemas/Enrollment' } }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/enrollments/count:
+    get:
+      operationId: linuxCountEnrollments
+      tags: [linux-admin]
+      summary: Pending count for the nav badge
+      security: [ { entraJwt: [] } ]
+      responses:
+        '200':
+          description: Count.
+          content:
+            application/json:
+              schema: { type: object, required: [pending], properties: { pending: { type: integer } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/enrollments/approve-bulk:
+    post:
+      operationId: linuxApproveBulk
+      tags: [linux-admin]
+      summary: Approve many pending enrolments as new devices
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      description: Only brand-new devices are approved in bulk (rows with a `conflict` are skipped with `errors[].code = CONFLICT`); hostnames follow the resolution rule (pre-registration → `lx-<serial>` → `lx-<fingerprint12>`), all resolved and checked before the transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ids, profile, ring]
+              properties:
+                ids: { type: array, items: { type: string, format: uuid }, minItems: 1, maxItems: 500 }
+                profile: { $ref: '#/components/schemas/ProfileSlug' }
+                ring: { $ref: '#/components/schemas/Ring' }
+      responses:
+        '200':
+          description: Per-row outcome.
+          content: { application/json: { schema: { $ref: '#/components/schemas/BulkResult' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/enrollments/reject-bulk:
+    post:
+      operationId: linuxRejectBulk
+      tags: [linux-admin]
+      summary: Reject many pending enrolments
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ids]
+              properties:
+                ids: { type: array, items: { type: string, format: uuid }, minItems: 1, maxItems: 1000 }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Counts.
+          content: { application/json: { schema: { $ref: '#/components/schemas/BulkResult' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/enrollments/{id}/approve:
+    post:
+      operationId: linuxApproveEnrollment
+      tags: [linux-admin]
+      summary: Approve one enrolment (new device, conversion of a Windows row, or re-enrolment)
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      description: |
+        - No `convert_device_id`: creates a new `devices` row (`platform=linux`, `managed_by=pull`).
+          If the enrolment has a `conflict`, this is refused (`409 CONFLICT`) — pick one of the paths below.
+        - `convert_device_id` (a Windows/legacy row whose normalized serial matches): in-place conversion
+          in one transaction — Windows facts cleared (compliance results, disks, interfaces, software, health,
+          Intune fields, ssh host key, ip_netbird, agent_version), legacy agent tokens revoked, history
+          (tickets, stock, groups) kept, `assigned_user_id = COALESCE(body, pre-registration, existing)`.
+          Refused with `409 ACTIVE_TOKEN` while the row has an active used legacy token unless
+          `revoke_active_token` is true.
+        - Conflict `reimage` (an existing pull row with the same serial): refused with `409 ACTIVE_KEY` while
+          another key is approved for that row unless `supersede` is true (old key revoked, `superseded`).
+        Hostname: `hostname` > pre-registration > existing row (conversion/re-enrolment) > `lx-<serial>` >
+        `lx-<fingerprint12>`; never the agent's claim. Collision → `409 HOSTNAME_TAKEN`.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApproveRequest' }
+      responses:
+        '200':
+          description: Approved; the resulting device.
+          content: { application/json: { schema: { $ref: '#/components/schemas/LinuxDeviceDetail' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: CONFLICT, ACTIVE_TOKEN, ACTIVE_KEY, HOSTNAME_TAKEN, SERIAL_MISMATCH or NOT_PENDING.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /linux/enrollments/{id}/reject:
+    post:
+      operationId: linuxRejectEnrollment
+      tags: [linux-admin]
+      summary: Reject one pending enrolment
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Rejected.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Enrollment' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: NOT_PENDING.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /linux/preregistrations:
+    get:
+      operationId: linuxListPreregistrations
+      tags: [linux-admin]
+      summary: List pre-registrations
+      security: [ { entraJwt: [] } ]
+      parameters:
+        - { name: consumed, in: query, schema: { type: boolean }, description: "default: false (open ones)" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, total]
+                properties:
+                  rows: { type: array, items: { $ref: '#/components/schemas/Preregistration' } }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: linuxCreatePreregistrations
+      tags: [linux-admin]
+      summary: Import pre-registrations (JSON rows; the UI parses CSV client-side)
+      security: [ { entraJwt: [] } ]
+      description: Per-row validation; the batch is not atomic — accepted rows are inserted, refused rows are returned in `errors` with a code (`INVALID_SERIAL`, `PLACEHOLDER_SERIAL`, `DUPLICATE_SERIAL`, `HOSTNAME_TAKEN`, `INVALID_HOSTNAME`, `UNKNOWN_USER`, `INVALID_PROFILE`). Serials are normalized (trim, uppercase); placeholder SMBIOS serials are refused. `email` is resolved to `users_cache.entra_id` (case-insensitive). Audits `linux_preregistrations_imported`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [rows]
+              properties:
+                rows:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  items: { $ref: '#/components/schemas/PreregistrationInput' }
+      responses:
+        '200':
+          description: Per-row outcome (`created` = accepted count).
+          content: { application/json: { schema: { $ref: '#/components/schemas/BulkResult' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/preregistrations/from-devices:
+    post:
+      operationId: linuxPreregisterFromDevices
+      tags: [linux-admin]
+      summary: Prepare the Linux migration of existing (Windows) devices
+      security: [ { entraJwt: [] } ]
+      description: Creates one pre-registration per device from its current serial, hostname and assigned user. Devices without a real serial, already pull-managed, or already pre-registered are skipped with a code. When the re-imaged laptop enrols, its serial matches the existing row, so it lands in the queue as `existing_device` for a one-click conversion.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [profile, ring]
+              properties:
+                device_ids: { type: array, items: { type: string, format: uuid }, maxItems: 500 }
+                group_id: { type: string, format: uuid }
+                profile: { $ref: '#/components/schemas/ProfileSlug' }
+                ring: { $ref: '#/components/schemas/Ring' }
+              anyOf:
+                - { required: [device_ids] }
+                - { required: [group_id] }
+      responses:
+        '200':
+          description: Per-row outcome.
+          content: { application/json: { schema: { $ref: '#/components/schemas/BulkResult' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/preregistrations/{id}:
+    delete:
+      operationId: linuxDeletePreregistration
+      tags: [linux-admin]
+      summary: Delete an open pre-registration
+      security: [ { entraJwt: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /linux/rings:
+    get:
+      operationId: linuxGetRings
+      tags: [linux-admin]
+      summary: Ring state, candidates and device counts
+      security: [ { entraJwt: [] } ]
+      responses:
+        '200':
+          description: Both rings.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pilot, stable, mirror_state]
+                properties:
+                  pilot: { $ref: '#/components/schemas/RingInfo' }
+                  stable: { $ref: '#/components/schemas/RingInfo' }
+                  mirror_state: { $ref: '#/components/schemas/MirrorState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/rings/stable/promote:
+    post:
+      operationId: linuxPromoteStable
+      tags: [linux-admin]
+      summary: Move the stable ring to a revision
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      description: |
+        `revision` must exist in the mirror and be an ancestor of `refs/remotes/upstream/<stable.branch>`
+        (`409 NOT_ON_BRANCH`); when server-side signers are configured it must be signed by one of them
+        (`409 UNSIGNED`); an ancestor of the current stable tip requires `allow_rollback` (`409 ROLLBACK`).
+        Writes `refs/heads/stable` atomically; audits `linux_ring_promoted` (before, after, rollback flag).
+        Devices pick it up at their next check-in.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision]
+              properties:
+                revision: { $ref: '#/components/schemas/Sha' }
+                allow_rollback: { type: boolean, default: false }
+      responses:
+        '200':
+          description: New stable state.
+          content: { application/json: { schema: { $ref: '#/components/schemas/RingInfo' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: NOT_ON_BRANCH, UNSIGNED, ROLLBACK or MIRROR_NOT_READY.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /linux/git/status:
+    get:
+      operationId: linuxGitStatus
+      tags: [linux-admin]
+      summary: Mirror status
+      security: [ { entraJwt: [] } ]
+      responses:
+        '200':
+          description: Status.
+          content: { application/json: { schema: { $ref: '#/components/schemas/GitStatus' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/git/sync:
+    post:
+      operationId: linuxGitSync
+      tags: [linux-admin]
+      summary: Fetch upstream now
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      description: Runs the fetch tick immediately (no-op if one is running). Audits `linux_git_synced`.
+      responses:
+        '202':
+          description: Fetch started (or already running).
+          content: { application/json: { schema: { $ref: '#/components/schemas/GitStatus' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/profiles:
+    get:
+      operationId: linuxListProfiles
+      tags: [linux-admin]
+      summary: Profiles discovered in the fleet repo (profiles/*.yml at each ring's tip)
+      security: [ { entraJwt: [] } ]
+      responses:
+        '200':
+          description: Profiles.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, mirror_state]
+                properties:
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      required: [slug, in_pilot, in_stable, devices]
+                      properties:
+                        slug: { $ref: '#/components/schemas/ProfileSlug' }
+                        in_pilot: { type: boolean }
+                        in_stable: { type: boolean }
+                        devices: { type: integer }
+                  mirror_state: { $ref: '#/components/schemas/MirrorState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/settings:
+    get:
+      operationId: linuxGetSettings
+      tags: [linux-admin]
+      summary: Module settings
+      security: [ { entraJwt: [] } ]
+      responses:
+        '200':
+          description: Settings.
+          content: { application/json: { schema: { $ref: '#/components/schemas/LinuxSettings' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    patch:
+      operationId: linuxUpdateSettings
+      tags: [linux-admin]
+      summary: Change module settings (audited with before/after)
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      description: Branch names are validated against `refs/remotes/upstream/*` when the mirror is ready. Changing `stable.branch` does not move the stable ref (promote does). Changing `repo_url` re-points the mirror (`git remote set-url` + fetch). `allowed_signers` is server-side only (never sent to devices).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LinuxSettingsPatch' }
+      responses:
+        '200':
+          description: Updated settings.
+          content: { application/json: { schema: { $ref: '#/components/schemas/LinuxSettings' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/escrow/status:
+    get:
+      operationId: linuxEscrowStatus
+      tags: [linux-admin]
+      summary: Escrow key status
+      security: [ { entraJwt: [] } ]
+      responses:
+        '200':
+          description: Status.
+          content: { application/json: { schema: { $ref: '#/components/schemas/EscrowStatus' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /linux/escrow/confirm-backup:
+    post:
+      operationId: linuxConfirmEscrowBackup
+      tags: [linux-admin]
+      summary: Confirm the escrow private key is backed up off-box
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      description: One-time acknowledgement bound to the current `key_id` (cleared automatically if the key changes). Unlocks LUKS recovery-key escrow. Audited `linux_escrow_backup_confirmed` with the actor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [key_id, confirmed]
+              properties:
+                key_id: { type: string, pattern: '^[0-9a-f]{64}$' }
+                confirmed: { type: boolean, const: true }
+      responses:
+        '200':
+          description: Status.
+          content: { application/json: { schema: { $ref: '#/components/schemas/EscrowStatus' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: KEY_ID_MISMATCH (the key changed since the page was loaded).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /linux/dashboard:
+    get:
+      operationId: linuxDashboard
+      tags: [linux-admin]
+      summary: Fleet KPIs
+      security: [ { entraJwt: [] } ]
+      responses:
+        '200':
+          description: KPIs.
+          content: { application/json: { schema: { $ref: '#/components/schemas/LinuxDashboard' } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ─────────────────── INVENTORY ADDITIONS (registered by the inventory module) ───────────────────
+
+  /devices/{id}:
+    patch:
+      operationId: deviceSetAssignedUser
+      tags: [inventory]
+      x-opale-module: inventory
+      summary: Assign a user to any device (platform-neutral)
+      security: [ { entraJwt: [] } ]
+      description: The only manual writer of `devices.assigned_user_id`. Validated against `users_cache`. Audits `device_assigned` with before/after.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [assigned_user_id]
+              properties:
+                assigned_user_id: { type: [string, 'null'], maxLength: 100 }
+      responses:
+        '200':
+          description: "{ id, assigned_user_id, assigned_user_name }"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, assigned_user_id]
+                properties:
+                  id: { type: string, format: uuid }
+                  assigned_user_id: { type: [string, 'null'] }
+                  assigned_user_name: { type: [string, 'null'] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin-credentials/{deviceId}/reveal:
+    post:
+      operationId: revealAdminCredential
+      tags: [inventory]
+      x-opale-module: inventory
+      summary: Reveal the local admin password (replaces GET /admin-credentials/{deviceId})
+      security: [ { entraJwt: [] } ]
+      x-opale-interactive: true
+      x-opale-rate-limit: "10/min"
+      description: Uniform contract for Windows LAPS and Linux local admin — reason required, audit row (`laps_viewed`) and `last_viewed_*` committed before the secret is sent (fail-closed).
+      parameters:
+        - { name: deviceId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { $ref: '#/components/schemas/Reason' }
+      responses:
+        '200':
+          description: The password.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [username, password, password_changed_at]
+                properties:
+                  username: { type: string }
+                  password: { type: string }
+                  password_changed_at: { type: [string, 'null'], format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+components:
+
+  securitySchemes:
+    deviceSignature:
+      type: apiKey
+      in: header
+      name: x-opale-signature
+      description: Ed25519 signed request (see the top-level description); also requires x-opale-key, x-opale-timestamp, x-opale-nonce.
+    gitToken:
+      type: http
+      scheme: bearer
+      description: Short-lived git token from `/checkin` (`git.token`).
+    entraJwt:
+      type: http
+      scheme: bearer
+      description: Entra ID access token or `opl_` CLI token. Operations marked `x-opale-interactive` refuse CLI tokens (403 INTERACTIVE_ONLY).
+
+  responses:
+    BadRequest:
+      description: Validation error.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Unauthorized:
+      description: Missing/invalid credential. Device codes — SIGNATURE_INVALID, UNKNOWN_KEY, CLOCK_SKEW (with server_time), NONCE_REPLAY, REVOKED, NOT_APPROVED; git — TOKEN_INVALID, TOKEN_EXPIRED.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: Not admin, or INTERACTIVE_ONLY for CLI tokens.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: Not found.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    TooManyRequests:
+      description: Rate limited; `Retry-After` header and `retry_after_ms`.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  schemas:
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: "French, user-facing" }
+        code: { type: string, description: "Machine-readable, UPPER_SNAKE" }
+        server_time: { type: integer, description: "unix seconds; present on CLOCK_SKEW" }
+        retry_after_ms: { type: integer }
+        details: { type: object, additionalProperties: true }
+      examples:
+        - { error: "Horloge du poste décalée", code: CLOCK_SKEW, server_time: 1790800000 }
+        - { error: "Poste géré par état désiré", code: PULL_MANAGED }
+
+    Sha:
+      type: string
+      pattern: '^[0-9a-f]{40}$'
+      examples: [ "b89f176e2c1c4d1f0a9e8d7c6b5a49382716f5e4" ]
+
+    Fingerprint:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+      description: hex(sha256(raw Ed25519 public key))
+
+    Ring:
+      type: string
+      enum: [pilot, stable]
+
+    ProfileSlug:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9-]{0,63}$'
+      description: "`profiles/<slug>.yml` in the fleet repo"
+      examples: [ field-researcher, admin ]
+
+    Hostname:
+      type: string
+      pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+      description: RFC-1123 label, lowercase
+
+    Serial:
+      type: [string, 'null']
+      maxLength: 100
+      description: SMBIOS product serial as read from DMI; normalized server-side (trim, uppercase; placeholders such as "To be filled by O.E.M." become null)
+
+    EnrollmentStatus:
+      type: string
+      enum: [pending, approved, rejected, revoked]
+
+    ApplyStatus:
+      type: string
+      enum: [success, failed, partial, skipped]
+
+    KeyBacking:
+      type: string
+      enum: [software, tpm]
+
+    MirrorState:
+      type: string
+      enum: [absent, cloning, ready, stale, error, unavailable]
+
+    Reason:
+      type: object
+      additionalProperties: false
+      required: [category, note]
+      properties:
+        category: { type: string, enum: [maintenance, troubleshoot, audit, incident, other] }
+        note: { type: string, minLength: 5, maxLength: 500 }
+      examples:
+        - { category: incident, note: "Utilisateur bloqué au démarrage, ticket #412" }
+
+    # ── agent payloads ──
+
+    EnrollRequest:
+      type: object
+      additionalProperties: false
+      required: [serial, hostname, os_version, agent_version, key_backing, public_key]
+      properties:
+        serial: { $ref: '#/components/schemas/Serial' }
+        hostname: { type: string, maxLength: 253, description: "current hostname (claim, display only)" }
+        os_version: { type: string, maxLength: 100, description: "PRETTY_NAME or VERSION_ID from /etc/os-release" }
+        kernel: { type: string, maxLength: 100 }
+        agent_version: { type: string, maxLength: 40 }
+        key_backing: { $ref: '#/components/schemas/KeyBacking' }
+        public_key: { type: string, pattern: '^[A-Za-z0-9+/]{43}=$', description: "base64 of the raw 32-byte Ed25519 public key" }
+      examples:
+        - serial: "PF3ABC12"
+          hostname: debian
+          os_version: "Debian GNU/Linux 12 (bookworm)"
+          kernel: "6.1.0-25-amd64"
+          agent_version: "0.1.0"
+          key_backing: software
+          public_key: "Gb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE="
+
+    EnrollPending:
+      type: object
+      required: [status, code, retry_after_s]
+      properties:
+        status: { type: string, const: pending }
+        code: { type: string, pattern: '^[0-9a-f]{8}$', description: "first 8 hex of the fingerprint — shown on the device screen so an admin can find it in the queue" }
+        retry_after_s: { type: integer, minimum: 10, description: "30 s during the first hour after first contact, then 300 s" }
+        conflict:
+          type: [object, 'null']
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [existing_device, reimage, clone] }
+      examples:
+        - { status: pending, code: "3f9a1c22", retry_after_s: 30, conflict: null }
+
+    EnrollApproved:
+      type: object
+      required: [status, device_id, hostname]
+      properties:
+        status: { type: string, const: approved }
+        device_id: { type: string, format: uuid }
+        hostname: { $ref: '#/components/schemas/Hostname' }
+      examples:
+        - { status: approved, device_id: "7f9c2a4e-3b1d-4c6e-9a8f-1d2e3f4a5b6c", hostname: lx-pf3abc12 }
+
+    EnrollRefused:
+      type: object
+      required: [status, error]
+      properties:
+        status: { type: string, enum: [rejected, revoked, serial_mismatch] }
+        error: { type: string }
+        code: { type: string }
+      examples:
+        - { status: revoked, error: "Clé révoquée", code: REVOKED }
+
+    CheckinRequest:
+      type: object
+      additionalProperties: false
+      required: [serial, agent_version, os_version, hostname, luks_root]
+      properties:
+        serial: { $ref: '#/components/schemas/Serial' }
+        agent_version: { type: string, maxLength: 40 }
+        os_version: { type: string, maxLength: 100 }
+        kernel: { type: string, maxLength: 100 }
+        hostname: { type: string, maxLength: 253 }
+        uptime_s: { type: integer, minimum: 0 }
+        disk_root_pct: { type: number, minimum: 0, maximum: 100 }
+        luks_root: { type: boolean, description: "root filesystem is on a LUKS volume" }
+        escrow_key_id: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$', description: "key_id of the last successful escrow, null if never" }
+        local_admin_rotated_at: { type: [string, 'null'], format: date-time }
+      examples:
+        - serial: "PF3ABC12"
+          agent_version: "0.1.0"
+          os_version: "Debian GNU/Linux 12 (bookworm)"
+          kernel: "6.1.0-25-amd64"
+          hostname: lx-pf3abc12
+          uptime_s: 86400
+          disk_root_pct: 41.5
+          luks_root: true
+          escrow_key_id: null
+          local_admin_rotated_at: null
+
+    Assignment:
+      type: object
+      required: [device_id, hostname, profile, ring, revision, git, escrow, escrow_needed, local_admin_username, rotate_local_admin, checkin_interval_s, extra_vars]
+      properties:
+        device_id: { type: string, format: uuid }
+        hostname: { $ref: '#/components/schemas/Hostname' }
+        profile: { $ref: '#/components/schemas/ProfileSlug' }
+        ring: { $ref: '#/components/schemas/Ring' }
+        revision: { type: [string, 'null'], pattern: '^[0-9a-f]{40}$', description: "what the ring currently resolves to (informational; the agent checks out the ring)" }
+        git:
+          type: [object, 'null']
+          required: [url, token, token_expires_at]
+          properties:
+            url: { type: string, format: uri, description: "must equal <configured server>/api/linux/agent/git/fleet.git" }
+            token: { type: string }
+            token_expires_at: { type: string, format: date-time }
+        retry_after_s: { type: integer, description: "present when git is null (mirror not ready)" }
+        escrow:
+          type: object
+          required: [status]
+          properties:
+            status: { type: string, enum: [ok, unavailable, backup_unconfirmed] }
+            public_key_pem: { type: [string, 'null'] }
+            key_id: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        escrow_needed:
+          type: array
+          items: { type: string, enum: [local_admin, luks_recovery] }
+          description: what the server is missing for this device under the current key_id
+        local_admin_username: { type: string }
+        rotate_local_admin: { type: boolean, description: "an admin requested a rotation" }
+        checkin_interval_s: { type: integer, minimum: 60 }
+        extra_vars:
+          type: object
+          required: [opale_profile, opale_ring, opale_device_id, opale_hostname]
+          properties:
+            opale_profile: { type: string }
+            opale_ring: { type: string }
+            opale_device_id: { type: string }
+            opale_hostname: { type: string }
+      examples:
+        - device_id: "7f9c2a4e-3b1d-4c6e-9a8f-1d2e3f4a5b6c"
+          hostname: lx-pf3abc12
+          profile: field-researcher
+          ring: stable
+          revision: "b89f176e2c1c4d1f0a9e8d7c6b5a49382716f5e4"
+          git:
+            url: "https://opale.example.org/api/linux/agent/git/fleet.git"
+            token: "gt_9c1f0a7e3b2d4c5f6a8b9c0d1e2f3a4b5c6d7e"
+            token_expires_at: "2026-09-30T20:10:00Z"
+          escrow: { status: ok, public_key_pem: "-----BEGIN PUBLIC KEY-----\nMIIB…\n-----END PUBLIC KEY-----\n", key_id: "0f3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c" }
+          escrow_needed: [luks_recovery]
+          local_admin_username: opale-admin
+          rotate_local_admin: false
+          checkin_interval_s: 900
+          extra_vars: { opale_profile: field-researcher, opale_ring: stable, opale_device_id: "7f9c2a4e-3b1d-4c6e-9a8f-1d2e3f4a5b6c", opale_hostname: lx-pf3abc12 }
+
+    ReportRequest:
+      type: object
+      additionalProperties: false
+      required: [revision, status, started_at, finished_at]
+      properties:
+        revision: { type: [string, 'null'], pattern: '^[0-9a-f]{40}$', description: "commit checked out; null if the git stage failed" }
+        status: { $ref: '#/components/schemas/ApplyStatus' }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        error_summary: { type: string, maxLength: 1024, description: "first failed task + msg from the ansible JSON callback, or the git error" }
+        log_tail: { type: string, maxLength: 65536, description: "stored truncated to 8 KiB head+tail; ignored on success" }
+        agent_version: { type: string, maxLength: 40 }
+      examples:
+        - revision: "b89f176e2c1c4d1f0a9e8d7c6b5a49382716f5e4"
+          status: failed
+          started_at: "2026-09-30T20:00:05Z"
+          finished_at: "2026-09-30T20:00:41Z"
+          error_summary: "TASK [base : install packages] — apt: Unable to locate package foo"
+          log_tail: "PLAY [localhost] ***…"
+          agent_version: "0.1.0"
+
+    ReportAck:
+      type: object
+      required: [id, received_at, transition]
+      properties:
+        id: { type: string, format: uuid }
+        received_at: { type: string, format: date-time }
+        transition: { type: [string, 'null'], enum: [failed, recovered, null] }
+      examples:
+        - { id: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", received_at: "2026-09-30T20:00:42Z", transition: failed }
+
+    EscrowRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, username, ciphertext, rotated_at, escrow_key_id]
+          properties:
+            kind: { type: string, const: local_admin }
+            username: { type: string, pattern: '^[A-Za-z0-9_.-]{1,32}$' }
+            ciphertext: { type: string, pattern: '^[A-Za-z0-9+/]+={0,2}$', maxLength: 1400 }
+            rotated_at: { type: string, format: date-time }
+            escrow_key_id: { type: string, pattern: '^[0-9a-f]{64}$' }
+        - type: object
+          additionalProperties: false
+          required: [kind, label, ciphertext, escrow_key_id]
+          properties:
+            kind: { type: string, const: luks_recovery }
+            label: { type: string, pattern: '^[A-Za-z0-9_./:-]{1,64}$', description: "volume or keyslot identifier, e.g. `/` or `nvme0n1p3:slot1`" }
+            ciphertext: { type: string, pattern: '^[A-Za-z0-9+/]+={0,2}$', maxLength: 1400 }
+            escrow_key_id: { type: string, pattern: '^[0-9a-f]{64}$' }
+      examples:
+        - { kind: local_admin, username: opale-admin, ciphertext: "Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4", rotated_at: "2026-09-30T20:00:00Z", escrow_key_id: "0f3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c" }
+        - { kind: luks_recovery, label: "/", ciphertext: "Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4", escrow_key_id: "0f3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c" }
+
+    EscrowAck:
+      type: object
+      required: [kind, key_id, stored_at]
+      properties:
+        kind: { type: string, enum: [local_admin, luks_recovery] }
+        id: { type: string, format: uuid, description: "recovery key row id (luks_recovery only)" }
+        key_id: { type: string }
+        stored_at: { type: string, format: date-time }
+      examples:
+        - { kind: luks_recovery, id: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", key_id: "0f3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c", stored_at: "2026-09-30T20:00:43Z" }
+
+    # ── admin objects ──
+
+    UserRef:
+      type: [object, 'null']
+      required: [entra_id, display_name]
+      properties:
+        entra_id: { type: string }
+        display_name: { type: [string, 'null'] }
+        email: { type: [string, 'null'] }
+
+    KeyInfo:
+      type: [object, 'null']
+      required: [id, fingerprint, key_backing, status]
+      properties:
+        id: { type: string, format: uuid }
+        fingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        key_backing: { $ref: '#/components/schemas/KeyBacking' }
+        status: { $ref: '#/components/schemas/EnrollmentStatus' }
+        agent_version: { type: [string, 'null'] }
+        os_version: { type: [string, 'null'] }
+        last_seen_at: { type: [string, 'null'], format: date-time }
+        approved_at: { type: [string, 'null'], format: date-time }
+        approved_by: { type: [string, 'null'] }
+        revoked_at: { type: [string, 'null'], format: date-time }
+        revoked_by: { type: [string, 'null'] }
+        revoke_reason: { type: [string, 'null'] }
+
+    LinuxDevice:
+      type: object
+      required: [id, hostname, serial, platform, managed_by, profile, ring, assigned_user, os, last_seen, online, disk_used_pct, key, last_revision_applied, last_successful_revision, last_apply_status, last_apply_at, ring_tip, lagging, needs_escrow]
+      properties:
+        id: { type: string, format: uuid }
+        hostname: { type: string }
+        serial: { type: [string, 'null'] }
+        platform: { type: string, const: linux }
+        managed_by: { type: string, const: pull }
+        profile: { type: [string, 'null'] }
+        profile_in_repo: { type: [boolean, 'null'], description: "null when the mirror is not ready" }
+        ring: { type: [string, 'null'] }
+        assigned_user: { $ref: '#/components/schemas/UserRef' }
+        os: { type: [string, 'null'] }
+        last_seen: { type: [string, 'null'], format: date-time }
+        online: { type: boolean }
+        disk_used_pct: { type: [number, 'null'] }
+        key: { $ref: '#/components/schemas/KeyInfo' }
+        last_revision_applied: { type: [string, 'null'] }
+        last_successful_revision: { type: [string, 'null'] }
+        last_apply_status: { type: [string, 'null'] }
+        last_apply_at: { type: [string, 'null'], format: date-time }
+        ring_tip: { type: [string, 'null'] }
+        lagging: { type: [boolean, 'null'] }
+        needs_escrow: { type: boolean, description: "luks_root reported and no current recovery key under the current key_id" }
+
+    LinuxDeviceDetail:
+      allOf:
+        - { $ref: '#/components/schemas/LinuxDevice' }
+        - type: object
+          required: [kernel, luks_root, last_report, laps, recovery_keys, converted_from_windows]
+          properties:
+            kernel: { type: [string, 'null'] }
+            luks_root: { type: [boolean, 'null'] }
+            last_report: { $ref: '#/components/schemas/ApplyReportOrNull' }
+            laps:
+              type: [object, 'null']
+              description: same shape as GET /api/devices/:id `laps`
+              required: [username, password_changed_at, rotation_requested_at, last_viewed_at, last_viewed_by_name]
+              properties:
+                username: { type: [string, 'null'] }
+                password_changed_at: { type: [string, 'null'], format: date-time }
+                rotation_requested_at: { type: [string, 'null'], format: date-time }
+                last_viewed_at: { type: [string, 'null'], format: date-time }
+                last_viewed_by_name: { type: [string, 'null'] }
+            recovery_keys: { type: array, items: { $ref: '#/components/schemas/RecoveryKeyMeta' } }
+            converted_from_windows: { type: boolean }
+
+    ApplyReport:
+      type: object
+      required: [id, revision, status, started_at, finished_at, error_summary, log_tail, agent_version, received_at]
+      properties:
+        id: { type: string, format: uuid }
+        revision: { type: [string, 'null'] }
+        status: { $ref: '#/components/schemas/ApplyStatus' }
+        started_at: { type: [string, 'null'], format: date-time }
+        finished_at: { type: [string, 'null'], format: date-time }
+        error_summary: { type: [string, 'null'] }
+        log_tail: { type: [string, 'null'] }
+        agent_version: { type: [string, 'null'] }
+        received_at: { type: string, format: date-time }
+
+    ApplyReportOrNull:
+      anyOf:
+        - { $ref: '#/components/schemas/ApplyReport' }
+        - { type: 'null' }
+
+    RecoveryKeyMeta:
+      type: object
+      required: [id, kind, label, key_id, created_at, superseded_at, current, last_viewed_at, last_viewed_by_name]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [luks_recovery, tpm_owner] }
+        label: { type: string }
+        key_id: { type: string }
+        created_at: { type: string, format: date-time }
+        superseded_at: { type: [string, 'null'], format: date-time }
+        current: { type: boolean, description: "not superseded and key_id = current escrow key" }
+        last_viewed_at: { type: [string, 'null'], format: date-time }
+        last_viewed_by_name: { type: [string, 'null'] }
+
+    RevealedSecret:
+      type: object
+      required: [kind, label, secret, key_id, created_at]
+      properties:
+        kind: { type: string, enum: [luks_recovery, tpm_owner] }
+        label: { type: string }
+        secret: { type: string }
+        key_id: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Enrollment:
+      type: object
+      required: [id, fingerprint, code, key_backing, serial_claimed, hostname_claimed, os_version, agent_version, status, source, conflict, preregistration, device_id, first_seen_at, last_seen_at, enroll_attempts, approved_at, approved_by, rejected_at, rejected_by, revoked_at, revoked_by, revoke_reason]
+      properties:
+        id: { type: string, format: uuid }
+        fingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        code: { type: string, pattern: '^[0-9a-f]{8}$' }
+        key_backing: { $ref: '#/components/schemas/KeyBacking' }
+        serial_claimed: { type: [string, 'null'] }
+        hostname_claimed: { type: [string, 'null'] }
+        os_version: { type: [string, 'null'] }
+        agent_version: { type: [string, 'null'] }
+        status: { $ref: '#/components/schemas/EnrollmentStatus' }
+        source: { type: string, enum: [manual, preregistration] }
+        conflict:
+          type: [object, 'null']
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [existing_device, reimage, clone] }
+            device_id: { type: [string, 'null'], format: uuid }
+            hostname: { type: [string, 'null'] }
+            managed_by: { type: [string, 'null'] }
+            platform: { type: [string, 'null'] }
+            last_seen: { type: [string, 'null'], format: date-time }
+            key_id: { type: [string, 'null'], format: uuid }
+            has_active_token: { type: boolean, description: "a used, non-revoked legacy agent token exists on the target row" }
+        preregistration:
+          type: [object, 'null']
+          description: matching open pre-registration (pre-fills the approve modal)
+          required: [id, profile, ring, hostname, assigned_user]
+          properties:
+            id: { type: string, format: uuid }
+            profile: { type: string }
+            ring: { type: string }
+            hostname: { type: [string, 'null'] }
+            assigned_user: { $ref: '#/components/schemas/UserRef' }
+        device_id: { type: [string, 'null'], format: uuid }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        enroll_attempts: { type: integer }
+        approved_at: { type: [string, 'null'], format: date-time }
+        approved_by: { type: [string, 'null'] }
+        rejected_at: { type: [string, 'null'], format: date-time }
+        rejected_by: { type: [string, 'null'] }
+        revoked_at: { type: [string, 'null'], format: date-time }
+        revoked_by: { type: [string, 'null'] }
+        revoke_reason: { type: [string, 'null'] }
+
+    ApproveRequest:
+      type: object
+      additionalProperties: false
+      required: [profile, ring]
+      properties:
+        profile: { $ref: '#/components/schemas/ProfileSlug' }
+        ring: { $ref: '#/components/schemas/Ring' }
+        hostname: { $ref: '#/components/schemas/Hostname' }
+        assigned_user_id: { type: [string, 'null'], maxLength: 100 }
+        convert_device_id: { type: string, format: uuid, description: "existing Windows/legacy row to convert in place (serial must match)" }
+        revoke_active_token: { type: boolean, default: false }
+        supersede: { type: boolean, default: false, description: "revoke the previously approved key of the same device (re-image)" }
+      examples:
+        - { profile: field-researcher, ring: pilot, assigned_user_id: "a1b2c3d4-0000-4000-8000-000000000001" }
+        - { profile: admin, ring: stable, convert_device_id: "7f9c2a4e-3b1d-4c6e-9a8f-1d2e3f4a5b6c", revoke_active_token: true }
+
+    PreregistrationInput:
+      type: object
+      additionalProperties: false
+      required: [serial, profile, ring]
+      properties:
+        serial: { type: string, minLength: 1, maxLength: 100 }
+        hostname: { $ref: '#/components/schemas/Hostname' }
+        profile: { $ref: '#/components/schemas/ProfileSlug' }
+        ring: { $ref: '#/components/schemas/Ring' }
+        email: { type: string, format: email, maxLength: 200, description: "resolved to users_cache.entra_id" }
+        note: { type: string, maxLength: 500 }
+      examples:
+        - { serial: "PF3ABC12", hostname: lx-dupont, profile: field-researcher, ring: stable, email: "j.dupont@example.org" }
+
+    Preregistration:
+      type: object
+      required: [id, serial, hostname, profile, ring, assigned_user, note, created_by, created_at, consumed_at, consumed_by_key_id, matches_device]
+      properties:
+        id: { type: string, format: uuid }
+        serial: { type: string }
+        hostname: { type: [string, 'null'] }
+        profile: { type: string }
+        ring: { type: string }
+        assigned_user: { $ref: '#/components/schemas/UserRef' }
+        note: { type: [string, 'null'] }
+        created_by: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        consumed_at: { type: [string, 'null'], format: date-time }
+        consumed_by_key_id: { type: [string, 'null'], format: uuid }
+        matches_device:
+          type: [object, 'null']
+          description: existing device with the same normalized serial ("sera converti à l'approbation")
+          required: [id, hostname, platform, managed_by]
+          properties:
+            id: { type: string, format: uuid }
+            hostname: { type: string }
+            platform: { type: [string, 'null'] }
+            managed_by: { type: [string, 'null'] }
+
+    BulkResult:
+      type: object
+      required: [ok, skipped, errors]
+      properties:
+        ok: { type: integer }
+        skipped: { type: integer }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [id, code]
+            properties:
+              id: { type: string, description: "row id, device id, or the row index for imports" }
+              code: { type: string }
+              message: { type: string }
+      examples:
+        - { ok: 18, skipped: 1, errors: [ { id: "3", code: HOSTNAME_TAKEN, message: "lx-dupont existe déjà" } ] }
+
+    RingInfo:
+      type: object
+      required: [ring, branch, tip, tip_since, upstream_head, devices, candidates]
+      properties:
+        ring: { $ref: '#/components/schemas/Ring' }
+        branch: { type: string }
+        tip: { type: [string, 'null'] }
+        tip_since: { type: [string, 'null'], format: date-time }
+        upstream_head: { type: [string, 'null'] }
+        devices:
+          type: object
+          required: [total, on_tip, lagging, failed]
+          properties:
+            total: { type: integer }
+            on_tip: { type: integer }
+            lagging: { type: integer }
+            failed: { type: integer }
+        candidates:
+          type: array
+          description: "`git log -n 50 upstream/<branch>` (stable only lists commits; pilot follows head)"
+          items:
+            type: object
+            required: [sha, author, date, subject, signed, success_pilot, success_stable]
+            properties:
+              sha: { $ref: '#/components/schemas/Sha' }
+              author: { type: string }
+              date: { type: string, format: date-time }
+              subject: { type: string }
+              signed: { type: [boolean, 'null'], description: "null when no server-side signers are configured" }
+              success_pilot: { type: integer, description: "pilot devices that reported success on this sha" }
+              success_stable: { type: integer }
+              is_ancestor_of_stable: { type: boolean, description: "promoting it would be a rollback" }
+
+    GitStatus:
+      type: object
+      required: [state, upstream, last_fetch_at, fetch_age_s, last_error, heads, children]
+      properties:
+        state: { $ref: '#/components/schemas/MirrorState' }
+        upstream: { type: [string, 'null'], description: "userinfo stripped" }
+        last_fetch_at: { type: [string, 'null'], format: date-time }
+        fetch_age_s: { type: [integer, 'null'] }
+        last_error: { type: [string, 'null'] }
+        heads:
+          type: object
+          required: [pilot, stable, upstream]
+          properties:
+            pilot: { type: [string, 'null'] }
+            stable: { type: [string, 'null'] }
+            upstream: { type: object, additionalProperties: { type: string } }
+        children: { type: integer, description: "running upload-pack children" }
+        binaries_ok: { type: boolean }
+
+    LinuxSettings:
+      type: object
+      required: [repo_url, allowed_signers, alerts_enabled, rings, local_admin_username, escrow]
+      properties:
+        repo_url: { type: [string, 'null'] }
+        allowed_signers: { type: array, items: { type: string } }
+        alerts_enabled: { type: boolean }
+        rings:
+          type: object
+          required: [pilot, stable]
+          properties:
+            pilot: { type: object, required: [branch], properties: { branch: { type: string } } }
+            stable: { type: object, required: [branch], properties: { branch: { type: string } } }
+        local_admin_username: { type: string, description: "from agent.laps_recovery_username (read-only here)" }
+        escrow: { $ref: '#/components/schemas/EscrowStatus' }
+
+    LinuxSettingsPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        repo_url: { type: string, pattern: '^https://[^\s@/]+(/[^\s]*)?$', maxLength: 500, description: "https only in v1; no userinfo" }
+        allowed_signers:
+          type: array
+          maxItems: 50
+          items: { type: string, pattern: '^\S+(\s+[a-z-]+=\S+)*\s+(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)\s+[A-Za-z0-9+/]+={0,2}(\s+.*)?$', maxLength: 1000 }
+        alerts_enabled: { type: boolean }
+        rings:
+          type: object
+          additionalProperties: false
+          properties:
+            pilot: { type: object, additionalProperties: false, required: [branch], properties: { branch: { type: string, pattern: '^[A-Za-z0-9._/-]{1,200}$' } } }
+            stable: { type: object, additionalProperties: false, required: [branch], properties: { branch: { type: string, pattern: '^[A-Za-z0-9._/-]{1,200}$' } } }
+      examples:
+        - { repo_url: "https://github.com/example/fleet", rings: { pilot: { branch: main }, stable: { branch: main } } }
+
+    EscrowStatus:
+      type: object
+      required: [status, key_id, bits, backup_confirmed]
+      properties:
+        status: { type: string, enum: [ok, unavailable] }
+        key_id: { type: [string, 'null'] }
+        bits: { type: [integer, 'null'] }
+        backup_confirmed:
+          type: [object, 'null']
+          required: [key_id, by, at]
+          properties:
+            key_id: { type: string }
+            by: { type: string }
+            at: { type: string, format: date-time }
+        devices_needing_escrow: { type: integer }
+
+    LinuxDashboard:
+      type: object
+      required: [devices_total, by_revision, lagging, offline, failed_applies, pending_approvals, not_escrowed, mirror_state]
+      properties:
+        devices_total: { type: integer }
+        by_revision:
+          type: array
+          items:
+            type: object
+            required: [revision, ring, count]
+            properties:
+              revision: { type: [string, 'null'] }
+              ring: { type: [string, 'null'] }
+              count: { type: integer }
+        lagging: { type: integer }
+        offline:
+          type: object
+          required: [days, count]
+          properties:
+            days: { type: integer, description: "settings.agent_offline_days" }
+            count: { type: integer }
+        failed_applies: { type: integer, description: "devices whose last apply failed or is partial" }
+        pending_approvals: { type: integer }
+        not_escrowed: { type: integer }
+        mirror_state: { $ref: '#/components/schemas/MirrorState' }

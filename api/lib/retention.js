@@ -12,6 +12,8 @@
 // affichés, données users) — sensibilité bien plus haute que les
 // métadonnées de session. La FK ON DELETE CASCADE garantit en plus que le
 // log suit si la session parente est purgée.
+// `where` limite la purge à une catégorie de lignes : fragment SQL statique
+// sans paramètres, défini ici uniquement (jamais fourni par un utilisateur).
 export const RETENTION_RULES = [
   { table: 'bandwidth_stats',      col: 'sampled_at', days: 7   },
   { table: 'ping_stats',           col: 'sampled_at', days: 7   },
@@ -20,8 +22,12 @@ export const RETENTION_RULES = [
   { table: 'remote_sessions',      col: 'started_at', days: 183 },
   { table: 'audit_logs',           col: 'created_at', days: 365 },
   { table: 'script_executions',    col: 'started_at', days: 90  },
+  { table: 'linux_apply_reports',  col: 'received_at', days: 90 },
+  { table: 'linux_device_keys',    col: 'last_seen_at', days: 7, where: "status = 'pending'" },
 ]
 
+// Pour une règle conditionnelle, cette durée concerne seulement les lignes
+// satisfaisant `where` ; les purges doivent donc lire la règle entière.
 export function retentionDays(table) {
   const rule = RETENTION_RULES.find(r => r.table === table)
   if (!rule) throw new Error(`Rétention inconnue pour la table ${table}`)

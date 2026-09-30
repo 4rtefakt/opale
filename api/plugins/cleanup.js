@@ -79,10 +79,10 @@ async function timeoutStuck(fastify) {
 
 // Exportée pour les tests.
 export async function runCleanup(fastify) {
-  for (const { table, col, days } of RETENTION_RULES) {
+  for (const { table, col, days, where } of RETENTION_RULES) {
     try {
       const res = await fastify.db.query(
-        `DELETE FROM ${table} WHERE ${col} < now() - interval '${days} days'`
+        `DELETE FROM ${table} WHERE ${col} < now() - interval '${days} days'${where ? ` AND (${where})` : ''}`
       )
       if (res.rowCount > 0) {
         fastify.log.info({ table, deleted: res.rowCount }, 'cleanup: purge effectuée')
