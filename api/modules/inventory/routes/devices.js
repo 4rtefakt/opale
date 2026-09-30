@@ -3,6 +3,10 @@ import { syncIntuneDevice } from '../../core/lib/graph.js'
 import { fetchBandwidth }   from '../../monitoring/lib/bandwidth.js'
 import { logAudit } from '../../core/lib/audit.js'
 import { hostKeyGuard, hostKeyPolicy } from '../../remote/lib/ssh-host-key.js'
+import { setAssignedUser } from '../lib/assign-user.js'
+// Import statique inter-modules (pattern maison) : le contrat de la route
+// vit dans la spec du module linux, même quand ce module est désactivé.
+import { schemaFor } from '../../linux/lib/spec.js'
 
 async function getThresholds(fastify) {
   const res = await fastify.db.query(
@@ -51,7 +55,7 @@ export default async function devicesRoute(fastify) {
       `SELECT
          d.id, d.hostname, d.serial, d.model, d.manufacturer, d.cpu,
          d.ram_gb, d.os, d.os_build, d.disk_used_pct, d.ip_netbird,
-         d.agent_version,
+         d.agent_version, d.platform, d.managed_by,
          d.last_seen, d.created_at, d.intune_user_display_name,
          u.entra_id  AS user_id,
          u.display_name AS user_name,
@@ -113,7 +117,7 @@ export default async function devicesRoute(fastify) {
         : (({ current_user: _, ...rest }) => rest)(d.system_info)
       : null
 
-    const [disks, nets, pingRows, bandwidth, activeAlerts, recentTickets, perfRow, perfSeriesRow, lapsRow] = await Promise.all([
+    const [disks, nets, pingRows, bandwidth, activeAlerts, recentTickets, perfRow, perfSeriesRow, lapsRow, recoveryKeys] = await Promise.all([
       fastify.db.query('SELECT * FROM disks WHERE device_id = $1 ORDER BY letter', [d.id]),
       fastify.db.query('SELECT * FROM network_interfaces WHERE device_id = $1 ORDER BY adapter', [d.id]),
       fastify.db.query(`
@@ -157,7 +161,10 @@ export default async function devicesRoute(fastify) {
         FROM device_admin_credentials c
         LEFT JOIN users_cache uc ON uc.entra_id = c.last_viewed_by
         WHERE c.device_id = $1
-      `, [d.id])
+      `, [d.id]),
+      // Clés de récupération escrowées (postes Linux) : supprimées en cascade
+      // avec le poste, le front l'annonce dans la confirmation de suppression.
+      fastify.db.query('SELECT count(*)::int AS n FROM device_recovery_keys WHERE device_id = $1', [d.id]),
     ])
 
     // ── Ping : grouper par host ────────────────────────────────────────────
@@ -207,8 +214,30 @@ export default async function devicesRoute(fastify) {
       })),
       ...(isAdmin && lapsRow.rows[0] ? { laps: lapsRow.rows[0] } : {}),
       active_alerts: activeAlerts.rows,
-      tickets: recentTickets.rows
+      tickets: recentTickets.rows,
+      // Gestion par état désiré (Linux) : affectation et dernier apply.
+      profile:           d.profile,
+      ring:              d.ring,
+      last_apply_status: d.last_apply_status,
+      last_apply_at:     d.last_apply_at,
+      recovery_keys_count: recoveryKeys.rows[0].n,
     }
+  })
+
+  // PATCH /:id — assignation d'un utilisateur (toutes plateformes). Seul
+  // écrivain manuel de devices.assigned_user_id ; contrat dans la spec linux.
+  fastify.patch('/:id', {
+    schema: schemaFor('deviceSetAssignedUser'),
+    config: { operationId: 'deviceSetAssignedUser' },
+    preHandler: [fastify.authenticate, fastify.requireAdmin],
+  }, async (req, reply) => {
+    const { entraId, displayName } = fastify.getUserIdentity(req)
+    const result = await setAssignedUser(fastify.db, fastify.log, displayName || entraId, req.params.id, req.body.assigned_user_id)
+    if (!result.ok) {
+      const messages = { NOT_FOUND: 'Poste introuvable', UNKNOWN_USER: 'Utilisateur inconnu' }
+      return reply.code(result.status).send({ error: messages[result.code], code: result.code })
+    }
+    return { id: result.id, assigned_user_id: result.assigned_user_id, assigned_user_name: result.assigned_user_name }
   })
 
   // GET /:id/remote-sessions — historique des accès distants sur un poste.
@@ -293,7 +322,7 @@ export default async function devicesRoute(fastify) {
       return reply.code(400).send({ error: 'ids requis' })
 
     const { rows } = await fastify.db.query(
-      `SELECT id, hostname, ip_netbird FROM devices WHERE id = ANY($1::uuid[])`,
+      `SELECT id, hostname, ip_netbird, managed_by FROM devices WHERE id = ANY($1::uuid[])`,
       [ids]
     )
 
@@ -322,6 +351,8 @@ export default async function devicesRoute(fastify) {
     const restarted = []  // { hostname, service } — alimente audit_logs.target
 
     await Promise.all(rows.map(d => new Promise(resolve => {
+      // Poste géré par état désiré (Linux) : pas d'agent Windows à relancer.
+      if (d.managed_by === 'pull') { skipped++; return resolve() }
       // ip_netbird remonté par l'agent : SSH seulement vers une IP littérale,
       // jamais vers un nom d'hôte (redirection de la clé d'administration).
       if (!d.ip_netbird || !isIP(d.ip_netbird)) { skipped++; return resolve() }
@@ -446,6 +477,11 @@ function formatDevice(r, thr = { warn: 80, critical: 90 }) {
     ssh_host_key_fp:         r.ssh_host_key_fp,
     ssh_host_key_learned_at: r.ssh_host_key_learned_at,
     agent_version: r.agent_version,
+    // platform : 'windows' | 'linux' | 'macos' | null (legacy / inconnu) ;
+    // managed_by : 'pull' pour un poste Linux géré par état désiré, sinon null.
+    // Le front en déduit l'icône OS et masque les actions agent Windows.
+    platform:   r.platform,
+    managed_by: r.managed_by,
     last_seen: r.last_seen,
     // last_seen_ws : dernier connect/disconnect du tube agent persistant
     // (PR console-via-agent). Permet à l'UI de différencier "agent vivant

@@ -16,7 +16,7 @@ export default async function deviceAuthPlugin(fastify) {
     }
   })
 
-  fastify.decorate('deviceAuth', function ({ allowStatuses } = {}) {
+  fastify.decorate('deviceAuth', function ({ allowStatuses, allowUnknown = false } = {}) {
     return async function (req, reply) {
       const result = await verifyDeviceRequest({
         method: req.method,
@@ -25,6 +25,7 @@ export default async function deviceAuthPlugin(fastify) {
         rawBody: req.rawBody ?? Buffer.alloc(0),
         now: Math.floor(Date.now() / 1000),
         allowStatuses,
+        allowUnknown,
         nonceStore,
         lookupKey: async fingerprint => {
           const { rows } = await fastify.db.query(`

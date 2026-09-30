@@ -1098,3 +1098,53 @@ test('GET /version — token valide → 200 + latest_version (peut être null en
   // avec un champ latest_version".
   assert.ok('latest_version' in res.json())
 })
+
+// ─── Postes gérés par état désiré (Linux) : l'ingress legacy est fermé ───────
+
+async function seedPullDevice(hostname, serial) {
+  return seedDevice(db, { hostname, serial, platform: 'linux', managed_by: 'pull' })
+}
+
+test('POST /checkin — token non lié sur la série d\'un poste pull → 403, token non rattaché, audit pull_managed', { skip: SKIP }, async () => {
+  const device = await seedPullDevice('lx-unbound-pull', 'SN-UNBOUND-PULL')
+  const t = await seedAgentToken(db, { label: 'unbound-pull' })
+  const res = await checkinWith(t.secret, { hostname: 'lx-unbound-pull', serial: 'SN-UNBOUND-PULL' })
+  assert.equal(res.statusCode, 403, `body: ${res.body}`)
+  assert.match(res.json().error, /état désiré/)
+  assert.equal(await tokenDevice(t.id), null, 'le token reste non lié')
+  const { rows: [audit] } = await db.query(
+    `SELECT details FROM audit_logs WHERE action = 'agent_token_bind_refused' AND target = $1 ORDER BY created_at DESC LIMIT 1`,
+    [device.id]
+  )
+  assert.equal(audit.details.reason, 'pull_managed')
+  assert.equal(audit.details.token_id, t.id)
+})
+
+test('POST /exchange-token — hostname d\'un poste pull → 403, quota non consommé, audit pull_managed', { skip: SKIP }, async () => {
+  const device = await seedPullDevice('lx-exchange-pull', 'SN-EXCHANGE-PULL')
+  const bootstrap = await seedBootstrap('bs-pull')
+  const res = await exchange(bootstrap.secret, { hostname: 'lx-exchange-pull', serial: 'SN-EXCHANGE-PULL' })
+  assert.equal(res.statusCode, 403, `body: ${res.body}`)
+  assert.match(res.json().error, /état désiré/)
+  const { rows: [{ n }] } = await db.query('SELECT count(*)::int AS n FROM agent_tokens WHERE device_id = $1', [device.id])
+  assert.equal(n, 0, 'aucun token lié au poste')
+  const { rows: [bs] } = await db.query('SELECT bootstrap_redeemed_count FROM agent_tokens WHERE id = $1', [bootstrap.id])
+  assert.equal(bs.bootstrap_redeemed_count, 0)
+  const audit = await lastRefusal(device.id)
+  assert.equal(audit.details.reason, 'pull_managed')
+})
+
+test('token lié à un poste converti (pull) → 401 sur /checkin et /admin-credential même si non révoqué', { skip: SKIP }, async () => {
+  const device = await seedPullDevice('lx-stale-token', 'SN-STALE-TOKEN')
+  const stale = await seedAgentToken(db, { deviceId: device.id, label: 'stale-after-conversion' })
+  const checkin = await checkinWith(stale.secret, { hostname: 'lx-stale-token', serial: 'SN-STALE-TOKEN' })
+  assert.equal(checkin.statusCode, 401, `body: ${checkin.body}`)
+  const credential = await fastify.inject({
+    method: 'POST', url: '/api/agent/admin-credential',
+    headers: bearer(stale.secret),
+    payload: { username: 'admin', encrypted_password: Buffer.alloc(256).toString('base64') },
+  })
+  assert.equal(credential.statusCode, 401, `body: ${credential.body}`)
+  const { rowCount } = await db.query('SELECT 1 FROM device_admin_credentials WHERE device_id = $1', [device.id])
+  assert.equal(rowCount, 0)
+})

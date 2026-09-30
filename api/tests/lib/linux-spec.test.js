@@ -1,11 +1,23 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import Fastify from 'fastify'
 import Ajv from 'ajv'
 import addFormats from 'ajv-formats'
 
 import linux, { SPEC_COMPLETE } from '../../modules/linux/index.js'
 import { loadSpec, deref, schemaFor, operations, auditActions } from '../../modules/linux/lib/spec.js'
+
+// Décorateurs attendus par les routes admin (plugins/auth.js) et par les
+// handlers, sans base ni JWT : seul l'enregistrement est exercé ici.
+function bareApp() {
+  const app = Fastify({ logger: false })
+  app.decorate('db', null)
+  for (const name of ['authenticate', 'requireAdmin', 'requireInteractive']) app.decorate(name, async () => {})
+  app.decorate('getUserIdentity', () => null)
+  return app
+}
 
 test('spec Linux : chargement mémorisé et métadonnées des opérations fidèles au YAML', () => {
   const spec = loadSpec()
@@ -50,20 +62,52 @@ test('spec Linux : chaque exemple valide son schéma déréférencé en mode str
 })
 
 test('spec Linux : parité des operationIds enregistrés par le module', async (t) => {
-  const app = Fastify({ logger: false })
+  const app = bareApp()
   t.after(() => app.close())
-  const registered = new Set()
+  const registered = new Map()
   app.addHook('onRoute', route => {
+    if (route.method === 'HEAD') return // jumeau HEAD ajouté par Fastify à chaque GET
     assert.ok(route.config?.operationId, `operationId manquant pour ${route.url}`)
-    registered.add(route.config.operationId)
+    registered.set(route.config.operationId, route)
   })
   await linux.register(app)
   await app.ready()
-  const spec_ids = new Set(operations().map(op => op.operationId))
-  for (const id of registered) assert.ok(spec_ids.has(id), `${id} absent de la spec`)
+  const byId = new Map(operations().map(op => [op.operationId, op]))
+  for (const [id, route] of registered) {
+    const op = byId.get(id)
+    assert.ok(op, `${id} absent de la spec`)
+    assert.equal(route.url, op.fastifyUrl, `${id} : URL différente de la spec`)
+    assert.equal(route.method, op.method.toUpperCase(), `${id} : méthode différente de la spec`)
+  }
+  // PR 2a : enrôlement, file d'attente, pré-inscriptions, révocation.
+  for (const id of ['linuxAgentEnroll', 'linuxListEnrollments', 'linuxCountEnrollments', 'linuxApproveEnrollment',
+    'linuxApproveBulk', 'linuxRejectEnrollment', 'linuxRejectBulk', 'linuxListPreregistrations',
+    'linuxCreatePreregistrations', 'linuxPreregisterFromDevices', 'linuxDeletePreregistration', 'linuxRevokeDevice']) {
+    assert.ok(registered.has(id), `${id} non enregistré`)
+  }
   if (SPEC_COMPLETE) {
     for (const op of operations().filter(op => op.module === 'linux' && !op.raw)) {
       assert.ok(registered.has(op.operationId), `${op.operationId} non enregistré`)
+    }
+  }
+})
+
+test('spec Linux : les routes interactives portent requireInteractive, les autres non', async (t) => {
+  const app = bareApp()
+  t.after(() => app.close())
+  const interactive = async () => {}
+  app.requireInteractive = interactive
+  const routes = []
+  app.addHook('onRoute', route => { if (route.method !== 'HEAD') routes.push(route) })
+  await linux.register(app)
+  await app.ready()
+  const byId = new Map(operations().map(op => [op.operationId, op]))
+  for (const route of routes) {
+    const op = byId.get(route.config.operationId)
+    const handlers = [].concat(route.preHandler ?? [])
+    assert.equal(handlers.includes(interactive), op.interactive, `${op.operationId} : garde interactive ${op.interactive ? 'attendue' : 'inattendue'}`)
+    if (op.module === 'linux' && !route.url.startsWith('/api/linux/agent/')) {
+      assert.equal(handlers.length >= 2, true, `${op.operationId} : authenticate + requireAdmin attendus`)
     }
   }
 })
@@ -72,6 +116,32 @@ test('spec Linux : les actions d’audit sont non vides et en snake_case', () =>
   const actions = auditActions()
   assert.ok(Array.isArray(actions) && actions.length > 0)
   for (const action of actions) assert.match(action, /^[a-z_]+$/)
+})
+
+// Évite la dérive du vocabulaire : chaque littéral `action: '…'` du module,
+// et tout littéral `'linux_…'` hors noms de tables, doit être déclaré dans
+// info.x-opale-audit-actions.
+test('spec Linux : chaque action d’audit du code source est déclarée dans la spec', () => {
+  const root = new URL('../../modules/linux/', import.meta.url).pathname
+  const files = readdirSync(root, { recursive: true }).filter(f => f.endsWith('.js')).map(f => join(root, f))
+  assert.ok(files.length >= 10, 'sources du module trouvées')
+  const tables = new Set(['linux_device_keys', 'linux_preregistrations', 'linux_apply_reports'])
+  const declared = new Set(auditActions())
+  const found = new Set()
+  for (const file of files) {
+    const source = readFileSync(file, 'utf8')
+    const literals = [...source.matchAll(/action:\s*'([a-z_]+)'/g), ...source.matchAll(/'(linux_[a-z_]+)'/g)]
+    for (const [, action] of literals) {
+      if (tables.has(action)) continue
+      assert.ok(declared.has(action), `${action} (${file}) absent de x-opale-audit-actions`)
+      found.add(action)
+    }
+  }
+  for (const action of ['linux_device_enrolled', 'linux_enroll_serial_conflict', 'linux_enroll_flood', 'linux_key_serial_mismatch',
+    'linux_device_approved', 'linux_device_converted', 'linux_device_reenrolled', 'linux_device_rejected', 'linux_device_revoked',
+    'linux_preregistrations_imported']) {
+    assert.ok(found.has(action), `${action} attendu dans le code de la PR 2a`)
+  }
 })
 
 test('deref : fusion profonde des frères, tableaux remplacés et aucune mutation du contrat', () => {

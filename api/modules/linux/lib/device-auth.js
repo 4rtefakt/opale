@@ -28,7 +28,7 @@ export function publicKeyObjectFromRaw(publicKeyRaw) {
 }
 
 export async function verifyDeviceRequest({
-  method, target, headers, rawBody, now, allowStatuses = ['approved'], lookupKey, nonceStore,
+  method, target, headers, rawBody, now, allowStatuses = ['approved'], allowUnknown = false, lookupKey, nonceStore,
 }) {
   const fail = code => ({ ok: false, status: 401, code, message: messages[code] })
   const fingerprint = headers['x-opale-key']
@@ -45,8 +45,17 @@ export async function verifyDeviceRequest({
   if (signatureBytes.toString('base64') !== signature) return fail('SIGNATURE_INVALID')
 
   const key = await lookupKey(fingerprint.toLowerCase())
-  if (!key) return fail('UNKNOWN_KEY')
-  if (!allowStatuses.includes(key.status)) {
+  let publicKeyRaw = key?.public_key
+  if (!key) {
+    if (!allowUnknown) return fail('UNKNOWN_KEY')
+    let encoded
+    try { encoded = JSON.parse(rawBody).public_key } catch { return fail('SIGNATURE_INVALID') }
+    if (typeof encoded !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(encoded)) return fail('SIGNATURE_INVALID')
+    publicKeyRaw = Buffer.from(encoded, 'base64')
+    if (publicKeyRaw.length !== 32 || publicKeyRaw.toString('base64') !== encoded
+      || fingerprintOf(publicKeyRaw) !== fingerprint.toLowerCase()) return fail('SIGNATURE_INVALID')
+  }
+  if (key && !allowStatuses.includes(key.status)) {
     return fail(key.status === 'revoked' ? 'REVOKED' : 'NOT_APPROVED')
   }
   if (Math.abs(now - Number(timestamp)) > 300) {
@@ -59,7 +68,7 @@ export async function verifyDeviceRequest({
     method, target, timestamp, nonce,
     bodySha256Hex: createHash('sha256').update(rawBody).digest('hex'),
   })
-  if (!verify(null, Buffer.from(canonical), publicKeyObjectFromRaw(key.public_key), signatureBytes)) {
+  if (!verify(null, Buffer.from(canonical), publicKeyObjectFromRaw(publicKeyRaw), signatureBytes)) {
     return fail('SIGNATURE_INVALID')
   }
   // Aucun await entre la vérification et l'enregistrement : pas de double acceptation.

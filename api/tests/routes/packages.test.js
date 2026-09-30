@@ -576,6 +576,77 @@ test('POST /:id/deploy — scope=device, >10 devices avec confirmed=true → que
   assert.equal(res.json().queued, 11)
 })
 
+// ─── POST /:id/deploy — postes gérés par état désiré (Linux) : filtrés,
+// jamais refusés, comptés dans skipped_pull ──────────────────────────────────
+
+test('POST /:id/deploy — scope=native_group mixte → 201, skipped_pull: 1, aucun deployment pour le poste pull', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-ng-pull-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg NG Pull' })
+  const groupId = await insertNativeGroup(db, 'Groupe mixte pull')
+  const win = await seedDevice(db, { hostname: 'PC-NG-PULL-WIN' })
+  const pull = await seedDevice(db, { hostname: 'lx-ng-pull', platform: 'linux', managed_by: 'pull' })
+  await addDeviceToGroup(db, groupId, win.id)
+  await addDeviceToGroup(db, groupId, pull.id)
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/deploy`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { scope: 'native_group', native_group_id: groupId },
+  })
+  assert.equal(res.statusCode, 201, res.body)
+  const body = res.json()
+  assert.equal(body.queued, 1)
+  assert.equal(body.total, 1)
+  assert.equal(body.skipped_pull, 1)
+  const { rows } = await db.query('SELECT device_id FROM deployments WHERE package_id = $1', [pkg.id])
+  assert.deepEqual(rows.map(r => r.device_id), [win.id])
+})
+
+test('POST /:id/deploy — scope=device avec un id pull → filtré et compté, pas 409', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-dev-pull-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Device Pull' })
+  const win = await seedDevice(db, { hostname: 'PC-DEV-PULL-WIN' })
+  const pull = await seedDevice(db, { hostname: 'lx-dev-pull', platform: 'linux', managed_by: 'pull' })
+
+  const mixed = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/deploy`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { scope: 'device', device_ids: [win.id, pull.id] },
+  })
+  assert.equal(mixed.statusCode, 201, mixed.body)
+  assert.equal(mixed.json().queued, 1)
+  assert.equal(mixed.json().skipped_pull, 1)
+  const { rows } = await db.query('SELECT device_id FROM deployments WHERE package_id = $1', [pkg.id])
+  assert.deepEqual(rows.map(r => r.device_id), [win.id])
+
+  // Uniquement des postes pull : rien à déployer, le filtre est rapporté.
+  const only = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/deploy`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { scope: 'device', device_ids: [pull.id] },
+  })
+  assert.equal(only.statusCode, 400, only.body)
+  assert.equal(only.json().skipped_pull, 1)
+})
+
+test('POST /:id/deploy — le seuil de confirmation est calculé après le filtre pull', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-pkg-confirm-pull-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Confirm Pull' })
+  const deviceIds = []
+  for (let i = 0; i < 10; i++) deviceIds.push((await seedDevice(db, { hostname: `PC-CONFIRM-PULL-${i}` })).id)
+  deviceIds.push((await seedDevice(db, { hostname: 'lx-confirm-pull', platform: 'linux', managed_by: 'pull' })).id)
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/packages/${pkg.id}/deploy`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { scope: 'device', device_ids: deviceIds },
+  })
+  // 11 ids dont 1 pull → 10 postes : pas de confirmation demandée.
+  assert.equal(res.statusCode, 201, res.body)
+  assert.equal(res.json().queued, 10)
+  assert.equal(res.json().skipped_pull, 1)
+})
+
 // ─── POST /:id/cancel-all ─────────────────────────────────────────────────────
 
 test('POST /:id/cancel-all — 3 pending → tous cancelled + job stoppé', { skip: SKIP }, async () => {

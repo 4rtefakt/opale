@@ -699,3 +699,40 @@ test('POST /:id/exec — hôte qui raccroche après authentification : exécutio
   await new Promise(r => setTimeout(r, 50))
   assert.deepEqual(rejections, [])
 })
+
+// ─── Postes gérés par état désiré (Linux) : jamais de script ─────────────────
+
+test('POST /:id/run — poste pull → 409 PULL_MANAGED, aucune exécution créée', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-sc-run-pull')
+  const s = await seedScript({ name: 'Script Run Pull' })
+  const device = await seedDevice(db, { hostname: 'lx-run-pull', platform: 'linux', managed_by: 'pull' })
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${s.id}/run`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { device_id: device.id },
+  })
+  assert.equal(res.statusCode, 409, res.body)
+  assert.equal(res.json().code, 'PULL_MANAGED')
+  const { rowCount } = await db.query('SELECT 1 FROM script_executions WHERE device_id = $1', [device.id])
+  assert.equal(rowCount, 0)
+})
+
+test('POST /:id/exec — groupe mixte : le poste pull est écarté des candidats (aucune exécution, aucune connexion)', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-sc-exec-pull')
+  const script = await seedScript({ name: 'SSH pull' })
+  const group = await seedGroup({ name: 'G-exec-pull' })
+  // Le poste pull a une IP littérale : sans le filtre, la route tenterait le SSH.
+  const pull = await seedDevice(db, { hostname: 'lx-exec-pull', ipNetbird: '127.0.0.1', platform: 'linux', managed_by: 'pull' })
+  const noIp = await seedDevice(db, { hostname: 'PC-EXEC-NOIP', ipNetbird: null })
+  for (const d of [pull, noIp]) {
+    await db.query(`INSERT INTO group_members (group_id, device_id, added_by) VALUES ($1, $2, 'test')`, [group.id, d.id])
+  }
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/scripts/${script.id}/exec`,
+    headers: { authorization: `Bearer ${token}` },
+    payload: { native_group_id: group.id },
+  })
+  assert.equal(res.statusCode, 400, res.body)
+  assert.match(res.json().error, /joignable/)
+  assert.equal((await execRows(script.id)).length, 0)
+})

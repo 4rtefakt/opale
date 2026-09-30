@@ -31,7 +31,8 @@ function deviceStatus(s, d) {
   if (d.disk_used_pct >= t.warn) return 'warn'
   return 'online'
 }
-function deviceRow(s, d) { return { ...d, status: deviceStatus(s, d) } }
+// platform / managed_by : mêmes champs que l'API (module linux désactivé en démo → parc Windows).
+function deviceRow(s, d) { return { ...d, platform: d.platform ?? 'windows', managed_by: d.managed_by ?? null, status: deviceStatus(s, d) } }
 
 // Règles de conformité : verdict déterministe par poste (pas d'aléa entre
 // deux appels), lisible dans la fiche poste et la vue Conformité.

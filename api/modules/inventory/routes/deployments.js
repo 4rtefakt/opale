@@ -1,4 +1,5 @@
 import { SNAPSHOT_COLUMNS, SNAPSHOT_UPSERT, snapshotSelect } from '../lib/deployment-snapshots.js'
+import { isPullManaged, NOT_PULL_MANAGED_SQL } from '../lib/pull-managed.js'
 
 // Suivi des déploiements de packages
 export default async function deploymentsRoute(fastify) {
@@ -96,17 +97,20 @@ export default async function deploymentsRoute(fastify) {
     // on évite les doublons via NOT EXISTS sur un pending concurrent. Plus
     // efficace qu'une boucle par-id, et garde la cohérence transactionnelle.
     // Le snapshot du contenu approuvé courant est (re)figé dans la même
-    // requête (cf. lib/deployment-snapshots.js).
+    // requête (cf. lib/deployment-snapshots.js). Un poste converti en gestion
+    // par état désiré (Linux) depuis l'échec est compté dans `skipped`.
     const { rows } = await fastify.db.query(`
       WITH upd AS (
         UPDATE deployments d SET
           status = 'pending', exit_code = NULL, output = NULL,
           queued_at = now(), started_at = NULL, completed_at = NULL
-        FROM packages p
+        FROM packages p, devices dev
         WHERE d.id = ANY($1::uuid[])
           AND d.status IN ('failed', 'cancelled')
           AND p.id = d.package_id
           AND p.status = 'approved'
+          AND dev.id = d.device_id
+          AND dev.${NOT_PULL_MANAGED_SQL}
           AND NOT EXISTS (
             SELECT 1 FROM deployments c
             WHERE c.package_id = d.package_id
@@ -133,6 +137,9 @@ export default async function deploymentsRoute(fastify) {
     if (!existing) return reply.code(404).send({ error: 'Déploiement introuvable' })
     if (existing.status !== 'failed' && existing.status !== 'cancelled') {
       return reply.code(409).send({ error: 'Seuls les déploiements failed/cancelled sont rejouables' })
+    }
+    if (await isPullManaged(fastify.db, existing.device_id)) {
+      return reply.code(409).send({ error: 'Poste géré par état désiré (Linux) : déploiement non rejouable', code: 'PULL_MANAGED' })
     }
 
     // Vérifier qu'il n'y a pas déjà un pending pour ce couple (package, device)

@@ -380,3 +380,43 @@ test('POST /retry-bulk — skip les packages non approuvés, snapshot pour les a
   assert.equal(await snapshotScript(db, depOk.id), 'Write-Output ok')
   assert.equal(await snapshotScript(db, depDraft.id), undefined)
 })
+
+// ─── Postes gérés par état désiré (Linux) : un déploiement échoué avant la
+// conversion n'est jamais rejoué ──────────────────────────────────────────────
+
+test('POST /:id/retry — poste pull → 409 PULL_MANAGED, reste failed', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-dep-retry-pull-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg Retry Pull' })
+  const dev = await seedDevice(db, { hostname: 'lx-retry-pull', platform: 'linux', managed_by: 'pull' })
+  const dep = await insertFailedDeployment(db, pkg.id, dev.id)
+
+  const res = await fastify.inject({
+    method: 'POST', url: `/api/deployments/${dep.id}/retry`,
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 409, res.body)
+  assert.equal(res.json().code, 'PULL_MANAGED')
+  const { rows: [row] } = await db.query('SELECT status FROM deployments WHERE id = $1', [dep.id])
+  assert.equal(row.status, 'failed')
+})
+
+test('POST /retry-bulk — le poste pull est compté dans skipped, le poste Windows rejoué', { skip: SKIP }, async () => {
+  const token = await adminToken('oid-dep-rbulk-pull-admin')
+  const pkg = await insertPackage(db, { name: 'Pkg RBulk Pull' })
+  const win = await seedDevice(db, { hostname: 'PC-RBULK-WIN' })
+  const pull = await seedDevice(db, { hostname: 'lx-rbulk-pull', platform: 'linux', managed_by: 'pull' })
+  const depWin = await insertFailedDeployment(db, pkg.id, win.id)
+  const depPull = await insertFailedDeployment(db, pkg.id, pull.id)
+
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/deployments/retry-bulk',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { ids: [depWin.id, depPull.id] },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(res.json(), { retried: 1, skipped: 1 })
+  const { rows } = await db.query('SELECT id, status FROM deployments WHERE id = ANY($1::uuid[])', [[depWin.id, depPull.id]])
+  const byId = Object.fromEntries(rows.map(r => [r.id, r.status]))
+  assert.equal(byId[depWin.id], 'pending')
+  assert.equal(byId[depPull.id], 'failed')
+})
