@@ -49,10 +49,14 @@ before(async () => {
       // que le caller pourra introspecter.
       f.get('/whoami', { preHandler: f.authenticate }, async (req) => ({
         payload: req.jwtPayload,
+        authKind: req.authKind,
         identity: f.getUserIdentity(req),
         isAdmin: await f.isAdmin(req),
       }))
       f.get('/admin-only', { preHandler: [f.authenticate, f.requireAdmin] }, async () => ({ ok: true }))
+      f.get('/interactive-only', {
+        preHandler: [f.authenticate, f.requireAdmin, f.requireInteractive],
+      }, async () => ({ ok: true }))
     },
   })
 })
@@ -119,6 +123,7 @@ test('authenticate — Bearer JWT valide injecte jwtPayload', { skip: SKIP }, as
   assert.equal(res.statusCode, 200)
   const body = res.json()
   assert.equal(body.payload.oid, 'oid-jwt-1')
+  assert.equal(body.authKind, 'jwt')
   assert.equal(body.identity.entraId, 'oid-jwt-1')
   assert.equal(body.identity.displayName, 'Alice JWT')
   assert.equal(body.identity.email, 'alice@example.com')
@@ -209,6 +214,7 @@ test('authenticate — Bearer opl_<hex> valide injecte jwtPayload synthétique',
   assert.equal(res.statusCode, 200)
   const body = res.json()
   assert.equal(body.payload.oid, 'oid-cli-1')
+  assert.equal(body.authKind, 'cli')
   assert.equal(body.identity.displayName, 'CLI Alice')
   assert.equal(body.identity.email, 'cli-alice@x')
 })
@@ -286,6 +292,7 @@ test('authenticate — Bearer hex64 (sans préfixe opl_) accepté en legacy', { 
   })
   assert.equal(res.statusCode, 200)
   assert.equal(res.json().payload.oid, 'oid-legacy')
+  assert.equal(res.json().authKind, 'cli')
 })
 
 test('authenticate — string de 64 chars non-hex (a..z) → 401 (pas legacy)', { skip: SKIP }, async () => {
@@ -351,6 +358,25 @@ test('isAdmin — variante non-bloquante retourne false sur user sans row', { sk
   })
   assert.equal(res.statusCode, 200)
   assert.equal(res.json().isAdmin, false)
+})
+
+test('requireInteractive — même admin : JWT accepté, CLI refusé', { skip: SKIP }, async () => {
+  const secret = crypto.randomBytes(32).toString('hex')
+  const entraId = 'oid-interactive-admin'
+  await seedCliToken({ secret, entraId })
+  await db.query('UPDATE users_cache SET is_admin = true WHERE entra_id = $1', [entraId])
+  const token = await jwt.sign({ oid: entraId, name: 'Interactive admin' })
+  const interactive = await fastify.inject({
+    method: 'GET', url: '/interactive-only', headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(interactive.statusCode, 200)
+  for (const cli of [`opl_${secret}`, secret]) {
+    const headers = { authorization: `Bearer ${cli}` }
+    assert.equal((await fastify.inject({ method: 'GET', url: '/admin-only', headers })).statusCode, 200)
+    const res = await fastify.inject({ method: 'GET', url: '/interactive-only', headers })
+    assert.equal(res.statusCode, 403)
+    assert.deepEqual(res.json(), { error: 'Action réservée à une session interactive', code: 'INTERACTIVE_ONLY' })
+  }
 })
 
 // ─── getUserIdentity — fallbacks oid/sub + email/preferred_username/upn ─────
