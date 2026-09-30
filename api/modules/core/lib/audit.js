@@ -28,3 +28,15 @@ export async function logAudit(db, log, { action, byUser = null, target = null, 
     log?.warn?.({ err: err.message, action }, 'logAudit failed')
   }
 }
+
+// Variante « fail-closed » : même INSERT, sur le client (transaction) fourni,
+// et l'erreur REMONTE au lieu d'être avalée. Réservée aux révélations de
+// secrets : la trace d'audit doit être validée AVANT que le secret parte ;
+// si l'INSERT échoue, la transaction est annulée et rien n'est envoyé.
+export function insertAudit(client, { action, byUser = null, target = null, details = null }) {
+  return client.query(
+    `INSERT INTO audit_logs (action, by_user, target, details)
+     VALUES ($1, $2, $3, $4)`,
+    [action, byUser, target, details ? JSON.stringify(details) : null]
+  )
+}

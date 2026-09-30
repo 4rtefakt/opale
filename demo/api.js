@@ -191,7 +191,8 @@ on('DELETE', '/devices/:id/ssh-host-key', () => ({ ok: true }))
 on('GET', '/devices/:id/compliance', ({ s, p }) => deviceCompliance(s.devices.find(d => d.id === p.id) || notFound()))
 on('GET', '/devices/:id/remote-sessions', ({ s, p }) => ({ sessions: p.id === s.devices[1]?.id ? [{ id: 'rs-1', transport: 'ssh', ip: s.devices[1].ip_netbird, by_name: ME.displayName, started_at: H(0.5), ended_at: H(0.3), duration_s: 754, end_reason: 'closed' }, { id: 'rs-2', transport: 'agent_console', shell: 'powershell', by_name: 'Hugo Blanc', started_at: H(40), ended_at: H(39.8), duration_s: 610, end_reason: 'closed' }] : [] }))
 on('GET', '/remote-sessions/:id/log', () => ({ available: false, reason: 'Journal non conservé dans la démo' }))
-on('GET', '/admin-credentials/:id', ({ s, p }) => { const d = s.devices.find(x => x.id === p.id) || notFound(); audit(s, 'laps_revealed', d.hostname); return { username: s.settings.settings['agent.laps_recovery_username'] || 'opale-recovery', password: 'Demo-' + d.hostname.slice(-4) + '-x7Kq2', password_changed_at: H(72), last_accessed_at: now(), last_accessed_by: ME.displayName, rotation_requested_at: null } })
+// Même contrat que l'API : motif { category, note } obligatoire, journalisé avec la consultation.
+on('POST', '/admin-credentials/:id/reveal', ({ s, p, b }) => { const d = s.devices.find(x => x.id === p.id) || notFound(); const reason = b?.reason; if (!reason?.category || String(reason.note || '').trim().length < 5) throw new ApiErr(400, 'Motif requis'); audit(s, 'laps_revealed', d.hostname, { reason }); return { username: s.settings.settings['agent.laps_recovery_username'] || 'opale-recovery', password: 'Demo-' + d.hostname.slice(-4) + '-x7Kq2', password_changed_at: H(72) } })
 on('POST', '/admin-credentials/:id/rotate', () => ({ ok: true, rotation_requested_at: now() }))
 
 // Tickets — routes fixes avant /:id

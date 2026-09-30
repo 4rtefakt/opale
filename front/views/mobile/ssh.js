@@ -130,21 +130,27 @@ async function connectSSH(id) {
   _ws.onerror = () => setStatus(t('mobile.ssh.ws_error'), false)
 }
 
-// Saisie du motif d'ouverture de session : même contrat, mêmes libellés et
-// même mémorisation de la catégorie que promptRemoteReason() du desktop
-// (views/poste.js), présentés dans la feuille mobile. Résout
+// Saisie du motif d'ouverture de session (ssh) ou de révélation du mot de
+// passe de récupération (laps, views/mobile/poste.js) : même contrat, mêmes
+// libellés et même mémorisation de la catégorie que promptRemoteReason() du
+// desktop (views/poste.js), présentés dans la feuille mobile. Résout
 // { category, note } si validé, null si annulé (bouton ou tap hors feuille).
 const REASON_CATEGORIES  = ['maintenance', 'troubleshoot', 'audit', 'incident', 'other']
 const REASON_STORAGE_KEY = 'remote-reason-last-category'
+const REASON_LABELS = {
+  ssh:  { title: 'remote.reason.title_ssh',  warn: 'remote.reason.warn_ssh',  ok: 'remote.reason.open' },
+  laps: { title: 'remote.reason.title_laps', warn: 'remote.reason.warn_laps', ok: 'remote.reason.reveal' },
+}
 
-function mPromptRemoteReason(hostname) {
+export function mPromptRemoteReason(hostname, kind = 'ssh') {
   return new Promise(resolve => {
     let lastCat = 'troubleshoot'
     try { lastCat = localStorage.getItem(REASON_STORAGE_KEY) || lastCat } catch {}
+    const labels = REASON_LABELS[kind] || REASON_LABELS.ssh
     window.mShowSheet(`
-      <div class="m-sheet-title"><i class="ti ti-shield-lock" style="margin-right:6px"></i>${esc(t('remote.reason.title_ssh', { host: hostname }))}</div>
+      <div class="m-sheet-title"><i class="ti ti-shield-lock" style="margin-right:6px"></i>${esc(t(labels.title, { host: hostname }))}</div>
       <div style="display:flex;flex-direction:column;gap:12px;padding:0 4px">
-        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">${esc(t('remote.reason.warn_ssh'))}</div>
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5">${esc(t(labels.warn))}</div>
         <div>
           <div class="m-label">${esc(t('remote.reason.category_label'))}</div>
           <select class="m-input" id="m-rr-cat">
@@ -157,7 +163,7 @@ function mPromptRemoteReason(hostname) {
             placeholder="${esc(t('remote.reason.note_placeholder'))}"></textarea>
           <div id="m-rr-err" style="color:var(--red);font-size:11px;margin-top:4px;display:none"></div>
         </div>
-        <button class="m-btn-primary" id="m-rr-ok">${esc(t('remote.reason.open'))}</button>
+        <button class="m-btn-primary" id="m-rr-ok">${esc(t(labels.ok))}</button>
         <button id="m-rr-cancel" style="width:100%;padding:10px;border-radius:10px;font-size:13px;font-weight:500;background:none;border:1px solid var(--border);color:var(--text-secondary);cursor:pointer">
           ${esc(t('btn.cancel'))}
         </button>

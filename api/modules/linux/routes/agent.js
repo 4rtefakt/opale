@@ -7,7 +7,9 @@ import { schemaFor } from '../lib/spec.js'
 import { enrollDevice } from '../lib/enrollment.js'
 import { checkin } from '../lib/checkin.js'
 import { recordReport, alertApplyFailure } from '../lib/reports.js'
+import { escrowSecret } from '../lib/escrow.js'
 import { createDeviceRateLimiter } from '../lib/device-rate.js'
+import { sendRefusal } from '../lib/admin-route.js'
 import { lapsKey } from '../../inventory/lib/laps-key.js'
 import { ipOnlyKey } from '../../../lib/rate-limit.js'
 
@@ -15,6 +17,16 @@ const REFUSED = {
   rejected:        { error: 'Enrôlement rejeté', code: 'REJECTED' },
   revoked:         { error: 'Clé révoquée', code: 'REVOKED' },
   serial_mismatch: { error: 'Numéro de série différent de celui enrôlé', code: 'SERIAL_MISMATCH' },
+}
+
+const ESCROW_MESSAGES = {
+  ESCROW_UNAVAILABLE:         'Clé d’escrow illisible côté serveur',
+  ESCROW_KEY_MISMATCH:        'Chiffré pour une autre clé d’escrow que celle servie',
+  CIPHERTEXT_SIZE:            'Taille du chiffré suspecte',
+  USERNAME_MISMATCH:          'Compte différent de celui configuré',
+  ESCROW_STALE:               'Rotation plus ancienne que le mot de passe stocké',
+  ROTATED_AT_IN_FUTURE:       'Date de rotation dans le futur (horloge du poste ?)',
+  ESCROW_BACKUP_UNCONFIRMED:  'Sauvegarde de la clé d’escrow non confirmée',
 }
 
 export default async function agentRoutes(fastify) {
@@ -85,5 +97,23 @@ export default async function agentRoutes(fastify) {
     const result = await recordReport(db, fastify.log, { deviceId: req.deviceKey.device_id, fingerprint: req.deviceKey.key_fingerprint, body: req.body })
     if (result.transition === 'failed') void alertApplyFailure(fastify, result)
     return reply.code(201).send({ id: result.id, received_at: result.received_at, transition: result.transition })
+  })
+
+  // Escrow d'un secret chiffré sous la clé servie au check-in (design §4) :
+  // mot de passe du compte local ou clé de récupération LUKS. 6/min par poste.
+  const escrowRate = createDeviceRateLimiter({ max: 6, windowMs: 60_000 })
+  fastify.post('/escrow', {
+    schema: schemaFor('linuxAgentEscrow'),
+    config: { rateLimit: { max: 60, timeWindow: '1 minute', keyGenerator: ipOnlyKey }, operationId: 'linuxAgentEscrow' },
+    preValidation: fastify.deviceAuth(),
+  }, async (req, reply) => {
+    const limit = escrowRate.hit(req.deviceKey.device_id)
+    if (!limit.ok) {
+      return reply.code(429).header('Retry-After', Math.ceil(limit.retry_after_ms / 1000))
+        .send({ error: 'Trop d’escrows pour ce poste', code: 'DEVICE_RATE_LIMIT', retry_after_ms: limit.retry_after_ms })
+    }
+    const result = await escrowSecret(db, fastify.log, { key: req.deviceKey, body: req.body }, { escrowInfo: lapsKey.info(fastify.log) })
+    if (!result.ok) return sendRefusal(reply, result, ESCROW_MESSAGES)
+    return reply.code(201).send(result.ack)
   })
 }

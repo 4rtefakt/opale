@@ -74,7 +74,7 @@ de mise en balance (intérêt vs. droits des personnes concernées).
 | `script_executions` | Qui a lancé quel script, sur quel poste, output complet | **Élevé** — output peut contenir des données personnelles |
 | `device_admin_credentials` | Mot de passe local recovery (chiffré RSA-OAEP) + journal des consultations | Élevé |
 | `linux_apply_reports` | error_summary, log_tail, révision et résultat d'application | Élevé — les extraits de logs peuvent contenir des noms d'utilisateurs et des chemins |
-| `device_recovery_keys` | Secrets de récupération LUKS / TPM chiffrés au repos, label, last_viewed_by | Élevé — déchiffrement uniquement lors d'une consultation auditée (routes livrées dans une PR ultérieure) |
+| `device_recovery_keys` | Secrets de récupération LUKS / TPM chiffrés au repos, label, last_viewed_by | Élevé — déchiffrement uniquement lors d'une consultation auditée, motivée et « fail-closed » (§4.6) |
 
 Les ouvertures et fermetures de console-via-agent (transport
 `agent_console`) sont en plus tracées dans `audit_logs` sous les actions
@@ -237,12 +237,30 @@ recovery, chiffré côté agent en RSA-OAEP-SHA256. La clé privée
 haut : son exposition permettrait de déchiffrer tous les mots de passe
 recovery historiques et présents.
 
+La même clé protège les secrets de récupération des postes Linux
+(`device_recovery_keys` : clé de récupération LUKS, chiffrée par l'agent
+sous la clé publique dérivée de `laps.key`). L'escrow d'une clé LUKS n'est
+accepté qu'après confirmation, par un admin, de la sauvegarde hors site de
+`laps.key` (`linux.escrow_backup_confirmed`, action auditée
+`linux_escrow_backup_confirmed`) : une clé LUKS perdue est irrécupérable.
+
+**Contrat de révélation (uniforme Windows / Linux, mot de passe recovery et
+clés de récupération) :** session interactive admin (tokens CLI refusés),
+**motif obligatoire** (catégorie + note, comme les sessions distantes §4.1),
+déchiffrement en mémoire, puis ligne d'audit (`laps_viewed` /
+`linux_recovery_key_viewed`, avec le motif) et `last_viewed_*` validés dans
+une **même transaction avant** l'envoi du secret — « fail-closed » : si la
+trace ne peut pas être écrite, le secret n'est pas envoyé. Un échec de
+déchiffrement est lui aussi audité (`outcome: 'failed'`).
+
 **Bonnes pratiques :**
 
-- Backup chiffré séparé de la clé privée.
-- Audit régulier des consultations (`audit_logs.action = 'laps_viewed'`).
+- Backup chiffré séparé de la clé privée (obligatoire avant tout escrow
+  LUKS, cf. UPGRADING.md).
+- Audit régulier des consultations (`audit_logs.action IN ('laps_viewed',
+  'linux_recovery_key_viewed')`, le motif est dans `details.reason`).
 - Le journal `last_viewed_by` permet de tracer qui a vu quel mot de
-  passe et quand.
+  passe ou quelle clé, et quand.
 
 ### 4.7 Logs des sessions remote (`remote_session_logs`)
 

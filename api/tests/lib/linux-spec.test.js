@@ -86,7 +86,9 @@ test('spec Linux : parité des operationIds enregistrés par le module', async (
     // PR 4a : check-in, vues des postes, affectation, état de l'escrow.
     'linuxAgentCheckin', 'linuxListDevices', 'linuxGetDevice', 'linuxUpdateDevice', 'linuxAssignBulk', 'linuxEscrowStatus',
     // PR 4b : rapports d'application, historique, KPIs.
-    'linuxAgentReport', 'linuxListReports', 'linuxDashboard']) {
+    'linuxAgentReport', 'linuxListReports', 'linuxDashboard',
+    // PR 5 : escrow, clés de récupération, porte de sauvegarde.
+    'linuxAgentEscrow', 'linuxListRecoveryKeys', 'linuxRevealRecoveryKey', 'linuxConfirmEscrowBackup']) {
     assert.ok(registered.has(id), `${id} non enregistré`)
   }
   if (SPEC_COMPLETE) {

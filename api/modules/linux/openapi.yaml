@@ -194,10 +194,11 @@ paths:
         check-in (decoded size 200..1024 bytes; keep plaintext ≤ 150 bytes). `escrow_key_id` must equal the
         served `escrow.key_id` (else `409 ESCROW_KEY_MISMATCH`).
 
-        - `local_admin`: `username` must equal the assignment's `local_admin_username`; `rotated_at` must be
-          later than the stored `password_changed_at` (else `409 ESCROW_STALE`). Upserts the device's row in
-          `device_admin_credentials` (same table and reveal route as Windows LAPS), clears
-          `rotation_requested_at`, audits `laps_rotated`.
+        - `local_admin`: `username` must equal the assignment's `local_admin_username` (else
+          `400 USERNAME_MISMATCH`); `rotated_at` must be later than the stored `password_changed_at`
+          (else `409 ESCROW_STALE`) and at most 5 min in the future (else `400 ROTATED_AT_IN_FUTURE`).
+          Upserts the device's row in `device_admin_credentials` (same table and reveal route as
+          Windows LAPS), clears `rotation_requested_at`, audits `laps_rotated`.
         - `luks_recovery`: inserts a new `device_recovery_keys` row; a previous row with the same `label`
           is marked superseded (history kept). Refused with `409 ESCROW_BACKUP_UNCONFIRMED` until an admin
           has confirmed the off-box backup of the escrow key (`POST /linux/escrow/confirm-backup`).
@@ -213,7 +214,9 @@ paths:
         '201':
           description: Stored.
           content: { application/json: { schema: { $ref: '#/components/schemas/EscrowAck' } } }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400':
+          description: Validation error, CIPHERTEXT_SIZE (decoded size outside 200..1024), USERNAME_MISMATCH or ROTATED_AT_IN_FUTURE.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409':
           description: ESCROW_KEY_MISMATCH, ESCROW_STALE or ESCROW_BACKUP_UNCONFIRMED.
@@ -477,7 +480,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '500':
-          description: Decryption failed (key_id mismatch or unreadable escrow key); audited as failed.
+          description: DECRYPT_FAILED (key_id mismatch or unreadable escrow key; audited as failed) or AUDIT_FAILED (the audit + `last_viewed_*` transaction could not be committed; the secret is not returned).
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   /linux/enrollments:
@@ -1015,6 +1018,9 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500':
+          description: DECRYPT_FAILED (unreadable LAPS key or foreign ciphertext; audited as failed) or AUDIT_FAILED (audit + `last_viewed_*` transaction not committed; the password is not returned).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
 components:
 

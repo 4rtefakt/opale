@@ -1,12 +1,13 @@
-// routes/admin-credentials.js : GET /:device_id (déchiffrement LAPS)
-// + POST /:device_id/rotate (flag rotation).
+// routes/admin-credentials.js : POST /:deviceId/reveal (déchiffrement LAPS,
+// motif requis, session interactive, audit fail-closed) + POST
+// /:device_id/rotate (flag rotation).
 //
-// L'endpoint GET appelle crypto.privateDecrypt avec une vraie clé RSA-OAEP.
+// L'endpoint reveal appelle crypto.privateDecrypt avec une vraie clé RSA-OAEP.
 // On génère une paire RSA de test en before(), on écrit la clé privée dans un
 // fichier temporaire (t.TempDir-like via os.tmpdir), et on pointe
 // LAPS_PRIVATE_KEY dessus. Le ciphertext inséré en DB est chiffré avec la clé
 // publique correspondante. Pas de mock de la DB — acquireSchema() fournit un
-// schéma Postgres isolé.
+// schéma Postgres isolé (le trigger du test fail-closed y reste confiné).
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -25,6 +26,7 @@ import { insertAdminCredential } from '../fixtures/admin-credentials.js'
 import adminCredentialsRoute from '../../modules/inventory/routes/admin-credentials.js'
 
 const SKIP = isDbAvailable() ? false : 'PG_TEST_URL non défini'
+const REASON = { category: 'incident', note: 'Utilisateur bloqué au démarrage, ticket #412' }
 
 let schema, db, release, fastify, jwt
 let tmpKeyPath, rsaPublicKey
@@ -85,6 +87,14 @@ async function adminAuth(entraId = 'oid-laps-admin', email = 'laps-admin@test.lo
   return { user: u, token }
 }
 
+// Token CLI (opl_…) d'un admin : requireAdmin passe, requireInteractive refuse.
+async function cliTokenFor(entraId) {
+  const secret = crypto.randomBytes(32).toString('hex')
+  await db.query('INSERT INTO cli_tokens (entra_id, label, token_hash) VALUES ($1, $2, $3)',
+    [entraId, 'test', crypto.createHash('sha256').update(secret).digest('hex')])
+  return 'opl_' + secret
+}
+
 // Chiffre une chaîne avec la clé RSA publique de test (même algo que l'agent).
 function encryptForTest(plaintext) {
   return crypto.publicEncrypt(
@@ -93,74 +103,130 @@ function encryptForTest(plaintext) {
   )
 }
 
-// ─── GET /:device_id — happy path admin ────────────────────────────────────
+const reveal = (deviceId, token, payload = { reason: REASON }) => fastify.inject({
+  method: 'POST', url: `/api/admin-credentials/${deviceId}/reveal`,
+  headers: token ? { authorization: `Bearer ${token}` } : {}, payload,
+})
 
-test('GET /:device_id — admin happy path : retourne le mot de passe déchiffré + audit laps_viewed', { skip: SKIP || 'TODO: pre-existing flake — 7s+ wall time near node:test default timeout' }, async () => {
+const viewed = async deviceId => (await db.query(
+  'SELECT last_viewed_at, last_viewed_by FROM device_admin_credentials WHERE device_id = $1', [deviceId],
+)).rows[0]
+
+const audits = async deviceId => (await db.query(
+  "SELECT by_user, details FROM audit_logs WHERE action = 'laps_viewed' AND target = $1 ORDER BY created_at", [deviceId],
+)).rows
+
+// ─── POST /:deviceId/reveal — happy path admin ──────────────────────────────
+
+test('POST /:deviceId/reveal — admin happy path : mot de passe déchiffré, audit laps_viewed avec le motif, last_viewed_* posés', { skip: SKIP }, async () => {
   const { user, token } = await adminAuth('oid-laps-get-ok', 'laps-get-ok@test.local')
   const device = await seedDevice(db, { hostname: 'PC-LAPS-GET' })
   const plainPassword = 'S3cr3tP@ssw0rd!'
   const ciphertext = encryptForTest(plainPassword)
   await insertAdminCredential(db, { device_id: device.id, username: 'opale-recovery', encrypted_password: ciphertext })
 
-  const res = await fastify.inject({
-    method: 'GET', url: `/api/admin-credentials/${device.id}`,
-    headers: { authorization: `Bearer ${token}` },
-  })
-  assert.equal(res.statusCode, 200)
+  const res = await reveal(device.id, token)
+  assert.equal(res.statusCode, 200, res.body)
   const body = res.json()
-  assert.equal(body.device_id, device.id)
-  assert.equal(body.hostname, 'PC-LAPS-GET')
   assert.equal(body.username, 'opale-recovery')
   assert.equal(body.password, plainPassword)
   assert.ok(body.password_changed_at)
+  assert.equal(body.device_id, undefined, 'réponse limitée au contrat de la spec')
 
-  // Audit log laps_viewed inséré.
-  const { rows: audits } = await db.query(
-    `SELECT action, by_user, target FROM audit_logs
-     WHERE action = 'laps_viewed' AND target = $1`,
-    [device.id]
-  )
-  assert.equal(audits.length, 1)
-  assert.equal(audits[0].by_user, user.email)
-  assert.equal(audits[0].target, device.id)
+  // Audit log laps_viewed inséré, avec le motif et l'issue.
+  const rows = await audits(device.id)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].by_user, user.email)
+  assert.deepEqual(rows[0].details, { hostname: 'PC-LAPS-GET', username: 'opale-recovery', reason: REASON, outcome: 'ok' })
+  const v = await viewed(device.id)
+  assert.ok(v.last_viewed_at)
+  assert.equal(v.last_viewed_by, user.entraId)
 })
 
-// ─── GET /:device_id — non-admin → 403 ─────────────────────────────────────
+// ─── POST /:deviceId/reveal — gardes ────────────────────────────────────────
 
-test('GET /:device_id — non-admin → 403', { skip: SKIP }, async () => {
+test('POST /:deviceId/reveal — non-admin → 403, sans Bearer → 401, token CLI → 403 INTERACTIVE_ONLY (reveal et rotate)', { skip: SKIP }, async () => {
   const u = await seedNonAdmin(db, { entraId: 'oid-laps-get-na', email: 'laps-na@test.local' })
-  const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const nonAdmin = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const { user } = await adminAuth('oid-laps-cli', 'laps-cli@test.local')
+  const cli = await cliTokenFor(user.entraId)
   const device = await seedDevice(db, { hostname: 'PC-LAPS-NA' })
+  await insertAdminCredential(db, { device_id: device.id, encrypted_password: encryptForTest('x') })
 
-  const res = await fastify.inject({
-    method: 'GET', url: `/api/admin-credentials/${device.id}`,
-    headers: { authorization: `Bearer ${token}` },
-  })
+  assert.equal((await reveal(device.id, nonAdmin)).statusCode, 403)
+  assert.equal((await reveal(device.id, null)).statusCode, 401)
+  const res = await reveal(device.id, cli)
   assert.equal(res.statusCode, 403)
+  assert.equal(res.json().code, 'INTERACTIVE_ONLY')
+  const rotate = await fastify.inject({ method: 'POST', url: `/api/admin-credentials/${device.id}/rotate`, headers: { authorization: `Bearer ${cli}` } })
+  assert.equal(rotate.statusCode, 403)
+  assert.equal(rotate.json().code, 'INTERACTIVE_ONLY')
+  // Rien n'a été révélé ni tracé.
+  assert.equal((await audits(device.id)).length, 0)
+  assert.equal((await viewed(device.id)).last_viewed_at, null)
 })
 
-// ─── GET /:device_id — JWT manquant → 401 ──────────────────────────────────
+test('POST /:deviceId/reveal — sans motif, note trop courte ou catégorie inconnue → 400 ; l’ancien GET n’existe plus', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-laps-400', 'laps-400@test.local')
+  const device = await seedDevice(db, { hostname: 'PC-LAPS-400' })
+  await insertAdminCredential(db, { device_id: device.id, encrypted_password: encryptForTest('x') })
 
-test('GET /:device_id — sans Bearer → 401', { skip: SKIP }, async () => {
-  const device = await seedDevice(db, { hostname: 'PC-LAPS-NOAUTH' })
-  const res = await fastify.inject({
-    method: 'GET', url: `/api/admin-credentials/${device.id}`,
-  })
-  assert.equal(res.statusCode, 401)
+  for (const payload of [{}, { reason: { category: 'incident', note: 'trop' } }, { reason: { category: 'curiosite', note: 'assez long comme note' } }]) {
+    const res = await reveal(device.id, token, payload)
+    assert.equal(res.statusCode, 400, res.body)
+  }
+  assert.equal((await audits(device.id)).length, 0)
+  const legacy = await fastify.inject({ method: 'GET', url: `/api/admin-credentials/${device.id}`, headers: { authorization: `Bearer ${token}` } })
+  assert.equal(legacy.statusCode, 404)
 })
 
-// ─── GET /:device_id — device sans credential → 404 ────────────────────────
-
-test('GET /:device_id — device sans credential → 404', { skip: SKIP }, async () => {
+test('POST /:deviceId/reveal — device sans credential → 404', { skip: SKIP }, async () => {
   const { token } = await adminAuth('oid-laps-get-404', 'laps-404@test.local')
   const device = await seedDevice(db, { hostname: 'PC-LAPS-NO-CRED' })
   // Pas d'insertAdminCredential ici.
+  assert.equal((await reveal(device.id, token)).statusCode, 404)
+})
 
-  const res = await fastify.inject({
-    method: 'GET', url: `/api/admin-credentials/${device.id}`,
-    headers: { authorization: `Bearer ${token}` },
+test('POST /:deviceId/reveal — chiffré indéchiffrable → 500 DECRYPT_FAILED audité « failed », last_viewed_* intacts', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-laps-decrypt', 'laps-decrypt@test.local')
+  const device = await seedDevice(db, { hostname: 'PC-LAPS-BAD' })
+  await insertAdminCredential(db, { device_id: device.id })  // ciphertext factice du fixture
+
+  const res = await reveal(device.id, token)
+  assert.equal(res.statusCode, 500, res.body)
+  assert.equal(res.json().code, 'DECRYPT_FAILED')
+  assert.equal(res.json().password, undefined)
+  const rows = await audits(device.id)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].details.outcome, 'failed')
+  assert.deepEqual(rows[0].details.reason, REASON)
+  assert.equal((await viewed(device.id)).last_viewed_at, null)
+})
+
+// Fail-closed : un trigger BEFORE INSERT sur audit_logs (dans le schéma de la
+// suite) fait échouer la trace ; la transaction est annulée et le mot de passe
+// ne part pas.
+test('POST /:deviceId/reveal — trace d’audit impossible → 500 sans mot de passe, last_viewed_* inchangés (fail-closed)', { skip: SKIP }, async (t) => {
+  const { token } = await adminAuth('oid-laps-closed', 'laps-closed@test.local')
+  const device = await seedDevice(db, { hostname: 'PC-LAPS-CLOSED' })
+  await insertAdminCredential(db, { device_id: device.id, encrypted_password: encryptForTest('Secret!') })
+  await db.query(`
+    CREATE FUNCTION audit_refuse() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'audit refusé (test)'; END $$
+  `)
+  await db.query('CREATE TRIGGER audit_refuse BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION audit_refuse()')
+  t.after(async () => {
+    await db.query('DROP TRIGGER audit_refuse ON audit_logs')
+    await db.query('DROP FUNCTION audit_refuse()')
   })
-  assert.equal(res.statusCode, 404)
+
+  const res = await reveal(device.id, token)
+  assert.equal(res.statusCode, 500, res.body)
+  assert.equal(res.json().code, 'AUDIT_FAILED')
+  assert.ok(!res.body.includes('Secret!'), 'le mot de passe ne doit pas partir')
+  assert.equal(res.json().password, undefined)
+  assert.equal((await viewed(device.id)).last_viewed_at, null)
+  assert.equal((await audits(device.id)).length, 0)
 })
 
 // ─── POST /:device_id/rotate — happy path admin ─────────────────────────────

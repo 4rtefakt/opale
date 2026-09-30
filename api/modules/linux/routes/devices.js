@@ -1,22 +1,24 @@
 // Postes gérés par état désiré (docs/linux-fleet-design.md §5) : liste paginée,
 // détail, historique des rapports, affectation (simple et en lot), révocation
-// de la clé, état de la clé d'escrow, KPIs du parc. Les clés de récupération
-// arrivent avec la PR suivante.
+// de la clé, clés de récupération (métadonnées, révélation fail-closed avec
+// motif), KPIs du parc. La clé d'escrow de l'instance : routes/escrow.js.
 
 import { adminRoute, sendRefusal } from '../lib/admin-route.js'
 import { revokeDeviceKey } from '../lib/enrollment.js'
 import { changeAssignment, assignBulk } from '../lib/assignment.js'
 import { linuxViewContext, listLinuxDevices, loadLinuxDeviceDetail } from '../lib/device-view.js'
 import { listReports } from '../lib/reports.js'
+import { listRecoveryKeys, revealRecoveryKey } from '../lib/recovery-keys.js'
 import { linuxDashboard } from '../lib/dashboard.js'
-import { readEscrowStatus } from '../lib/settings.js'
 import { setAssignedUser } from '../../inventory/lib/assign-user.js'
 import { lapsKey } from '../../inventory/lib/laps-key.js'
 
 const REFUSAL_MESSAGES = {
-  NOT_FOUND:     'Poste Linux introuvable',
-  NO_ACTIVE_KEY: 'Aucune clé approuvée à révoquer',
-  UNKNOWN_USER:  'Utilisateur inconnu',
+  NOT_FOUND:      'Poste Linux introuvable',
+  NO_ACTIVE_KEY:  'Aucune clé approuvée à révoquer',
+  UNKNOWN_USER:   'Utilisateur inconnu',
+  DECRYPT_FAILED: 'Déchiffrement impossible côté serveur',
+  AUDIT_FAILED:   'Trace d’audit impossible : secret non révélé',
 }
 
 export default async function devicesRoutes(fastify) {
@@ -67,13 +69,20 @@ export default async function devicesRoutes(fastify) {
     return loadLinuxDeviceDetail(db, req.params.id, await context())
   })
 
-  // État de la clé d'escrow (EscrowStatus) ; la confirmation de sauvegarde est la PR 5.
-  fastify.get('/escrow/status', adminRoute(fastify, 'linuxEscrowStatus'), async () => {
-    const [escrow, needing] = await Promise.all([
-      readEscrowStatus(db, fastify.log),
-      listLinuxDevices(db, { escrow: 'missing', limit: 1 }, await linuxViewContext({ lapsKey, log: fastify.log })),
-    ])
-    return { ...escrow, devices_needing_escrow: needing.total }
+  fastify.get('/devices/:id/recovery-keys', adminRoute(fastify, 'linuxListRecoveryKeys'), async (req, reply) => {
+    const rows = await listRecoveryKeys(db, req.params.id, lapsKey.info(fastify.log).key_id)
+    return rows ? { rows } : notFound(reply)
+  })
+
+  // Le secret n'est envoyé qu'après validation de la trace d'audit (motif) et
+  // de last_viewed_* — voir revealRecoveryKey. Motif déjà validé par le schéma.
+  fastify.post('/devices/:id/recovery-keys/:kid/reveal', adminRoute(fastify, 'linuxRevealRecoveryKey', { rateLimit: { max: 10, timeWindow: '1 minute' } }), async (req, reply) => {
+    const { entraId } = fastify.getUserIdentity(req)
+    const result = await revealRecoveryKey(db, fastify.log, {
+      deviceId: req.params.id, keyId: req.params.kid, byUser: actor(req), viewerId: entraId, reason: req.body.reason,
+    }, { lapsKey })
+    if (!result.ok) return sendRefusal(reply, result, REFUSAL_MESSAGES)
+    return result.secret
   })
 
   fastify.get('/dashboard', adminRoute(fastify, 'linuxDashboard'), async () => {

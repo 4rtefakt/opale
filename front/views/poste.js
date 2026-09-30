@@ -588,8 +588,12 @@ function currentUserPanel(d) {
 
 async function lapsViewPassword() {
   if (!_device) return
+  // Motif obligatoire avant toute révélation (même modal que SSH / console) :
+  // le serveur le journalise dans laps_viewed avant d'envoyer le secret.
+  const reason = await promptRemoteReason('laps', _device.hostname)
+  if (!reason) return
   try {
-    const cred = await window.api.getAdminCredential(_device.id)
+    const cred = await window.api.revealAdminCredential(_device.id, reason)
     let remaining = 30
     showModal(`
       <div class="modal-title"><i class="ti ti-key"></i> Compte de récupération</div>
@@ -1403,23 +1407,24 @@ function relativeTime(iso) {
 }
 
 // Modal de saisie du motif d'ouverture d'une session distante (console
-// SYSTEM ou SSH). Note obligatoire à chaque ouverture (≥ 5 caractères) —
-// la catégorie est persistée en localStorage pour éviter de re-cliquer à
-// chaque session, mais la note est toujours re-saisie pour forcer une
-// vraie justification.
+// SYSTEM ou SSH) ou de révélation du mot de passe de récupération (laps).
+// Note obligatoire à chaque ouverture (≥ 5 caractères) — la catégorie est
+// persistée en localStorage pour éviter de re-cliquer à chaque session,
+// mais la note est toujours re-saisie pour forcer une vraie justification.
 //
 // Résout { category, note } si validé, null si annulé.
+const REASON_LABELS = {
+  console: { title: 'remote.reason.title_console', warn: 'remote.reason.warn_console', ok: 'remote.reason.open' },
+  ssh:     { title: 'remote.reason.title_ssh',     warn: 'remote.reason.warn_ssh',     ok: 'remote.reason.open' },
+  laps:    { title: 'remote.reason.title_laps',    warn: 'remote.reason.warn_laps',    ok: 'remote.reason.reveal' },
+}
 function promptRemoteReason(kind, hostname) {
   return new Promise(resolve => {
     const STORAGE_KEY = 'remote-reason-last-category'
     const lastCat = localStorage.getItem(STORAGE_KEY) || 'troubleshoot'
-    const isConsole = kind === 'console'
-    const title = isConsole
-      ? t('remote.reason.title_console', { host: hostname })
-      : t('remote.reason.title_ssh',     { host: hostname })
-    const warn = isConsole
-      ? t('remote.reason.warn_console')
-      : t('remote.reason.warn_ssh')
+    const labels = REASON_LABELS[kind] || REASON_LABELS.ssh
+    const title = t(labels.title, { host: hostname })
+    const warn = t(labels.warn)
     const categories = [
       { id: 'maintenance',  label: t('remote.reason.cat.maintenance') },
       { id: 'troubleshoot', label: t('remote.reason.cat.troubleshoot') },
@@ -1458,7 +1463,7 @@ function promptRemoteReason(kind, hostname) {
         <div id="rr-err" style="color:var(--red);font-size:11px;margin-top:4px;display:none"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button class="btn btn-sm" id="rr-cancel">${esc(t('btn.cancel'))}</button>
-          <button class="btn btn-primary btn-sm" id="rr-ok">${esc(t('remote.reason.open'))}</button>
+          <button class="btn btn-primary btn-sm" id="rr-ok">${esc(t(labels.ok))}</button>
         </div>
       </div>`
     document.body.appendChild(modal)

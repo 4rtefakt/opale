@@ -6,6 +6,66 @@ pas ici : `git pull` puis rebuild suffit (cf. INSTALL.md §9).
 
 ---
 
+## Révélation LAPS avec motif, sauvegarde de `laps.key` avant l'escrow LUKS (module linux)
+
+### Ce qui change
+
+- La consultation du mot de passe de récupération devient
+  `POST /api/admin-credentials/:deviceId/reveal` avec un corps
+  `{ "reason": { "category", "note" } }` (mêmes catégories que les sessions
+  distantes ; note de 5 à 500 caractères). L'ancien `GET` est retiré. La
+  route exige une session interactive (les tokens CLI `opl_…` sont refusés)
+  et la trace d'audit `laps_viewed` (avec le motif) est validée **avant**
+  l'envoi du secret : si elle ne peut pas être écrite, le secret n'est pas
+  renvoyé. Même contrat pour les clés de récupération LUKS des postes Linux
+  (`POST /api/linux/devices/:id/recovery-keys/:kid/reveal`). Aucun script ne
+  doit appeler l'ancien `GET` (aucune commande `opale` ne l'utilisait).
+- « Aucune donnée perdue si `laps.key` est illisible » ne vaut que **tant que
+  le fichier existe encore** (les agents Windows régénèrent leur mot de passe
+  à la prochaine rotation). Pour les clés de récupération LUKS des postes
+  Linux, une clé `laps.key` **perdue est définitive** : les volumes chiffrés
+  dont le mot de passe utilisateur est oublié ne sont plus récupérables.
+
+### Avant d'activer l'escrow LUKS : sauvegarder `laps.key`
+
+L'escrow des clés LUKS reste refusé (`409 ESCROW_BACKUP_UNCONFIRMED`, l'agent
+réessaie au check-in suivant) tant qu'un admin n'a pas confirmé la sauvegarde
+hors site de la clé courante. Procédure :
+
+1. Générer la clé si absent, ou vérifier que la clé publique dérivée
+   correspond bien à la clé privée servie aux agents :
+
+   ```bash
+   openssl rsa -in agent-go/keys/laps.key -pubout      # doit égaler laps.pub
+   openssl rsa -in agent-go/keys/laps.key -check       # « RSA key ok »
+   ```
+
+2. Copier `laps.key` **hors de l'hôte**, chiffrée (coffre, `age`, `gpg`…),
+   puis vérifier la copie restaurée avec `openssl rsa -check`.
+
+3. Relever le `key_id` courant (`GET /api/linux/escrow/status`) et confirmer :
+   Paramètres → Linux, bouton « Je confirme qu'une copie hors site de
+   laps.key existe ». Sans l'interface, la route exige une session
+   interactive : le token CLI stocké par `opale auth login` (`opl_…`) est **refusé**
+   (`403 INTERACTIVE_ONLY`). Passer à la place le JWT Entra de la session web
+   (DevTools → Réseau, en-tête `Authorization: Bearer …` de n'importe quel
+   appel `/api/`, valable environ une heure) :
+
+   ```bash
+   opale api --token '<JWT Entra>' \
+     -d '{"key_id":"<key_id>","confirmed":true}' POST /api/linux/escrow/confirm-backup
+   # ou, sans le CLI :
+   curl -sS -X POST "$OPALE_URL/api/linux/escrow/confirm-backup" \
+     -H 'Authorization: Bearer <JWT Entra>' -H 'Content-Type: application/json' \
+     -d '{"key_id":"<key_id>","confirmed":true}'
+   ```
+
+   La confirmation est liée à ce `key_id` : si la clé change, elle tombe et
+   l'escrow LUKS se referme jusqu'à une nouvelle confirmation. L'action est
+   auditée (`linux_escrow_backup_confirmed`).
+
+---
+
 ## Fenêtre de maintenance invalide : déploiements bloqués (agent 2.15.1)
 
 ### Ce qui change

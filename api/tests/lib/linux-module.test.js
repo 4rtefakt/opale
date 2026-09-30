@@ -9,7 +9,8 @@ test('module Linux : contrat du chargeur, désactivé par défaut et enregistrab
   assert.equal(linux.name, 'linux')
   assert.deepEqual(linux.requires, ['core', 'inventory'])
   assert.equal(modulesConfig.linux, false)
-  assert.equal(SPEC_COMPLETE, false)
+  // PR 5 : toutes les opérations de la spec sont enregistrées (parité spec ⊆ routes).
+  assert.equal(SPEC_COMPLETE, true)
   const app = Fastify({ logger: false })
   t.after(() => app.close())
   // Décorateurs fournis par core (plugins/auth.js) et le plugin db en prod.
@@ -31,6 +32,9 @@ test('module Linux : contrat du chargeur, désactivé par défaut et enregistrab
   assert.ok(routes.includes('POST /api/linux/devices/:id/revoke'))
   assert.ok(routes.includes('GET /api/linux/agent/git/fleet.git/info/refs'))
   assert.ok(routes.includes('POST /api/linux/rings/stable/promote'))
+  assert.ok(routes.includes('POST /api/linux/agent/escrow'))
+  assert.ok(routes.includes('POST /api/linux/devices/:id/recovery-keys/:kid/reveal'))
+  assert.ok(routes.includes('POST /api/linux/escrow/confirm-backup'))
   // Le parser JSON brut reste dans le scope agent.
   assert.equal(app.hasDecorator('deviceAuth'), false)
   assert.equal(typeof app.gitMirror.status, 'function')

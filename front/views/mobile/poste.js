@@ -1,4 +1,5 @@
 import { getLocale } from '/i18n.js'
+import { mPromptRemoteReason } from './ssh.js'
 
 let _device = null
 const LOC = () => getLocale() === 'en' ? 'en-GB' : 'fr-FR'
@@ -291,8 +292,9 @@ function renderBody(el) {
   }
 
   // ── LAPS / compte de récupération (admin-only, données sensibles) ────────────
-  // Le mot de passe n'est jamais affiché d'emblée : il faut « Révéler » (appel
-  // getAdminCredential qui journalise l'accès côté serveur), puis il s'efface
+  // Le mot de passe n'est jamais affiché d'emblée : il faut « Révéler » avec un
+  // motif (feuille partagée avec SSH ; revealAdminCredential journalise motif
+  // et accès côté serveur avant d'envoyer le secret), puis il s'efface
   // automatiquement après 30s. Même sémantique que le desktop (front/views/poste.js).
   window.mOpenLaps = () => {
     const l = d.laps
@@ -331,56 +333,63 @@ function renderBody(el) {
       </div>`)
   }
 
-  window.mLapsReveal = (btn) => withBusy(btn, async () => {
-    try {
-      const cred = await window.api.getAdminCredential(d.id)
-      const zone = document.getElementById('m-laps-pwd-zone')
-      if (!zone) return
-      let remaining = 30
-      zone.innerHTML = `
-        <div class="m-label">${t('mobile.poste.laps.password')}</div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input class="m-input" id="m-laps-pwd" readonly type="password" style="font-family:monospace;letter-spacing:.1em;flex:1">
-          <button class="m-icon-btn" onclick="mLapsToggle()"><i class="ti ti-eye" id="m-laps-eye"></i></button>
-          <button class="m-icon-btn" onclick="mLapsCopy()"><i class="ti ti-copy"></i></button>
-        </div>
-        <div style="font-size:11px;color:var(--text-tertiary);text-align:center;background:var(--bg-secondary);border-radius:8px;padding:6px;margin-top:8px">
-          ${t('mobile.poste.laps.autoclear', { s: '<span id="m-laps-countdown">30</span>' })}
-        </div>`
-      // Valeur injectée via DOM (jamais dans l'HTML) — évite toute fuite via innerHTML.
-      const field = document.getElementById('m-laps-pwd')
-      if (field) field.value = cred.password
-      window.mLapsToggle = () => {
-        const f = document.getElementById('m-laps-pwd')
-        const eye = document.getElementById('m-laps-eye')
-        if (!f) return
-        f.type = f.type === 'password' ? 'text' : 'password'
-        if (eye) eye.className = `ti ti-eye${f.type === 'text' ? '-off' : ''}`
-      }
-      window.mLapsCopy = () => {
-        navigator.clipboard.writeText(cred.password)
-          .then(() => window.showToast(t('mobile.poste.laps.copied'), 'success'))
-      }
-      const iv = setInterval(() => {
-        remaining--
-        const cd = document.getElementById('m-laps-countdown')
-        if (cd) cd.textContent = remaining
-        // Stop si le sheet est fermé/remplacé ou le délai écoulé → on efface.
-        if (remaining <= 0 || !document.getElementById('m-laps-pwd')) {
-          clearInterval(iv)
+  window.mLapsReveal = async () => {
+    // La feuille du motif remplace celle du LAPS ; annulation = feuille fermée.
+    const reason = await mPromptRemoteReason(d.hostname, 'laps')
+    if (!reason) return
+    window.mOpenLaps()
+    const btn = document.querySelector('#m-laps-pwd-zone button')
+    return withBusy(btn, async () => {
+      try {
+        const cred = await window.api.revealAdminCredential(d.id, reason)
+        const zone = document.getElementById('m-laps-pwd-zone')
+        if (!zone) return
+        let remaining = 30
+        zone.innerHTML = `
+          <div class="m-label">${t('mobile.poste.laps.password')}</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input class="m-input" id="m-laps-pwd" readonly type="password" style="font-family:monospace;letter-spacing:.1em;flex:1">
+            <button class="m-icon-btn" onclick="mLapsToggle()"><i class="ti ti-eye" id="m-laps-eye"></i></button>
+            <button class="m-icon-btn" onclick="mLapsCopy()"><i class="ti ti-copy"></i></button>
+          </div>
+          <div style="font-size:11px;color:var(--text-tertiary);text-align:center;background:var(--bg-secondary);border-radius:8px;padding:6px;margin-top:8px">
+            ${t('mobile.poste.laps.autoclear', { s: '<span id="m-laps-countdown">30</span>' })}
+          </div>`
+        // Valeur injectée via DOM (jamais dans l'HTML) — évite toute fuite via innerHTML.
+        const field = document.getElementById('m-laps-pwd')
+        if (field) field.value = cred.password
+        window.mLapsToggle = () => {
           const f = document.getElementById('m-laps-pwd')
-          if (f) f.value = ''
-          const z = document.getElementById('m-laps-pwd-zone')
-          if (z) z.innerHTML = `
-            <button class="m-btn-primary" onclick="mLapsReveal(this)">
-              <i class="ti ti-eye"></i> ${t('mobile.poste.laps.reveal')}
-            </button>`
+          const eye = document.getElementById('m-laps-eye')
+          if (!f) return
+          f.type = f.type === 'password' ? 'text' : 'password'
+          if (eye) eye.className = `ti ti-eye${f.type === 'text' ? '-off' : ''}`
         }
-      }, 1000)
-    } catch (err) {
-      window.showToast(err.message || t('mobile.common.error'), 'error')
-    }
-  })
+        window.mLapsCopy = () => {
+          navigator.clipboard.writeText(cred.password)
+            .then(() => window.showToast(t('mobile.poste.laps.copied'), 'success'))
+        }
+        const iv = setInterval(() => {
+          remaining--
+          const cd = document.getElementById('m-laps-countdown')
+          if (cd) cd.textContent = remaining
+          // Stop si le sheet est fermé/remplacé ou le délai écoulé → on efface.
+          if (remaining <= 0 || !document.getElementById('m-laps-pwd')) {
+            clearInterval(iv)
+            const f = document.getElementById('m-laps-pwd')
+            if (f) f.value = ''
+            const z = document.getElementById('m-laps-pwd-zone')
+            if (z) z.innerHTML = `
+              <button class="m-btn-primary" onclick="mLapsReveal(this)">
+                <i class="ti ti-eye"></i> ${t('mobile.poste.laps.reveal')}
+              </button>`
+          }
+        }, 1000)
+      } catch (err) {
+        window.showToast(err.message || t('mobile.common.error'), 'error')
+      }
+    })
+  }
 
   window.mLapsRotate = (btn) => {
     if (!confirm(t('mobile.poste.laps.rotate_confirm'))) return
