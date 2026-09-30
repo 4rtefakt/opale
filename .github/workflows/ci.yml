@@ -202,11 +202,26 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # 5) Image Docker : build l'image complète, vérifie que l'entrypoint
-  #    parse, et que les 5 vendors front sont présents (cf. setup.sh).
+  #    parse, démarre avec migrations sur Postgres, et que les 5 vendors
+  #    front sont présents (cf. setup.sh).
   # ─────────────────────────────────────────────────────────────────────────
   validate-docker-build:
     name: Validate Docker build
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: opale_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -223,6 +238,38 @@ jobs:
 
       - name: Smoke test — entrypoint parses
         run: docker run --rm opale:ci node --check index.js
+
+      # L'API lit POSTGRES_*, pas DATABASE_URL. Le démarrage normal applique
+      # les migrations de l'image sur la base neuve avant listen().
+      - name: Smoke test — boot image and check health
+        run: |
+          set -euo pipefail
+          docker run -d --name opale-smoke --network host \
+            -e POSTGRES_HOST=localhost \
+            -e POSTGRES_DB=opale_test \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e ENTRA_TENANT_ID=test-tenant \
+            -e ENTRA_CLIENT_ID=test-client \
+            -e FRONTEND_URL=http://localhost:3010 \
+            -e NODE_ENV=production opale:ci
+          deadline=$((SECONDS + 60))
+          while remaining=$((deadline - SECONDS)); (( remaining > 0 )); do
+            if body=$(curl -fsS --max-time "$remaining" http://localhost:3010/api/health) && [ "$body" = '{"status":"ok"}' ]; then
+              exit 0
+            fi
+            if (( SECONDS < deadline )); then sleep 1; fi
+          done
+          echo '::error::API did not become healthy within 60 seconds'
+          exit 1
+
+      - name: Print smoke container logs on failure
+        if: failure()
+        run: docker logs opale-smoke
+
+      - name: Remove smoke container
+        if: always()
+        run: docker rm -f opale-smoke
 
       - name: Verify vendored frontend dependencies
         run: |

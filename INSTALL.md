@@ -360,7 +360,105 @@ SYSTEM with the appropriate environment variables.
 
 ---
 
-## 9. Day-2 operations
+## 9. Linux workstations (Debian, pull-based)
+
+Linux management uses a separate agent and a custom Debian ≥ 12 image
+that pulls signed Ansible playbooks through Opale. The Go agent in
+`agent-go/` remains Windows-only; its Linux builds are not supported.
+The agent and ISO must implement the contract in
+[api/modules/linux/openapi.yaml](api/modules/linux/openapi.yaml).
+
+### 9.1 Prerequisites
+
+- Set `TRUST_PROXY` to your reverse proxy's IPs/CIDRs, and keep port 3010
+  reachable only through that proxy (see [CONFIGURATION.md §1.1](docs/CONFIGURATION.md#11-server)).
+  This is required for per-IP limits on `/api/linux/agent/enroll`
+  (30 requests/minute); otherwise all devices share the proxy's bucket.
+- Provide the escrow RSA key pair. If absent, generate it with the same
+  commands as the compose file; never overwrite an existing `laps.key`:
+
+  ```bash
+  openssl genrsa -out agent-go/keys/laps.key 4096
+  openssl rsa -in agent-go/keys/laps.key -pubout > agent-go/keys/laps.pub
+  openssl rsa -in agent-go/keys/laps.key -check -noout
+  ```
+
+  Mount the private key at `LAPS_PRIVATE_KEY` (default
+  `$AGENT_GO_DIR/keys/laps.key`), readable by uid/gid 1000. **Back up
+  `laps.key` off-box, encrypted, before the first LUKS key is escrowed**,
+  and verify the restored copy with `openssl rsa -in laps.key -check -noout`.
+  Opale refuses LUKS escrow (`409 ESCROW_BACKUP_UNCONFIRMED`) until an admin
+  confirms the current key's backup in **Paramètres → Linux**, button
+  **Je confirme qu'une copie hors site de laps.key existe**. The confirmation
+  uses `POST /api/linux/escrow/confirm-backup`, is tied to the current
+  `key_id`, and must be renewed if the key changes. It requires an
+  interactive session: CLI `opl_` tokens receive `403 INTERACTIVE_ONLY`.
+  See [UPGRADING.md](docs/UPGRADING.md) for the full procedure.
+- Prepare an HTTPS fleet Git repository and a read token, kept on the
+  server as `LINUX_GIT_TOKEN` / `LINUX_GIT_USER` (default user: `oauth2`).
+  Set its URL, rings and server-side signers in **Paramètres → Linux**.
+  Keep the compose `git_mirror` volume mounted at `/app/data/git`.
+
+### 9.2 Fleet repository and image
+
+Store playbooks as `profiles/<slug>.yml`, targeting `hosts: localhost`
+with `connection: local`. Vendor roles in the repository; do not fetch
+dependencies through `requirements.yml`. Sign commits with SSH signatures:
+
+```bash
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/fleet_signing
+git config commit.gpgsign true
+```
+
+The signing private key stays with the signer. Put the trusted public
+signer lines in `.opale/allowed_signers` for rotation: a commit signed by
+an already trusted key can introduce the next signer. Devices verify that
+commit against their current pinned set before replacing it; rebuild the
+image when signers rotate so newly imaged devices have a current trust root.
+
+The Debian image must contain the Opale URL, the reverse proxy's CA/SPKI
+pin (enforced for both API and Git), `/etc/opale-agent/allowed_signers`,
+the Linux agent, and `git`, `ansible-core`, `openssh-client`,
+`systemd-timesyncd`. **No secrets in the image**: no repository token,
+private signing key, escrow private key or pre-generated device key.
+Strip `/var/lib/opale-agent`, `/etc/machine-id` and SSH host keys before
+capturing the image; the device generates its own identity at first boot.
+The server's `linux.allowed_signers` setting never supplies or replaces
+the device's pinned signers.
+
+### 9.3 First boot and Windows → Linux migration
+
+At first boot the agent generates its device key and enrols. It displays
+an **8-character enrolment code** for the admin to match in the queue.
+New devices stay pending until approved, or are auto-approved when their
+serial matches a pre-registration with no existing device. After approval,
+the agent checks in for its profile and ring, then runs `ansible-pull`
+against Opale's Git mirror with commit verification. If the mirror is not
+ready, it waits and retries.
+
+For an existing Windows workstation:
+
+1. In **Postes**, select its existing row and choose **Préparer la migration
+   Linux** to pre-register it with its serial, hostname, user, profile and ring.
+2. Re-image it with the prepared Debian image and match the displayed
+   enrolment code to the pending request.
+3. Approve with **Convertir**. An existing device is never auto-converted
+   by pre-registration; conversion keeps its Opale row and clears Windows
+   facts. Confirm revocation of an active Windows agent token if prompted.
+4. Retire the device in **Intune / Autopilot** yourself; Opale cannot do it.
+   Entra-mirrored groups drop the laptop on their next sync; native Opale
+   groups keep it.
+5. If you changed the hostname, rename it in external tools keyed by
+   hostname (for example Checkmk).
+
+Behind nginx, set `client_max_body_size 8m;` and
+`proxy_read_timeout 300s;` on `/api/linux/agent/git/` for Git smart HTTP.
+The API still caps upload-pack request bodies at 4 MiB.
+
+---
+
+## 10. Day-2 operations
 
 **Updating the API**
 ```bash
