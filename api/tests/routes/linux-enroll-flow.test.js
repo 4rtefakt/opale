@@ -11,7 +11,7 @@ import rateLimit from '@fastify/rate-limit'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
-import { newAgent, enroll, checkin } from '../helpers/linux-agent.js'
+import { newAgent, enroll, checkin, report } from '../helpers/linux-agent.js'
 import { createFleetRepo } from '../helpers/linux-fleet-repo.js'
 import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
 import { seedDevice } from '../fixtures/devices.js'
@@ -416,4 +416,36 @@ test('plafond de file : 501e demande inconnue → 429 ENROLL_FLOOD audité ; une
   assert.equal(flood.details.level, 'error')
   assert.equal((await enroll(app, known, { ip })).statusCode, 202, 'clé connue jamais bloquée')
   await db.query("DELETE FROM linux_device_keys WHERE serial_claimed LIKE 'SN-FLOODFLOW-%'")
+})
+
+test('cycle d’application : check-in → rapport failed (linux_apply_failed) → rapport success (linux_apply_recovered) → détail avec last_report et last_successful_revision', { skip: SKIP }, async () => {
+  const pull = await seedDevice(db, { hostname: 'lx-apply-flow', serial: 'SN-APPLY-FLOW', platform: 'linux', managed_by: 'pull', profile: 'field', ring: 'pilot' })
+  const key = await seedLinuxDeviceKey(db, { deviceId: pull.id, status: 'approved', serialClaimed: 'SN-APPLY-FLOW' })
+  const agent = { privateKey: key.privateKey, fingerprint: key.fingerprint, body: { serial: 'SN-APPLY-FLOW', hostname: 'lx-apply-flow', os_version: 'Debian GNU/Linux 12 (bookworm)', agent_version: '0.1.0' } }
+  const ip = nextIp()
+  const assigned = await checkin(app, agent, { ip })
+  assert.equal(assigned.statusCode, 200, assigned.body)
+  const { revision } = assigned.json()
+  assert.equal(revision, app.gitMirror.heads().pilot, 'tête réelle du ring pilot')
+
+  const failed = await report(app, agent, { ip, body: { revision, status: 'failed', error_summary: 'TASK [base] — apt: Unable to locate package foo', log_tail: 'PLAY [localhost] ***\nfatal: …' } })
+  assert.equal(failed.statusCode, 201, failed.body)
+  assert.equal(failed.json().transition, 'failed')
+  const [fail] = await audits('linux_apply_failed', pull.id)
+  assert.equal(fail.by_user, 'device:' + agent.fingerprint.slice(0, 12))
+  assert.deepEqual(fail.details, { level: 'error', revision, hostname: 'lx-apply-flow', error_summary: 'TASK [base] — apt: Unable to locate package foo' })
+
+  const ok = await report(app, agent, { ip, body: { revision, status: 'success' } })
+  assert.equal(ok.statusCode, 201, ok.body)
+  assert.equal(ok.json().transition, 'recovered')
+  assert.equal((await audits('linux_apply_recovered', pull.id)).length, 1)
+
+  const detail = await api('GET', `/api/linux/devices/${pull.id}`)
+  assert.equal(detail.statusCode, 200, detail.body)
+  const d = detail.json()
+  assert.deepEqual([d.last_revision_applied, d.last_successful_revision, d.last_apply_status, d.lagging], [revision, revision, 'success', false])
+  assert.equal(d.last_report.id, ok.json().id, 'rapport le plus récent')
+  assert.deepEqual([d.last_report.status, d.last_report.revision, d.last_report.log_tail], ['success', revision, null])
+  const history = await api('GET', `/api/linux/devices/${pull.id}/reports`)
+  assert.deepEqual(history.json().rows.map(r => [r.status, r.error_summary]), [['success', null], ['failed', 'TASK [base] — apt: Unable to locate package foo']])
 })

@@ -1,11 +1,12 @@
 // Routes appelées par l'agent Linux (requêtes signées Ed25519).
 // Le plugin device-auth (parser JSON brut + preValidation) est enregistré ici
-// pour rester encapsulé dans ce scope. Cette PR : /enroll et /checkin.
+// pour rester encapsulé dans ce scope : /enroll, /checkin et /reports.
 
 import deviceAuthPlugin from '../plugins/device-auth.js'
 import { schemaFor } from '../lib/spec.js'
 import { enrollDevice } from '../lib/enrollment.js'
 import { checkin } from '../lib/checkin.js'
+import { recordReport, alertApplyFailure } from '../lib/reports.js'
 import { createDeviceRateLimiter } from '../lib/device-rate.js'
 import { lapsKey } from '../../inventory/lib/laps-key.js'
 import { ipOnlyKey } from '../../../lib/rate-limit.js'
@@ -65,5 +66,24 @@ export default async function agentRoutes(fastify) {
     const result = await checkin(db, fastify.log, { key: req.deviceKey, body: req.body }, { gitMirror, gitTokenStore, lapsKey })
     if (result.status === 'serial_mismatch') return reply.code(403).send(REFUSED.serial_mismatch)
     return result.assignment
+  })
+
+  // Un rapport par exécution d'ansible-pull ; les alertes d'un passage en
+  // échec sont best-effort, hors du chemin de réponse (un endpoint push lent
+  // ne retarde pas l'agent) et n'empêchent jamais le 201 (design §4).
+  const reportRate = createDeviceRateLimiter({ max: 12, windowMs: 3600_000 })
+  fastify.post('/reports', {
+    schema: schemaFor('linuxAgentReport'),
+    config: { rateLimit: { max: 60, timeWindow: '1 minute', keyGenerator: ipOnlyKey }, operationId: 'linuxAgentReport' },
+    preValidation: fastify.deviceAuth(),
+  }, async (req, reply) => {
+    const limit = reportRate.hit(req.deviceKey.device_id)
+    if (!limit.ok) {
+      return reply.code(429).header('Retry-After', Math.ceil(limit.retry_after_ms / 1000))
+        .send({ error: 'Trop de rapports pour ce poste', code: 'DEVICE_RATE_LIMIT', retry_after_ms: limit.retry_after_ms })
+    }
+    const result = await recordReport(db, fastify.log, { deviceId: req.deviceKey.device_id, fingerprint: req.deviceKey.key_fingerprint, body: req.body })
+    if (result.transition === 'failed') void alertApplyFailure(fastify, result)
+    return reply.code(201).send({ id: result.id, received_at: result.received_at, transition: result.transition })
   })
 }

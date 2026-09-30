@@ -383,6 +383,7 @@ export default {
   'tickets.proposals.source.script':        '⚙ Script',
   'tickets.proposals.source.email':         '✉ Email (AI)',
   'tickets.proposals.source.manual':        'Manual',
+  'tickets.proposals.source.linux_apply':   '⚠ Linux',
 
   'stock.title':              'Consumable stock',
   'stock.search':             'Search an item...',
