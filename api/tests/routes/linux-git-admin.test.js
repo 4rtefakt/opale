@@ -4,7 +4,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
@@ -26,6 +26,7 @@ let c1, c2
 // (> 2 fenêtres de check-in) et que le calcul de lagging s'applique.
 let clock = Date.now() - 3_600_000
 const devices = {}
+const prevKeyPath = process.env.LAPS_PRIVATE_KEY
 
 before(async () => {
   if (SKIP) return
@@ -37,6 +38,8 @@ before(async () => {
   c1 = await repo.commit({ message: 'initial', files: { 'README.md': 'flotte\n' } })
   c2 = await repo.commit({ message: 'profils', files: { 'profiles/admin.yml': '---\n', 'profiles/field.yml': '---\n' } })
   await db.query("UPDATE settings SET value = $1 WHERE key = 'linux.repo_url'", [repo.url])
+  // Escrow indisponible d'abord (quel que soit l'environnement) ; la clé n'est pointée que par le test /settings.
+  process.env.LAPS_PRIVATE_KEY = join(repo.root, 'absent.key')
   mirror = createGitMirror({ dir: join(repo.root, 'mirror'), home: repo.home, now: () => clock })
   await mirror.start(db)
   assert.equal(mirror.status().state, 'ready')
@@ -78,6 +81,7 @@ after(async () => {
   if (release) await release()
   await closeSharedPool()
   await repo?.cleanup()
+  if (prevKeyPath === undefined) delete process.env.LAPS_PRIVATE_KEY; else process.env.LAPS_PRIVATE_KEY = prevKeyPath
 })
 
 const call = (method, url, { token = adminToken, payload } = {}) =>
@@ -204,7 +208,7 @@ test('GET /profiles : profils du dépôt à la tête de chaque ring, postes par 
   })
 })
 
-test('GET /settings : valeurs, nom du compte local depuis agent.laps_recovery_username, escrow stub', { skip: SKIP }, async () => {
+test('GET /settings : valeurs, nom du compte local depuis agent.laps_recovery_username, escrow (clé absente puis lisible)', { skip: SKIP }, async () => {
   const before = (await call('GET', '/settings')).json()
   assert.deepEqual(before, {
     repo_url: repo.url, allowed_signers: repo.allowedSigners, alerts_enabled: false,
@@ -214,6 +218,18 @@ test('GET /settings : valeurs, nom du compte local depuis agent.laps_recovery_us
   })
   await db.query("INSERT INTO settings (key, value) VALUES ('agent.laps_recovery_username', 'adm-local') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")
   assert.equal((await call('GET', '/settings')).json().local_admin_username, 'adm-local')
+
+  // Clé LAPS montée sans redémarrage : même état que /escrow/status (clé dérivée, confirmation lue du réglage).
+  process.env.LAPS_PRIVATE_KEY = join(repo.root, 'laps.key')
+  await writeFile(process.env.LAPS_PRIVATE_KEY, crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }))
+  const { escrow } = (await call('GET', '/settings')).json()
+  assert.equal(escrow.status, 'ok')
+  assert.match(escrow.key_id, /^[0-9a-f]{64}$/)
+  assert.equal(escrow.bits, 2048)
+  assert.equal(escrow.backup_confirmed, null)
+  const confirmed = { key_id: escrow.key_id, by: 'Admin Git', at: '2026-09-30T10:00:00.000Z' }
+  await db.query("UPDATE settings SET value = $1 WHERE key = 'linux.escrow_backup_confirmed'", [JSON.stringify(confirmed)])
+  assert.deepEqual((await call('GET', '/settings')).json().escrow.backup_confirmed, confirmed)
 })
 
 test('PATCH /settings : validation (corps vide, ssh, branche inconnue ou invalide), session interactive', { skip: SKIP }, async () => {

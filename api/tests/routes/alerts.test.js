@@ -121,6 +121,24 @@ test('GET /api/alerts — agent offline depuis > 7 jours → dans offline + coun
   await db.query('DELETE FROM devices WHERE id = $1', [device.id])
 })
 
+test('GET /api/alerts — poste Linux géré par état désiré hors ligne > 7 jours → dans offline même sans source agent', { skip: SKIP }, async () => {
+  const u = await seedAdmin(db, { entraId: 'oid-alerts-pull', email: 'admin-pull@x' })
+  const token = await jwt.sign({ oid: u.entraId, name: u.displayName, preferred_username: u.email })
+  const lastSeen = new Date(Date.now() - 10 * 24 * 3600_000).toISOString()
+  // Poste converti depuis Intune (source conservée) puis silencieux ; un poste Intune non converti reste ignoré.
+  const { rows } = await db.query(
+    `INSERT INTO devices (hostname, source, platform, managed_by, last_seen)
+     VALUES ('lx-pull-offline', 'intune', 'linux', 'pull', $1), ('PC-INTUNE-OFFLINE', 'intune', NULL, NULL, $1) RETURNING id`,
+    [lastSeen]
+  )
+  const res = await fastify.inject({ method: 'GET', url: '/api/alerts/', headers: { authorization: `Bearer ${token}` } })
+  assert.equal(res.statusCode, 200)
+  const names = res.json().offline.map(r => r.hostname)
+  assert.ok(names.includes('lx-pull-offline'), 'poste pull hors ligne signalé')
+  assert.ok(!names.includes('PC-INTUNE-OFFLINE'), 'poste Intune sans agent ignoré')
+  await db.query('DELETE FROM devices WHERE id = ANY($1::uuid[])', [rows.map(r => r.id)])
+})
+
 // ─── Snooze ───────────────────────────────────────────────────────────────────
 
 test('GET /api/alerts — alerte snoozée → présente dans la liste mais exclue des counts', { skip: SKIP }, async () => {

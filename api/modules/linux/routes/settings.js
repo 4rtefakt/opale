@@ -1,6 +1,6 @@
 // Réglages du module Linux (préfixe /api/linux) : lecture, et modification auditée
 // avec avant/après par clé. Design : docs/linux-fleet-design.md §5.
-import { readLinuxSettings, validateLinuxSettings } from '../lib/settings.js'
+import { readLinuxSettings, readEscrowStatus, validateLinuxSettings } from '../lib/settings.js'
 import { schemaFor } from '../lib/spec.js'
 import { logAudit } from '../../core/lib/audit.js'
 
@@ -8,10 +8,12 @@ export default async function settingsRoutes(fastify) {
   const { gitMirror, db } = fastify
   const admin       = [fastify.authenticate, fastify.requireAdmin]
   const interactive = [...admin, fastify.requireInteractive]
+  // LinuxSettings de la spec = réglages + état d'escrow (même source que /escrow/status).
+  const withEscrow = async settings => ({ ...settings, escrow: await readEscrowStatus(db, fastify.log) })
 
   fastify.get('/settings', {
     schema: schemaFor('linuxGetSettings'), config: { operationId: 'linuxGetSettings' }, preHandler: admin,
-  }, async () => readLinuxSettings(db))
+  }, async () => withEscrow(await readLinuxSettings(db)))
 
   fastify.patch('/settings', {
     schema: schemaFor('linuxUpdateSettings'), config: { operationId: 'linuxUpdateSettings' }, preHandler: interactive,
@@ -50,6 +52,6 @@ export default async function settingsRoutes(fastify) {
       // Le re-pointage clone/fetch en arrière-plan : le statut du miroir en rend compte.
       if (changes.repo_url) gitMirror.setUpstream(after.repo_url).catch(() => {})
     }
-    return after
+    return withEscrow(after)
   })
 }

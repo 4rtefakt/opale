@@ -1,29 +1,7 @@
 import crypto from 'crypto'
-import fs from 'fs'
 import { logAudit } from '../../core/lib/audit.js'
-import path from 'path'
-import { fileURLToPath } from 'url'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-
-// Layout différent en dev vs Docker (cf. agent.js).
-// Docker : /app/modules/inventory/routes/ → /app/agent-go/ (3 levels up)
-// Dev    : /repo/api/modules/inventory/routes/ → /repo/agent-go/ (4 levels up)
-const AGENT_GO_DIR = process.env.AGENT_GO_DIR ||
-  (fs.existsSync(path.join(__dirname, '..', '..', '..', 'agent-go'))
-    ? path.join(__dirname, '..', '..', '..', 'agent-go')
-    : path.join(__dirname, '..', '..', '..', '..', 'agent-go'))
-
-const LAPS_KEY_PATH = process.env.LAPS_PRIVATE_KEY ||
-  path.join(AGENT_GO_DIR, 'keys', 'laps.key')
-
-let lapsKeyCache = null
-function loadLAPSKey() {
-  if (lapsKeyCache) return lapsKeyCache
-  const pem = fs.readFileSync(LAPS_KEY_PATH, 'utf8')
-  lapsKeyCache = crypto.createPrivateKey({ key: pem, format: 'pem' })
-  return lapsKeyCache
-}
+// Clé privée LAPS partagée avec l'escrow Linux (lib/laps-key.js).
+import { loadLAPSKey } from '../lib/laps-key.js'
 
 export default async function adminCredentialsRoute(fastify) {
 

@@ -4,14 +4,12 @@
 import { Transform } from 'node:stream'
 import { parseCgiResponse } from '../lib/cgi-response.js'
 import { readLinuxSettings } from '../lib/settings.js'
+import { ringSettled } from '../lib/device-view.js'
 import { schemaFor } from '../lib/spec.js'
 import { logAudit } from '../../core/lib/audit.js'
 
 const BODY_LIMIT  = 4 * 1024 * 1024
 const RETRY_AFTER = '30'
-// Fenêtre de check-in de l'agent (design §4) : un poste est « en retard » quand le ring
-// a changé depuis plus de deux fenêtres sans qu'il ait appliqué la nouvelle tête.
-const CHECKIN_INTERVAL_S = 900
 const CANDIDATES = 50
 
 // Compteur d'octets ; onChunk renvoie une erreur pour interrompre le flux.
@@ -156,7 +154,7 @@ export async function gitAdminRoutes(fastify) {
     return counts
   }
 
-  // Une seule définition de `lagging` (design §5), partagée avec les futures listes/dashboard.
+  // `lagging` : définition unique (ringSettled, design §5), la même que la liste des postes.
   async function ringInfos(settings) {
     const heads = gitMirror.heads()
     const serving = gitMirror.serving()
@@ -180,11 +178,10 @@ export async function gitAdminRoutes(fastify) {
     const result = {}
     for (const ring of ['pilot', 'stable']) {
       const { branch } = settings.rings[ring]
-      const tipSince = gitMirror.tipSince(ring)
       const stats = counts.find(row => row.ring === ring) ?? { total: 0, on_tip: 0, behind: 0, failed: 0 }
-      const settled = serving && tipSince && Date.now() - Date.parse(tipSince) > 2 * CHECKIN_INTERVAL_S * 1000
+      const settled = serving && ringSettled(gitMirror, ring)
       result[ring] = {
-        ring, branch, tip: heads[ring], tip_since: tipSince,
+        ring, branch, tip: heads[ring], tip_since: gitMirror.tipSince(ring),
         upstream_head: Object.hasOwn(heads.upstream, branch) ? heads.upstream[branch] : null,
         devices: { total: stats.total, on_tip: stats.on_tip, lagging: settled ? stats.behind : 0, failed: stats.failed },
         candidates: logs[branch].map(c => ({

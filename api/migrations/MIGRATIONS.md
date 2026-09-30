@@ -161,6 +161,7 @@ L'ordre alphabétique du nom de fichier détermine l'ordre d'exécution.
   hors de 100.64.0.0/10 écrites avant le contrôle du check-in (une entrée
   `ip_netbird_cleared` par poste dans `audit_logs`).
 - `080_linux_fleet.sql` : socle Linux (clés, préinscriptions, rapports, récupération chiffrée), colonnes de gestion pull et paramètres initiaux.
+- `081_linux_key_luks_root.sql` : `linux_device_keys.luks_root` (racine LUKS déclarée au check-in, filtre « non escrowé »).
 
 ## Note sur les retouches de 010, 043, 046 et 060
 

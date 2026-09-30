@@ -27,8 +27,8 @@ export function newAgent({
 // POST signé. `body` surcharge le corps par défaut de l'agent ; `ip` isole
 // les compteurs de rate-limit par test ; `overrides` va à signRequest
 // (timestamp, nonce, fingerprint…).
-export function signedPost(app, agent, target, { body = {}, ip = '203.0.113.5', ...overrides } = {}) {
-  const payload = Buffer.from(JSON.stringify({ ...agent.body, ...body }))
+export function signedPost(app, agent, target, { body = {}, ip = '203.0.113.5', payload = { ...agent.body, ...body }, ...overrides } = {}) {
+  payload = Buffer.from(JSON.stringify(payload))
   const headers = signRequest({
     privateKey: agent.privateKey, fingerprint: agent.fingerprint, method: 'POST', target, body: payload, ...overrides,
   })
@@ -41,4 +41,12 @@ export function signedPost(app, agent, target, { body = {}, ip = '203.0.113.5', 
 
 export function enroll(app, agent, options) {
   return signedPost(app, agent, '/api/linux/agent/enroll', options)
+}
+
+// Corps CheckinRequest dérivé de l'agent (jamais les champs d'enrôlement) ; `body` le surcharge.
+export function checkin(app, agent, { body = {}, ...options } = {}) {
+  const { serial, hostname, os_version, agent_version } = agent.body
+  return signedPost(app, agent, '/api/linux/agent/checkin', {
+    ...options, payload: { serial, hostname, os_version, agent_version, luks_root: false, ...body },
+  })
 }

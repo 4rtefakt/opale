@@ -70,7 +70,7 @@ whose own address falls in it could inject its IP.
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `FRONTEND_URL` | yes | — | Used for CORS — must match the public origin (e.g. `https://rmm.example.com`) |
+| `FRONTEND_URL` | yes | — | Used for CORS, and served to Linux agents as the origin of `git.url` (`<FRONTEND_URL>/api/linux/agent/git/fleet.git`) — must match the public origin (e.g. `https://rmm.example.com`) and the server URL configured on the agents, which refuse any other value |
 | `API_BASE_URL` | no | `/api` | Injected into `window.ENV.API_BASE_URL`, prefixed on every fetch |
 
 ### 1.4 Microsoft Entra ID (SSO + Graph)

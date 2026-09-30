@@ -42,7 +42,7 @@ export default async function alertsRoute(fastify) {
         ORDER BY d.disk_used_pct DESC
       `, [diskWarn, diskCrit]),
 
-      // Offline (agents uniquement)
+      // Offline (agents uniquement — Windows, ou Linux géré par état désiré)
       fastify.db.query(`
         SELECT d.id, d.hostname, d.last_seen, u.display_name AS user_name,
                sn.until_at AS snoozed_until
@@ -52,7 +52,7 @@ export default async function alertsRoute(fastify) {
                ON sn.device_id = d.id
               AND sn.alert_type = 'offline'
               AND sn.until_at > now()
-        WHERE d.source = 'agent'
+        WHERE (d.source = 'agent' OR d.managed_by = 'pull')
           AND d.last_seen < now() - make_interval(days => $1)
         ORDER BY d.last_seen ASC NULLS FIRST
       `, [offlineDays]),
