@@ -127,6 +127,26 @@ None of these are needed with the standard Docker layout; they are listed
 | `OPALE_LEGACY_AGENT_SERVICE_NAMES` | no | — | Comma-separated extra Windows service names (`[A-Za-z0-9_-]` only) tried by "restart agent" over SSH |
 | `DATABASE_URL`, `PGURL` | no | — | Postgres connection string for the maintenance scripts in `api/scripts/` (takes precedence over `POSTGRES_*`, `DATABASE_URL` first). Not read by the API |
 
+### 1.9 Linux fleet — git mirror
+
+The `linux` module keeps a bare mirror of the fleet repository
+(`linux.repo_url`, a runtime setting) and serves it read-only to the Linux
+agents over git smart HTTP (`/api/linux/agent/git/fleet.git/…`).
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `LINUX_GIT_DIR` | no | `/app/data/git` | Mirror directory (`fleet.git`, `allowed_signers`, ring tips). Must be a writable volume for uid 1000 (`git_mirror` in the shipped compose files) |
+| `LINUX_GIT_TOKEN` | if the repo is private | — | HTTPS read credential (a GitLab/GitHub/Gitea access token). Handed to git through a credential helper: never part of the URL, never written to the mirror's config. `ssh://` upstreams are not supported in v1 |
+| `LINUX_GIT_USER` | no | `oauth2` | Username sent with `LINUX_GIT_TOKEN` (`oauth2` for GitLab; GitHub ignores it) |
+
+The image needs `git`, `git-http-backend` (Alpine package `git-daemon`) and
+`ssh-keygen` (`openssh-keygen`); the boot self-check reports
+`binaries_ok: false` and mirror state `unavailable` in `GET /api/linux/git/status`
+when one is missing. Behind nginx, raise the limits for
+`/api/linux/agent/git/` (`client_max_body_size 5m;` — the API caps the
+upload-pack body at 4 MiB — and `proxy_read_timeout 300s;` for a full clone
+of a large repo); Caddy needs nothing special.
+
 ---
 
 ## 2. Runtime settings

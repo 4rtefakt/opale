@@ -241,3 +241,9 @@ jobs:
               echo "OK: $f"
             done
           '
+
+      # Miroir git du parc Linux : git-http-backend (paquet git-daemon sur
+      # Alpine) et ssh-keygen (openssh-keygen) doivent être dans l'image,
+      # sinon le miroir se déclare `unavailable` au boot.
+      - name: Verify git smart HTTP binaries
+        run: docker run --rm --entrypoint sh opale:ci -c 'set -e; test -x "$(git --exec-path)/git-http-backend"; command -v ssh-keygen'
