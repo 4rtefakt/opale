@@ -1,3 +1,5 @@
+import { isPullManaged, osIcon } from '/platform.js'
+
 // Vue Détail poste — hardware + alertes + tickets + terminal (SSH ou agent)
 let _term     = null
 let _ws       = null
@@ -5,6 +7,7 @@ let _device   = null
 const _graphData = {}   // { [graphId]: { type, series, pl, gw } }
 
 export async function renderPosteDetail(container, id) {
+  _device = null
   container.innerHTML = `
     <div class="topbar">
       <div class="topbar-left" style="flex-direction:column;align-items:flex-start;gap:2px">
@@ -17,7 +20,7 @@ export async function renderPosteDetail(container, id) {
           <i class="ti ti-ticket"></i> ${t('tickets.new.title')}
         </button>` : ''}
         ${window.OPALE.moduleEnabled('remote') ? `
-        <button class="btn btn-primary" id="btn-ssh" onclick="openSSHMenu(event)">
+        <button class="btn btn-primary" id="btn-ssh" style="display:none" onclick="openSSHMenu(event)">
           <i class="ti ti-terminal"></i> Terminal <i class="ti ti-chevron-down" style="font-size:10px;opacity:.7"></i>
         </button>` : ''}
         <button class="btn" onclick="pdMoreMenu()" title="${esc(t('poste.more_actions'))}"><i class="ti ti-dots"></i></button>
@@ -77,6 +80,8 @@ function renderBodyAndPanels() {
 
 function renderBody() {
   const d   = _device
+  const terminal = document.getElementById('btn-ssh')
+  if (terminal) terminal.style.display = isPullManaged(d) ? 'none' : ''
   const body = document.getElementById('pd-body')
 
   document.getElementById('pd-hostname').textContent = d.hostname
@@ -110,6 +115,14 @@ function renderBody() {
 
   body.innerHTML = `
     ${factsHtml}
+    ${isPullManaged(d) ? `
+    <div class="panel">
+      <div class="panel-header"><i class="ti ${osIcon(d)}"></i> ${esc(t('poste.pull.title'))}</div>
+      ${hwRow('ti-file-settings', t('poste.pull.profile'), d.profile || '—')}
+      ${hwRow('ti-circle', t('poste.pull.ring'), d.ring || '—')}
+      ${hwRow('ti-refresh', t('poste.pull.last_apply'), `${d.last_apply_status ? t('poste.pull.status.' + d.last_apply_status) : '—'} · ${formatRelative(d.last_apply_at)}`)}
+      <a class="btn btn-sm" href="#/linux/${esc(d.id)}">${esc(t('poste.pull.open'))}</a>
+    </div>` : ''}
     <!-- Grille principale -->
     <div class="pd-grid">
       <!-- Colonne gauche -->
@@ -142,7 +155,7 @@ function renderBody() {
             ${hwRow('ti-cpu',                t('poste.hw.cpu'),          d.cpu)}
             ${d.system_info?.cores ? hwRow('ti-cpu', 'Cœurs / threads', `${d.system_info.cores}c / ${d.system_info.threads}t${d.system_info.cpu_mhz ? ' · ' + (d.system_info.cpu_mhz / 1000).toFixed(1) + ' GHz' : ''}`) : ''}
             ${hwRow('ti-layers-intersect',   t('poste.hw.ram'),          d.ram_gb ? d.ram_gb + ' Go' : '—')}
-            ${hwRow('ti-brand-windows',      t('poste.hw.os'),           d.os)}
+            ${hwRow(osIcon(d),               t('poste.hw.os'),           d.os)}
             ${hwRow('ti-hash',               t('poste.hw.os_build'),     d.os_build)}
             ${hwRow('ti-fingerprint',        t('poste.hw.serial'),       d.serial)}
             ${hwRow('ti-settings',           t('poste.hw.bios'),         d.bios_version)}
@@ -223,7 +236,7 @@ function renderBody() {
             </div>`).join('')
             : `<div class="empty-state" style="padding:1rem"><p>${t('poste.no_tickets')}</p></div>`}
         </div>
-        <!-- Scripts à distance -->
+        ${!isPullManaged(d) ? `<!-- Scripts à distance -->
         <div class="panel" id="panel-scripts">
           <div class="panel-header">
             <i class="ti ti-terminal-2"></i> Scripts à distance
@@ -235,6 +248,7 @@ function renderBody() {
             <div class="empty-state" style="padding:1rem"><i class="ti ti-loader-2" style="animation:spin 1s linear infinite"></i></div>
           </div>
         </div>
+        ` : ''}
         ${(window.appState?.user?.isAdmin && window.OPALE.moduleEnabled('remote')) ? `
         <!-- Historique des accès distants (SSH + console-via-agent) — admin only -->
         <div class="panel" id="panel-remote-sessions">
@@ -1040,6 +1054,7 @@ function netifRow(iface) {
 
 // ─── Terminal SSH ───
 function openSSHMenu(e) {
+  if (!_device || isPullManaged(_device)) return
   const panel = document.getElementById('ssh-panel')
   if (panel?.classList.contains('open')) {
     disconnectSSH()
@@ -1809,6 +1824,7 @@ async function loadExecHistory(offset = 0) {
 }
 
 async function openRunScriptModal() {
+  if (!_device || isPullManaged(_device)) return
   let scripts = []
   try { scripts = await window.api.getScripts() } catch {}
   if (!scripts.length) { showToast('Aucun script disponible', 'error'); return }
@@ -1831,6 +1847,7 @@ async function openRunScriptModal() {
 }
 
 async function runScript() {
+  if (!_device || isPullManaged(_device)) return
   const scriptId = document.getElementById('run-script-select')?.value
   if (!scriptId || !_device) return
   try {
@@ -1846,12 +1863,14 @@ async function runScript() {
 // Actions rares (sync forcée, Intune, suppression) hors de l'en-tête : une
 // seule action principale visible, le reste à un clic.
 function pdMoreMenu() {
+  if (!_device) return
   const admin = window.appState?.user?.isAdmin
   showModal(`
     <div class="modal-title">${esc(t('poste.more_actions'))}</div>
     <div class="status-list">
-      <button class="status-opt" id="btn-force-checkin" onclick="forceCheckin()"><i class="ti ti-refresh"></i><span><b>${esc(t('poste.action.checkin'))}</b><small>${esc(t('poste.action.checkin_desc'))}</small></span></button>
+      ${!isPullManaged(_device) ? `<button class="status-opt" id="btn-force-checkin" onclick="forceCheckin()"><i class="ti ti-refresh"></i><span><b>${esc(t('poste.action.checkin'))}</b><small>${esc(t('poste.action.checkin_desc'))}</small></span></button>
       <button class="status-opt" id="btn-sync-intune" onclick="syncIntune()"><i class="ti ti-cloud-download"></i><span><b>${esc(t('poste.action.intune'))}</b><small>${esc(t('poste.action.intune_desc'))}</small></span></button>
+      ` : ''}
       ${admin ? `<button class="status-opt danger" onclick="closeModal();deleteDevice()"><i class="ti ti-trash"></i><span><b>${esc(t('poste.action.delete'))}</b><small>${esc(t('poste.action.delete_desc'))}</small></span></button>` : ''}
     </div>
     <div class="modal-footer"><button class="btn" onclick="closeModal()">${t('btn.cancel')}</button></div>`)
@@ -1859,7 +1878,9 @@ function pdMoreMenu() {
 
 async function deleteDevice() {
   if (!_device) return
-  if (!confirm(`Supprimer définitivement "${_device.hostname}" ?\n\nCette action est irréversible.`)) return
+  const recoveryWarning = _device.recovery_keys_count > 0
+    ? '\n\n' + t('poste.delete.recovery_warning', { n: _device.recovery_keys_count }) : ''
+  if (!confirm(t('poste.delete.confirm', { hostname: _device.hostname }) + recoveryWarning)) return
   try {
     await window.api.deleteDevice(_device.id)
     showToast('Poste supprimé', 'success')
@@ -1894,6 +1915,7 @@ async function resetSshHostKey() {
 // la fin, et un verrou empêche un second envoi pendant l'appel.
 const _pdBusy = new Set()
 async function forceCheckin() {
+  if (!_device || isPullManaged(_device)) return
   if (!_device || _pdBusy.has('checkin')) return
   _pdBusy.add('checkin')
   const btn = document.getElementById('btn-force-checkin')
@@ -1914,6 +1936,7 @@ async function forceCheckin() {
 }
 
 async function syncIntune() {
+  if (!_device || isPullManaged(_device)) return
   if (!_device || _pdBusy.has('intune')) return
   _pdBusy.add('intune')
   const btn = document.getElementById('btn-sync-intune')

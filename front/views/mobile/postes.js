@@ -1,3 +1,5 @@
+import { isPullManaged, osIcon } from '/platform.js'
+
 let _devices = []
 let _filter  = 'all'
 let _selectMode = false
@@ -138,7 +140,7 @@ function renderList() {
         ${isSelected ? `<i class="ti ti-circle-check-filled" style="position:absolute;top:6px;right:6px;color:var(--blue);font-size:18px"></i>` : ''}
         <div class="m-status-dot" style="background:${dotColor}"></div>
         <div class="m-device-info">
-          <div class="m-device-name">${esc(d.hostname)}</div>
+          <div class="m-device-name"><i class="ti ${osIcon(d)}"></i> ${esc(d.hostname)}</div>
           <div class="m-device-sub">${esc(d.model || d.manufacturer || '—')}${d.user?.name ? ' · ' + esc(d.user.name) : ''}</div>
           ${d.ip_netbird ? `<div class="m-device-ip">${esc(d.ip_netbird)}</div>` : ''}
         </div>
@@ -241,13 +243,21 @@ function updateActionBar() {
 
 // ─── Bulk actions ───
 
+function pushSelection() {
+  const ids = _devices.filter(d => _selected.has(d.id) && !isPullManaged(d)).map(d => d.id)
+  const n = _selected.size - ids.length
+  if (n) showToast(t('mobile.postes.bulk.skipped_linux', { n }), 'info')
+  return ids
+}
+
 async function bulkCheckin(btn) {
-  const ids = [..._selected]
+  const ids = pushSelection()
   if (!ids.length) return
+  const skippedLinux = _selected.size - ids.length
   await withBusy(btn, async () => {
     try {
       const res = await window.api.forceCheckinDevices(ids)
-      showToast(formatBulkResult(res, 'checkin'), res.errors?.length ? 'error' : 'success')
+      showToast(formatBulkResult(res, 'checkin', skippedLinux), res.errors?.length ? 'error' : 'success')
     } catch (err) {
       showToast(err.message || t('mobile.postes.bulk.toast.error'), 'error')
     }
@@ -256,12 +266,13 @@ async function bulkCheckin(btn) {
 }
 
 async function bulkSyncIntune(btn) {
-  const ids = [..._selected]
+  const ids = pushSelection()
   if (!ids.length) return
+  const skippedLinux = _selected.size - ids.length
   await withBusy(btn, async () => {
     try {
       const res = await window.api.forceSyncDevices(ids)
-      showToast(formatBulkResult(res, 'sync'), res.errors?.length ? 'error' : 'success')
+      showToast(formatBulkResult(res, 'sync', skippedLinux), res.errors?.length ? 'error' : 'success')
     } catch (err) {
       showToast(err.message || t('mobile.postes.bulk.toast.error'), 'error')
     }
@@ -269,8 +280,9 @@ async function bulkSyncIntune(btn) {
   exitSelectMode()
 }
 
-function formatBulkResult(res, kind) {
+function formatBulkResult(res, kind, skippedLinux) {
   const parts = []
+  if (skippedLinux) parts.push(t('mobile.postes.bulk.skipped_linux', { n: skippedLinux }))
   if (res.ok > 0)         parts.push(res.ok + ' ' + t('mobile.postes.bulk.toast.' + kind + '_ok'))
   if (res.skipped > 0)    parts.push(res.skipped + ' ' + t('mobile.postes.bulk.toast.skipped'))
   if (res.errors?.length) parts.push(res.errors.length + ' ' + t('mobile.postes.bulk.toast.errors'))
@@ -278,7 +290,8 @@ function formatBulkResult(res, kind) {
 }
 
 async function bulkRunScript(btn) {
-  const count = _selected.size
+  const ids = pushSelection()
+  const count = ids.length
   if (!count) return
 
   let scripts = []
@@ -294,7 +307,6 @@ async function bulkRunScript(btn) {
     return
   }
 
-  const ids = [..._selected]
   const options = scripts.map(s =>
     `<option value="${esc(s.id)}">${esc(s.name)}</option>`
   ).join('')

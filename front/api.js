@@ -54,6 +54,18 @@ class API {
   revealAdminCredential(deviceId, reason) { return this._fetch(`/admin-credentials/${deviceId}/reveal`, { method: 'POST', body: { reason } }) }
   rotateAdminCredential(deviceId)         { return this._fetch(`/admin-credentials/${deviceId}/rotate`, { method: 'POST', body: {} }) }
 
+  // Linux — file d'approbation
+  getLinuxEnrollments(params) {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    return this._fetch(`/linux/enrollments${qs}`)
+  }
+  getLinuxEnrollmentsCount() { return this._fetch('/linux/enrollments/count') }
+  approveLinuxEnrollment(id, body) { return this._fetch(`/linux/enrollments/${id}/approve`, { method: 'POST', body }) }
+  approveLinuxEnrollmentsBulk(body) { return this._fetch('/linux/enrollments/approve-bulk', { method: 'POST', body }) }
+  rejectLinuxEnrollment(id, body) { return this._fetch(`/linux/enrollments/${id}/reject`, { method: 'POST', body }) }
+  rejectLinuxEnrollmentsBulk(body) { return this._fetch('/linux/enrollments/reject-bulk', { method: 'POST', body }) }
+  setDeviceUser(id, assigned_user_id) { return this._fetch(`/devices/${id}`, { method: 'PATCH', body: { assigned_user_id } }) }
+
   // Tickets
   getTickets(params)   {
     const qs = params ? '?' + new URLSearchParams(params).toString() : ''

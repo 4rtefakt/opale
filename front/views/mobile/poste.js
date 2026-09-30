@@ -1,3 +1,5 @@
+import { isPullManaged, osIcon } from '/platform.js'
+
 import { getLocale } from '/i18n.js'
 import { mPromptRemoteReason } from './ssh.js'
 
@@ -64,7 +66,7 @@ function renderBody(el) {
 
     <!-- Actions rapides -->
     <div class="m-action-grid">
-      ${d.ip_netbird && d.status === 'online' ? `
+      ${!isPullManaged(d) ? (d.ip_netbird && d.status === 'online' ? `
       <button class="m-action-btn" onclick="mConfirmSSH()">
         <i class="ti ti-terminal"></i>
         <span>SSH</span>
@@ -72,12 +74,12 @@ function renderBody(el) {
       <button class="m-action-btn" disabled title="${esc(d.ip_netbird ? t('mobile.device.status.offline') : 'Netbird')}">
         <i class="ti ti-terminal"></i>
         <span>SSH</span>
-      </button>`}
+      </button>`) : ''}
       <button class="m-action-btn" onclick="mOpenNewTicket()">
         <i class="ti ti-ticket"></i>
         <span>${esc(t('mobile.poste.act.ticket'))}</span>
       </button>
-      <button class="m-action-btn" onclick="mForceCheckin(this)">
+      ${!isPullManaged(d) ? `<button class="m-action-btn" onclick="mForceCheckin(this)">
         <i class="ti ti-refresh"></i>
         <span>${esc(t('mobile.poste.act.checkin'))}</span>
       </button>
@@ -89,6 +91,7 @@ function renderBody(el) {
         <i class="ti ti-player-play"></i>
         <span>${esc(t('mobile.poste.act.script'))}</span>
       </button>
+      ` : ''}
       ${(window.appState?.user?.isAdmin && d.laps) ? `
       <button class="m-action-btn" onclick="mOpenLaps()">
         <i class="ti ti-key"></i>
@@ -131,7 +134,7 @@ function renderBody(el) {
       ${hwRow('ti-device-laptop',      t('poste.hw.model'),        d.model)}
       ${hwRow('ti-cpu',                t('poste.hw.cpu'),          d.cpu)}
       ${hwRow('ti-layers-intersect',   t('poste.hw.ram'),          d.ram_gb ? d.ram_gb + ' Go' : null)}
-      ${hwRow('ti-brand-windows',      t('poste.hw.os'),           d.os)}
+      ${hwRow(osIcon(d),               t('poste.hw.os'),           d.os)}
       ${hwRow('ti-hash',               t('poste.hw.os_build'),     d.os_build)}
       ${hwRow('ti-settings',           t('poste.hw.bios'),         d.bios_version)}
       ${hwRow('ti-fingerprint',        t('poste.hw.serial'),       d.serial)}
@@ -201,7 +204,7 @@ function renderBody(el) {
         </button>`).join('')}
     </div>` : ''}
 
-    <!-- Scripts à distance -->
+    ${!isPullManaged(d) ? `<!-- Scripts à distance -->
     <div class="m-panel" id="m-exec-panel">
       <div class="m-panel-header">
         <i class="ti ti-terminal-2"></i> ${esc(t('mobile.nav.route.scripts'))}
@@ -210,10 +213,10 @@ function renderBody(el) {
       <div id="m-exec-history">
         <div class="m-loading-row"><div class="m-spinner"></div></div>
       </div>
-    </div>
+    </div>` : ''}
   `
 
-  loadExecHistory(d.id)
+  if (!isPullManaged(d)) loadExecHistory(d.id)
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -249,6 +252,7 @@ function renderBody(el) {
   // Anti double-submit : withBusy désactive le bouton + spinner pendant l'appel,
   // ce qui empêche les doubles audit_logs / actions sur le même PC.
   window.mForceCheckin = (btn) => withBusy(btn, async () => {
+    if (isPullManaged(d)) return
     try {
       const res = await window.api.forceCheckinDevices([d.id])
       if (res.errors?.length) window.showToast(res.errors[0], 'error')
@@ -257,6 +261,7 @@ function renderBody(el) {
   })
 
   window.mSyncDevice = (btn) => withBusy(btn, async () => {
+    if (isPullManaged(d)) return
     try {
       await window.api.forceSyncDevices([d.id])
       window.showToast(t('mobile.dashboard.toast.sync_started'), 'success')
@@ -264,6 +269,7 @@ function renderBody(el) {
   })
 
   window.mRunScript = async () => {
+    if (isPullManaged(d)) return
     let scripts = []
     try { scripts = await window.api.getScripts() } catch {}
     if (!scripts.length) { window.showToast(t('mobile.postes.bulk.scripts.empty'), 'error'); return }
