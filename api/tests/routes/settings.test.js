@@ -182,6 +182,49 @@ test('PATCH / — clé branding → invalidateBrandingCache + invalidateManifest
   assert.equal(cacheCalls.manifest, before.manifest + 1)
 })
 
+test('PATCH / — un seul audit avec les valeurs avant/après des seules clés modifiées', { skip: SKIP }, async () => {
+  const { user, token } = await adminAuth('oid-set-changed')
+  await db.query(`DELETE FROM audit_logs WHERE action = 'settings_changed'`)
+  await db.query(`DELETE FROM settings WHERE key = 'ask.model'`)
+  await db.query(`
+    INSERT INTO settings (key, value) VALUES ('disk_warn_pct', '80'), ('disk_critical_pct', '95')
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+  `)
+  const res = await fastify.inject({
+    method: 'PATCH', url: '/api/settings/',
+    headers: { authorization: `Bearer ${token}` },
+    payload: { disk_warn_pct: 85, disk_critical_pct: '95', 'ask.model': 'test-model', unknown_key: 'ignorée' },
+  })
+  assert.equal(res.statusCode, 200)
+  const { rows } = await db.query(`SELECT * FROM audit_logs WHERE action = 'settings_changed'`)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].by_user, user.displayName)
+  assert.equal(rows[0].target, null)
+  assert.deepEqual(rows[0].details.changed, {
+    disk_warn_pct: { before: '80', after: '85' },
+    'ask.model': { before: null, after: 'test-model' },
+  })
+})
+
+test('PATCH / — valeurs inchangées ou clés inconnues : aucun audit', { skip: SKIP }, async () => {
+  const { token } = await adminAuth('oid-set-unchanged')
+  await db.query(`DELETE FROM audit_logs WHERE action = 'settings_changed'`)
+  await db.query(`
+    INSERT INTO settings (key, value) VALUES ('disk_warn_pct', '85')
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+  `)
+  for (const payload of [{ disk_warn_pct: 85 }, { unknown_key: 'ignorée' }, {}]) {
+    const res = await fastify.inject({
+      method: 'PATCH', url: '/api/settings/',
+      headers: { authorization: `Bearer ${token}` },
+      payload,
+    })
+    assert.equal(res.statusCode, 200)
+  }
+  const { rows } = await db.query(`SELECT * FROM audit_logs WHERE action = 'settings_changed'`)
+  assert.equal(rows.length, 0)
+})
+
 // ─── POST /tokens — création + audit ────────────────────────────────────────
 
 test('POST /tokens — sans Bearer → 401', { skip: SKIP }, async () => {

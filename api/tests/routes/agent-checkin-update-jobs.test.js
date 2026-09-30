@@ -131,3 +131,33 @@ test('POST /checkin — mise à jour proposée à un agent ≥ 2.15.3 : travaux 
   assert.deepEqual(body.commands.map(c => c.id), [scriptId])
   assert.equal(await statusOf('deployments', dep.id), 'running')
 })
+
+for (const [platform, offered] of [
+  ['linux/amd64', false],
+  ['windows/amd64', true],
+  ['darwin/amd64', false],
+  ['LiNuX/amd64', false],
+  ['WINDOWS/amd64', true],
+  ['freebsd/amd64', false],
+  ['', true],
+]) {
+  test(`POST /checkin — plateforme ${platform || 'absente'} : mise à jour ${offered ? 'proposée' : 'exclue'}`, { skip: SKIP }, async () => {
+    const device = await seedDevice(db, { hostname: `PC-OS-${platform.replace('/', '-') || 'legacy'}` })
+    const { secret } = await seedAgentToken(db, { deviceId: device.id })
+    const res = await fastify.inject({
+      method: 'POST', url: '/api/agent/checkin',
+      headers: {
+        authorization: `Bearer ${secret}`,
+        'user-agent': `opale-agent-go/1.0.0${platform ? ` (${platform})` : ''}`,
+      },
+      payload: { hostname: device.hostname, agent_version: '1.0.0' },
+    })
+    assert.equal(res.statusCode, 200, res.body)
+    if (offered) {
+      assert.equal(res.json().agent_update?.latest_version, SERVED_VERSION)
+      assert.equal(res.json().agent_update.download_url, '/api/agent/binary?arch=amd64')
+    } else {
+      assert.equal(res.json().agent_update, null)
+    }
+  })
+}

@@ -28,7 +28,7 @@ fastify.post('/foo', {
         description: { type: 'string', maxLength: 1000 },
         count:       { type: 'integer', minimum: 0, default: 0 },
       },
-      additionalProperties: false,   // refuse les champs inconnus
+      additionalProperties: false,   // supprime silencieusement les champs inconnus
     },
   },
 }, async (req, reply) => {
@@ -104,9 +104,10 @@ Méthodes disponibles : `badRequest` (400), `unauthorized` (401), `forbidden` (4
 
 ### `additionalProperties: false`
 
-À ajouter sur les `body` POST/PATCH/PUT pour rejeter les champs inconnus. Cela :
-- Évite les injections de champs non anticipés.
-- Force le frontend à ne passer que ce qui est documenté.
+À ajouter sur les `body` POST/PATCH/PUT pour supprimer silencieusement les champs
+inconnus : avec les options Ajv par défaut de Fastify (`removeAdditional: true`),
+ils sont retirés du body, pas rejetés. Les handlers ne déstructurent que les champs
+documentés.
 
 À **omettre** sur les schémas `querystring` et `params` quand Fastify injecte
 des paramètres internes (rare, mais possible avec certains plugins).
@@ -116,10 +117,11 @@ des paramètres internes (rare, mais possible avec certains plugins).
 ## Helper `logAudit` — traçabilité des actions write
 
 Tout write (create / update / delete) qui touche à des données sensibles ou auditables
-doit émettre un événement dans `audit_logs` via `api/lib/audit.js` :
+doit émettre un événement dans `audit_logs` via `api/modules/core/lib/audit.js`
+(import depuis les routes d'un autre module) :
 
 ```js
-import { logAudit } from '../lib/audit.js'
+import { logAudit } from '../../core/lib/audit.js'
 
 logAudit(fastify.db, fastify.log, {
   action:  'stock_movement',           // snake_case, verbe ou ressource_action
@@ -136,7 +138,7 @@ Non-bloquant : les erreurs DB dans `logAudit` sont loggées en warn, jamais reth
 ## Helper `createGrantStore` — nonces one-shot
 
 Pour les upgrades WebSocket (SSH / console) sans passer le JWT en query string,
-utiliser `api/lib/one-shot-grant.js` :
+utiliser `api/modules/remote/lib/one-shot-grant.js` (import depuis les routes du module remote) :
 
 ```js
 import { createGrantStore } from '../lib/one-shot-grant.js'

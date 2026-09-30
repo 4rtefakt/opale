@@ -63,6 +63,14 @@ function archFromUA(ua) {
   return (m && /^(amd64|arm64|386)$/.test(m[1])) ? m[1] : 'amd64'
 }
 
+// OS annoncé dans le User-Agent `opale-agent-go/x.y.z (<os>/<arch>)`. Un UA ancien
+// sans parenthèses est un agent Windows (seule plateforme livrée avant l'annonce de l'OS) ;
+// tout OS explicitement différent de windows est exclu de l'auto-update (.exe uniquement).
+function osFromUA(ua) {
+  const m = ua?.match(/\(([a-z0-9]+)\/\w+\)/i)
+  return m ? m[1].toLowerCase() : 'windows'
+}
+
 function readGoAgentVersion() {
   try {
     const content = fs.readFileSync(AGENT_VER_PATH, 'utf8').trim()
@@ -1308,7 +1316,8 @@ export default async function agentRoute(fastify) {
     const isGoAgent = /opale-agent(-go)?/.test(ua) || (legacyUa && new RegExp(legacyUa).test(ua))
 
     let agentUpdate = null
-    if (inMaintWindow && isGoAgent) {
+    // Les binaires servis sont des .exe : ne pas remplacer un agent Linux/macOS par un binaire Windows.
+    if (inMaintWindow && isGoAgent && osFromUA(ua) === 'windows') {
       const arch = archFromUA(ua)
       const meta = getAgentBinaryMeta(arch)
       if (meta && !meta.error && meta.version && meta.signature

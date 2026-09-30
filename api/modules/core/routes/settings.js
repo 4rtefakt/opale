@@ -134,7 +134,7 @@ export default async function settingsRoute(fastify) {
 
   // PATCH /api/settings — mettre à jour des clés
   fastify.patch('/', { preHandler: [fastify.authenticate, fastify.requireAdmin] }, async (req, reply) => {
-    const { displayName } = fastify.getUserIdentity(req)
+    const { displayName, entraId } = fastify.getUserIdentity(req)
     const allowed = [
       'disk_warn_pct', 'disk_critical_pct', 'agent_offline_days', 'ssh_public_key', 'cost_per_hour',
       // Branding (exposés via /env.js → window.ENV.BRANDING et /manifest.json)
@@ -188,18 +188,32 @@ export default async function settingsRoute(fastify) {
       }
     }
 
+    const { rows: previousRows } = await fastify.db.query('SELECT key, value FROM settings WHERE key = ANY($1::text[])', [allowed])
+    const previous = Object.fromEntries(previousRows.map(r => [r.key, r.value]))
+    const changed = {}
     let brandingTouched = false
     let userFilterTouched = false
     for (const key of allowed) {
       if (req.body?.[key] !== undefined) {
+        const before = previous[key] ?? null
+        const after = String(req.body[key])
         await fastify.db.query(`
           INSERT INTO settings (key, value, updated_at, updated_by)
           VALUES ($1, $2, now(), $3)
           ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now(), updated_by = $3
-        `, [key, String(req.body[key]), displayName])
+        `, [key, after, displayName])
+        if (before !== after) changed[key] = { before, after }
         if (key.startsWith('org.') || key.startsWith('app.')) brandingTouched = true
         if (key.startsWith('users.filter_')) userFilterTouched = true
       }
+    }
+    if (Object.keys(changed).length) {
+      await logAudit(fastify.db, fastify.log, {
+        action:  'settings_changed',
+        byUser:  displayName || entraId,
+        target:  null,
+        details: { changed },
+      })
     }
     if (brandingTouched) {
       fastify.invalidateBrandingCache()
