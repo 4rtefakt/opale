@@ -16,6 +16,9 @@
 //
 // Fonctionne sur un schéma où toutes les migrations sont appliquées.
 
+import { seedDevice } from '../fixtures/devices.js'
+import { seedLinuxDeviceKey } from '../fixtures/linux-device-keys.js'
+
 export async function seedReplayHazards(db) {
   await db.query(`
     INSERT INTO users_cache (entra_id, display_name) VALUES
@@ -70,11 +73,32 @@ export async function seedReplayHazards(db) {
     INSERT INTO ticket_users (ticket_id, user_entra_id, role) VALUES ($1, 'replay-u2', 'requester')
   `, [drift.id])
 
-  return { agentDev, otherDev, group, pkg, job, src, tgt, drift }
+  // 080 : poste converti et clé approuvée, déjà présents avant le rejeu.
+  const linux_dev = await seedDevice(db, {
+    hostname: 'lx-replay', serial: 'SN-REPLAY-LINUX',
+    platform: 'linux', managed_by: 'pull', profile: 'admin', ring: 'stable',
+  })
+  await db.query(`
+    UPDATE devices SET last_revision_applied = repeat('a', 40),
+      last_successful_revision = repeat('b', 40), last_apply_status = 'partial', last_apply_at = now()
+    WHERE id = $1
+  `, [linux_dev.id])
+  const linux_key = await seedLinuxDeviceKey(db, { deviceId: linux_dev.id, status: 'approved' })
+  const linux_snapshot = {
+    device: (await db.query('SELECT * FROM devices WHERE id = $1', [linux_dev.id])).rows[0],
+    key: (await db.query('SELECT * FROM linux_device_keys WHERE id = $1', [linux_key.id])).rows[0],
+  }
+  await db.query(`UPDATE settings SET value = 'https://example.org/fleet' WHERE key = 'linux.repo_url'`)
+
+  return { agentDev, otherDev, group, pkg, job, src, tgt, drift, linux_snapshot }
 }
 
 // Vérifie qu'un rejeu n'a rien modifié des données piégeuses.
 export async function assertReplayHazardsIntact(db, assert, seed) {
+  const { device, key } = seed.linux_snapshot
+  assert.deepEqual((await db.query('SELECT * FROM devices WHERE id = $1', [device.id])).rows[0], device)
+  assert.deepEqual((await db.query('SELECT * FROM linux_device_keys WHERE id = $1', [key.id])).rows[0], key)
+  assert.equal((await db.query(`SELECT value FROM settings WHERE key = 'linux.repo_url'`)).rows[0].value, 'https://example.org/fleet')
   const { rows: [dev] } = await db.query(`SELECT source FROM devices WHERE id = $1`, [seed.agentDev.id])
   assert.equal(dev.source, 'agent', '010 ne doit pas rebasculer un poste agent en intune')
 

@@ -14,6 +14,7 @@ import { acquireSchema, isDbAvailable, closeSharedPool } from '../helpers/db.js'
 import { setupTestJwks } from '../helpers/jwt.js'
 import { buildApp } from '../helpers/build-app.js'
 import { seedAdmin, seedNonAdmin } from '../fixtures/users.js'
+import { seedDevice } from '../fixtures/devices.js'
 
 import settingsRoute from '../../modules/core/routes/settings.js'
 
@@ -63,6 +64,41 @@ async function adminAuth(entraId = 'oid-set-admin') {
   const a = await seedAdmin(db, { entraId })
   return { user: a, token: await jwt.sign({ oid: a.entraId, name: a.displayName, preferred_username: a.email }) }
 }
+
+test('POST /sync-intune — préserve les postes pull sur conflit série et hostname, synchronise les autres', { skip: SKIP }, async (t) => {
+  const { token } = await adminAuth('oid-intune-pull')
+  const pull_serial = await seedDevice(db, { hostname: 'lx-serial', serial: 'PULL-SERIAL', platform: 'linux', managed_by: 'pull' })
+  const pull_hostname = await seedDevice(db, { hostname: 'lx-hostname', platform: 'linux', managed_by: 'pull' })
+  await db.query(`UPDATE devices SET os = 'Debian' WHERE id = ANY($1::uuid[])`, [[pull_serial.id, pull_hostname.id]])
+  const snapshot = await db.query('SELECT * FROM devices WHERE id = ANY($1::uuid[]) ORDER BY id', [[pull_serial.id, pull_hostname.id]])
+  await seedDevice(db, { hostname: 'old-windows', serial: 'WINDOWS-SERIAL' })
+  await seedDevice(db, { hostname: 'windows-hostname' })
+  const original = globalThis.fetch
+  t.after(() => { globalThis.fetch = original })
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith('https://login.microsoftonline.com/')) {
+      return Response.json({ access_token: 'test-token', expires_in: 3600 })
+    }
+    assert.ok(String(url).startsWith('https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?'))
+    return Response.json({ value: [
+      { deviceName: 'windows-reimage', serialNumber: 'PULL-SERIAL', operatingSystem: 'Windows' },
+      { deviceName: 'lx-hostname', serialNumber: 'unknown', operatingSystem: 'Windows' },
+      { deviceName: 'new-windows', serialNumber: 'WINDOWS-SERIAL', operatingSystem: 'Windows' },
+      { deviceName: 'windows-hostname', operatingSystem: 'Windows' },
+      { deviceName: 'windows-insert', serialNumber: 'NEW-SERIAL', operatingSystem: 'Windows' },
+    ] })
+  }
+  const res = await fastify.inject({
+    method: 'POST', url: '/api/settings/sync-intune',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  const after = await db.query('SELECT * FROM devices WHERE id = ANY($1::uuid[]) ORDER BY id', [[pull_serial.id, pull_hostname.id]])
+  assert.deepEqual(after.rows, snapshot.rows, 'les postes Linux restent entièrement intacts')
+  assert.deepEqual(res.json(), { upserted: 3, errors: 0, skipped_pull: 2 })
+  const windows = await db.query(`SELECT hostname, os FROM devices WHERE hostname IN ('new-windows', 'windows-hostname', 'windows-insert') ORDER BY hostname`)
+  assert.deepEqual(windows.rows, ['new-windows', 'windows-hostname', 'windows-insert'].map(hostname => ({ hostname, os: 'Windows' })))
+})
 
 // ─── PATCH / — validation des champs sensibles ──────────────────────────────
 

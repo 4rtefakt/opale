@@ -160,6 +160,7 @@ L'ordre alphabétique du nom de fichier détermine l'ordre d'exécution.
 - `077_clear_stale_ip_netbird.sql` : met à NULL les `devices.ip_netbird`
   hors de 100.64.0.0/10 écrites avant le contrôle du check-in (une entrée
   `ip_netbird_cleared` par poste dans `audit_logs`).
+- `080_linux_fleet.sql` : socle Linux (clés, préinscriptions, rapports, récupération chiffrée), colonnes de gestion pull et paramètres initiaux.
 
 ## Note sur les retouches de 010, 043, 046 et 060
 

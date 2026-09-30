@@ -46,6 +46,9 @@ export const TABLES = [
   { name: 'user_prefs',          conflictTarget: ['entra_id'] },
 
   // === Layer 2 : FK → devices / packages / groups ===
+  { name: 'linux_device_keys',         conflictTarget: ['id'] },
+  { name: 'device_recovery_keys',      conflictTarget: ['id'] },
+  { name: 'linux_apply_reports',       conflictTarget: ['id'] },
   { name: 'disks',                     conflictTarget: ['id'] },
   { name: 'network_interfaces',        conflictTarget: ['id'] },
   { name: 'agent_tokens',              conflictTarget: ['token_hash'], selfRefColumn: 'replaced_by' },
@@ -67,6 +70,7 @@ export const TABLES = [
   { name: 'group_members',             conflictTarget: ['id'] },
 
   // === Layer 3 : FK → tickets / tags / deployments / remote_sessions ===
+  { name: 'linux_preregistrations',    conflictTarget: ['id'] },
   { name: 'deployment_snapshots',      conflictTarget: ['deployment_id'] },
   { name: 'remote_session_logs',       conflictTarget: ['session_id'] },
   { name: 'ticket_messages',           conflictTarget: ['id'] },

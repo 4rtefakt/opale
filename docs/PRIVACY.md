@@ -53,6 +53,8 @@ de mise en balance (intérêt vs. droits des personnes concernées).
 | `network_interfaces` | mac | Identifiant unique stable de l'équipement |
 | `devices` | intune_user_id, intune_device_id, aad_device_id | IDs Microsoft — pseudonymes mais traçables |
 | `ssh_keys` | public_key | Identifie un accès SSH nominatif |
+| `linux_device_keys` | key_fingerprint, serial_claimed, hostname_claimed, approved_by, rejected_by, revoked_by | Série et hostname peuvent identifier un utilisateur ; clé publique et décisions d'enrôlement |
+| `linux_preregistrations` | serial, hostname, assigned_user_id, note, created_by | Préparation des postes ; noms d'utilisateurs possibles dans le hostname et les notes |
 
 ### 2.3 Données de comportement réseau
 
@@ -71,6 +73,8 @@ de mise en balance (intérêt vs. droits des personnes concernées).
 | `audit_logs` | Toutes les actions admin (action, by_user, target) | Moyen |
 | `script_executions` | Qui a lancé quel script, sur quel poste, output complet | **Élevé** — output peut contenir des données personnelles |
 | `device_admin_credentials` | Mot de passe local recovery (chiffré RSA-OAEP) + journal des consultations | Élevé |
+| `linux_apply_reports` | error_summary, log_tail, révision et résultat d'application | Élevé — les extraits de logs peuvent contenir des noms d'utilisateurs et des chemins |
+| `device_recovery_keys` | Secrets de récupération LUKS / TPM chiffrés au repos, label, last_viewed_by | Élevé — déchiffrement uniquement lors d'une consultation auditée (routes livrées dans une PR ultérieure) |
 
 Les ouvertures et fermetures de console-via-agent (transport
 `agent_console`) sont en plus tracées dans `audit_logs` sous les actions
@@ -180,6 +184,8 @@ Pour les autres tables, une purge reste à mettre en place.
 | `remote_session_logs` | 30 jours (auto) | Contenu très sensible (mots de passe affichés, données users) — rétention courte par défaut, voir §4.7 |
 | `audit_logs` | 12 mois (auto) | Délibération CNIL n°2017-012 (logs cybersécurité) |
 | `script_executions` | 3 mois (auto) | Output peut contenir des données sensibles |
+| `linux_apply_reports` | 90 jours après réception (auto) | Historique d'application et extraits de logs potentiellement personnels |
+| `linux_device_keys` (status = `pending`) | 7 jours après le dernier contact (auto) | Demandes d'enrôlement abandonnées ; les autres statuts sont conservés jusqu'à effacement |
 | `users_cache` | Purge si compte SSO désactivé + 30 jours | Droit à l'effacement |
 | `onboardings` | 2 ans après date de fin | Données RH |
 
@@ -319,6 +325,13 @@ s'exercent par demande à l'administrateur ou au DPO.
 | Effacement | Suppression du device (cascade) + purge dans `users_cache` |
 | Opposition | Limité — le monitoring est lié à l'usage du SI de l'organisation |
 | Portabilité | Sans objet (données techniques, pas de format échangeable standard) |
+
+La suppression d'un poste efface en cascade ses clés d'appareil Linux
+(`linux_device_keys`), ses rapports (`linux_apply_reports`) et ses secrets
+de récupération chiffrés (`device_recovery_keys`). La révocation d'une clé
+ne supprime pas le poste ni ces historiques. Les préinscriptions restent
+à effacer séparément : seule leur référence `consumed_by_key_id` est mise
+à NULL quand la clé disparaît.
 
 > [À ADAPTER] Documentez clairement le **point de contact** (DPO,
 > responsable IT) dans votre charte informatique et dans l'éventuel
