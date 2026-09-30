@@ -103,6 +103,7 @@ async function authPlugin(fastify, opts = {}) {
       name:               rows[0].display_name,
       preferred_username: rows[0].email,
     }
+    request.authKind = 'cli'
   }
 
   fastify.decorate('authenticate', async function (request, reply) {
@@ -126,6 +127,7 @@ async function authPlugin(fastify, opts = {}) {
     if (token.split('.').length === 3) {
       try {
         request.jwtPayload = await verifyToken(token)
+        request.authKind = 'jwt'
         return
       } catch {
         return reply.code(401).send({ error: 'Token invalide' })
@@ -150,6 +152,14 @@ async function authPlugin(fastify, opts = {}) {
     )
     if (!res.rows[0]?.is_admin) {
       return reply.code(403).send({ error: 'Non autorisé' })
+    }
+  })
+
+  // Les tokens CLI sont non scopés et valables 90 jours : les actions sensibles
+  // du module linux et la révélation de secrets exigent une session interactive.
+  fastify.decorate('requireInteractive', async function (request, reply) {
+    if (request.authKind === 'cli') {
+      return reply.code(403).send({ error: 'Action réservée à une session interactive', code: 'INTERACTIVE_ONLY' })
     }
   })
 
