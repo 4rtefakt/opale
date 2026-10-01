@@ -1,3 +1,5 @@
+import { isPullManaged, osIcon } from '/platform.js'
+
 let _devices = []
 let _filter  = 'all'
 let _sortBy  = localStorage.getItem('postes-sort') || 'status'
@@ -59,9 +61,9 @@ export async function renderPostes(container) {
       <span class="bulk-count" id="bulk-count">0 postes sélectionnés</span>
       <div class="bulk-actions">
         <button class="btn"><i class="ti ti-terminal-2"></i> SSH groupé</button>
-        <button class="btn" onclick="bulkRunScript()"><i class="ti ti-player-play"></i> Lancer script</button>
-        <button class="btn" onclick="bulkForceCheckin()"><i class="ti ti-refresh"></i> Forcer sync</button>
-        <button class="btn" onclick="bulkForceSync()"><i class="ti ti-brand-azure"></i> Sync Intune</button>
+        <button class="btn" data-push-action onclick="bulkRunScript()"><i class="ti ti-player-play"></i> Lancer script</button>
+        <button class="btn" data-push-action onclick="bulkForceCheckin()"><i class="ti ti-refresh"></i> Forcer sync</button>
+        <button class="btn" data-push-action onclick="bulkForceSync()"><i class="ti ti-brand-azure"></i> Sync Intune</button>
         <button class="btn btn-danger" onclick="clearSelection()"><i class="ti ti-x"></i> Désélectionner</button>
       </div>
     </div>
@@ -197,7 +199,7 @@ function renderHead() {
       <th onclick="postesSort('name')">Nom <i class="ti ti-selector sort-icon"></i></th>
       <th onclick="postesSort('user')">Utilisateur <i class="ti ti-selector sort-icon"></i></th>
       ${full ? '<th>Modèle</th><th>OS</th><th>Agent</th>' : ''}
-      <th onclick="postesSort('disk')">Disque C: <i class="ti ti-selector sort-icon"></i></th>
+      <th onclick="postesSort('disk')">${esc(t('postes.disk'))} <i class="ti ti-selector sort-icon"></i></th>
       ${full ? '<th>RAM</th>' : ''}
       <th onclick="postesSort('last')">Dernier contact <i class="ti ti-selector sort-icon"></i></th>
       <th onclick="postesSort('status')">Statut <i class="ti ti-selector sort-icon"></i></th>
@@ -289,7 +291,7 @@ function deviceRow(d) {
         }
       </td>
       ${full ? `<td style="color:var(--text-secondary);white-space:nowrap">${esc(d.model || '—')}</td>
-      <td><span class="os-badge"><i class="ti ti-brand-windows"></i>${esc(d.os || '—')}</span></td>
+      <td><span class="os-badge"><i class="ti ${osIcon(d)}"></i>${esc(d.os || '—')}</span></td>
       <td style="color:var(--text-tertiary);font-size:11px;font-family:monospace;white-space:nowrap">${d.agent_version ? 'v' + esc(d.agent_version) : '—'}</td>` : ''}
       <td>
         <div class="disk-wrap">
@@ -385,6 +387,11 @@ function clearSelection() {
 }
 
 function updateBulkBar() {
+  const hasPull = _devices.some(d => _selected.has(d.id) && isPullManaged(d))
+  document.querySelectorAll('[data-push-action]').forEach(btn => {
+    btn.disabled = hasPull
+    btn.title = hasPull ? t('postes.bulk.pull_disabled') : ''
+  })
   const n   = _selected.size
   const bar = document.getElementById('bulk-bar')
   if (bar) bar.className = 'bulk-bar' + (n > 0 ? ' show' : '')
@@ -394,7 +401,7 @@ function updateBulkBar() {
 
 function exportCSV() {
   const devices = sortDevices(getFiltered())
-  const header = ['Nom', 'Modèle', 'Fabricant', 'OS', 'RAM (Go)', 'Disque C: (%)', 'Utilisateur', 'Email', 'IP Netbird', 'Statut', 'Dernier push']
+  const header = ['Nom', 'Modèle', 'Fabricant', 'OS', 'RAM (Go)', t('postes.disk') + ' (%)', 'Utilisateur', 'Email', 'IP Netbird', 'Statut', 'Dernier push']
   const rows = devices.map(d => [
     d.hostname,
     d.model        || '',
@@ -447,6 +454,7 @@ function withActionLock(key, fn) {
 }
 
 async function bulkForceCheckin() {
+  if (_devices.some(d => _selected.has(d.id) && isPullManaged(d))) return
   const ids = [..._selected]
   if (ids.length === 0) return
   await withActionLock('bulkForceCheckin', async () => {
@@ -464,6 +472,7 @@ async function bulkForceCheckin() {
 }
 
 async function bulkForceSync() {
+  if (_devices.some(d => _selected.has(d.id) && isPullManaged(d))) return
   const ids = [..._selected]
   if (ids.length === 0) return
   await withActionLock('bulkForceSync', async () => {
@@ -481,6 +490,7 @@ async function bulkForceSync() {
 }
 
 async function bulkRunScript() {
+  if (_devices.some(d => _selected.has(d.id) && isPullManaged(d))) return
   const count = _selected.size
   if (count === 0) return
 
@@ -524,6 +534,7 @@ async function bulkRunScript() {
 }
 
 async function bulkRunScriptConfirm() {
+  if (_devices.some(d => _selected.has(d.id) && isPullManaged(d))) return
   const select = document.getElementById('bulk-script-select')
   if (!select) return
   const scriptId = select.value

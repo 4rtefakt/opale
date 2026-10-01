@@ -21,12 +21,24 @@ const _CATEGORIES = {
     label: 'Gestion des postes',
     in: ['rmm_force_checkin', 'intune_force_sync', 'device_deleted', 'intune_sync'],
   },
+  linux: {
+    get label() { return t('nav.linux') },
+    in: [
+      'linux_device_enrolled', 'linux_enroll_serial_conflict', 'linux_enroll_flood',
+      'linux_key_serial_mismatch', 'linux_device_approved', 'linux_device_converted',
+      'linux_device_reenrolled', 'linux_device_rejected', 'linux_device_revoked',
+      'linux_assignment_changed', 'linux_apply_failed', 'linux_apply_recovered',
+      'linux_recovery_key_escrowed', 'linux_recovery_key_viewed', 'linux_escrow_backup_confirmed',
+      'linux_settings_changed', 'linux_ring_promoted', 'linux_git_synced',
+      'linux_preregistrations_imported', 'device_assigned',
+    ],
+  },
   security: {
     label: 'Tokens & sécurité',
     in: ['token_created', 'token_revoked', 'agent_bootstrap_exchange', 'admin_granted', 'admin_revoked',
          'agent_bootstrap_exchange_refused', 'agent_token_bind_refused', 'agent_token_bound',
          'ssh_host_key_learned', 'ssh_host_key_mismatch', 'ssh_host_key_reset',
-         'ip_netbird_cleared'],
+         'ip_netbird_cleared', 'linux_enroll_flood', 'linux_key_serial_mismatch'],
   },
   mail: {
     label: 'Pont mail',
@@ -131,6 +143,18 @@ async function _fetch(append) {
 
 const _BADGE = {
   settings_changed:          ['b-prog',   'ti-settings'],
+  linux_device_enrolled: ['b-done', 'ti-brand-debian'],
+  linux_enroll_serial_conflict: ['b-prog', 'ti-alert-triangle'],
+  linux_enroll_flood: ['b-closed', 'ti-shield-exclamation'],
+  linux_key_serial_mismatch: ['b-closed', 'ti-key-off'],
+  linux_device_approved: ['b-done', 'ti-check'],
+  linux_device_converted: ['b-done', 'ti-arrows-exchange'],
+  linux_device_reenrolled: ['b-done', 'ti-refresh'],
+  linux_device_rejected: ['b-closed', 'ti-x'],
+  linux_device_revoked: ['b-closed', 'ti-key-off'],
+  linux_preregistrations_imported: ['b-done', 'ti-file-import'],
+  device_assigned: ['b-done', 'ti-user-check'],
+
   agent_checkin:             ['b-done',   'ti-device-laptop'],
   setup_script:              ['b-open',   'ti-script'],
   intune_sync:               ['b-open',   'ti-cloud-download'],
@@ -165,6 +189,18 @@ const _BADGE = {
 // on tombe sur le nom brut de l'action (forward-compat).
 const _ACTION_LABEL = {
   settings_changed:       'Paramètres modifiés',
+  get linux_device_enrolled() { return t('dashboard.activity.action.linux_device_enrolled') },
+  get linux_enroll_serial_conflict() { return t('dashboard.activity.action.linux_enroll_serial_conflict') },
+  get linux_enroll_flood() { return t('dashboard.activity.action.linux_enroll_flood') },
+  get linux_key_serial_mismatch() { return t('dashboard.activity.action.linux_key_serial_mismatch') },
+  get linux_device_approved() { return t('dashboard.activity.action.linux_device_approved') },
+  get linux_device_converted() { return t('dashboard.activity.action.linux_device_converted') },
+  get linux_device_reenrolled() { return t('dashboard.activity.action.linux_device_reenrolled') },
+  get linux_device_rejected() { return t('dashboard.activity.action.linux_device_rejected') },
+  get linux_device_revoked() { return t('dashboard.activity.action.linux_device_revoked') },
+  get linux_preregistrations_imported() { return t('dashboard.activity.action.linux_preregistrations_imported') },
+  get device_assigned() { return t('dashboard.activity.action.device_assigned') },
+
   agent_console_open:     'console ouverte',
   agent_console_close:    'console fermée',
   agent_console_takeover: 'console reprise',
@@ -219,6 +255,13 @@ function _truncate(s, n) {
 function _summary(action, details) {
   if (!details) return ''
   if (action === 'settings_changed') return Object.keys(details.changed || {}).join(', ')
+  if (action === 'device_assigned') return [details.hostname, details.assigned_user_id || t('poste.facts.unassigned')].filter(Boolean).join(' · ')
+  if (action === 'linux_preregistrations_imported') return t('linux.queue.bulk_result', { ok: details.ok ?? details.imported ?? 0, skipped: details.skipped ?? 0 })
+  if (action === 'linux_enroll_flood') return t('linux.queue.pending', { n: details.pending ?? details.count ?? '—' })
+  if (action === 'linux_key_serial_mismatch') return [details.serial_claimed, details.serial, details.fingerprint].filter(Boolean).join(' · ')
+  if (['linux_device_enrolled', 'linux_enroll_serial_conflict', 'linux_device_approved', 'linux_device_converted', 'linux_device_reenrolled', 'linux_device_rejected', 'linux_device_revoked'].includes(action)) {
+    return [details.hostname, details.serial_claimed || details.serial, details.profile, details.ring, details.reason].filter(Boolean).join(' · ')
+  }
   if (action === 'intune_sync')   return t('audit.summary.intune', { ok: details.upserted ?? 0, errors: details.errors ?? 0 })
   if (action === 'agent_checkin') {
     let s = t('audit.summary.agent_checkin', { disks: details.disks ?? 0 })

@@ -1,3 +1,5 @@
+import { osIcon } from '/platform.js'
+
 export async function renderUserDetail(container, id) {
   container.innerHTML = `
     <div class="page"><div class="page-inner">
@@ -59,7 +61,7 @@ export async function renderUserDetail(container, id) {
               <span class="badge badge-${deviceStatusColor(d)}">${t('status.' + deviceStatus(d))}</span>
             </div>
             <div class="hw-grid" style="padding:0">
-              ${d.os          ? hwRow('ti-brand-windows', t('poste.hw.os'),        d.os)           : ''}
+              ${d.os          ? hwRow(osIcon(d), t('poste.hw.os'),        d.os)           : ''}
               ${d.model       ? hwRow('ti-device-laptop', t('poste.hw.model'),     d.model)        : ''}
               ${d.ram_gb      ? hwRow('ti-layers-intersect', t('poste.hw.ram'),    d.ram_gb + ' Go') : ''}
               ${d.last_seen   ? hwRow('ti-clock',         t('poste.hw.last_seen'), formatRelative(d.last_seen)) : ''}

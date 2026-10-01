@@ -67,6 +67,7 @@
         <button class="topnav-link" type="button" onclick="toggleMoreMenu(event)" aria-haspopup="true" aria-expanded="false"><i class="ti ti-grid-dots"></i> <span data-i18n="nav.more">Plus</span> <i class="ti ti-chevron-down" style="font-size:12px"></i></button>
         <div class="more-menu hidden" id="more-menu">
           <a class="more-item" href="#/dashboard" data-module="core"><i class="ti ti-layout-dashboard"></i> <span data-i18n="nav.dashboard">Tableau de bord</span></a>
+          <a class="more-item" href="#/linux" data-module="linux"><i class="ti ti-brand-debian"></i> <span data-i18n="nav.linux">Parc Linux</span><span id="badge-linux" class="topnav-badge" style="display:none"></span></a>
           <a class="more-item" href="#/conformite" data-module="monitoring"><i class="ti ti-shield-check"></i> <span data-i18n="nav.conformite">Conformité</span></a>
           <a class="more-item" href="#/reseau" data-module="monitoring"><i class="ti ti-network"></i> <span data-i18n="nav.reseau">Réseau</span></a>
           <a class="more-item" href="#/stock" data-module="inventory"><i class="ti ti-package"></i> <span data-i18n="nav.stock">Stock</span></a>
@@ -111,6 +112,7 @@
   <div class="main" id="main-area">
     <div id="view-today"     class="view"></div>
     <div id="view-dashboard" class="view"></div>
+    <div id="view-linux" class="view"></div>
     <div id="view-postes"    class="view"></div>
     <div id="view-conformite" class="view"></div>
     <div id="view-reseau"    class="view"></div>

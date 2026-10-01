@@ -266,6 +266,18 @@ function activityPanel(rows) {
 // Subset des badges/labels audit.js — affichage compact pour le dashboard.
 const _ACTIVITY_ICON = {
   settings_changed:          'ti-settings',
+  linux_device_enrolled: 'ti-brand-debian',
+  linux_enroll_serial_conflict: 'ti-alert-triangle',
+  linux_enroll_flood: 'ti-shield-exclamation',
+  linux_key_serial_mismatch: 'ti-key-off',
+  linux_device_approved: 'ti-check',
+  linux_device_converted: 'ti-arrows-exchange',
+  linux_device_reenrolled: 'ti-refresh',
+  linux_device_rejected: 'ti-x',
+  linux_device_revoked: 'ti-key-off',
+  linux_preregistrations_imported: 'ti-file-import',
+  device_assigned: 'ti-user-check',
+
   agent_console_open:        'ti-terminal-2',
   agent_console_close:       'ti-terminal-2',
   agent_console_takeover:    'ti-hand-grab',

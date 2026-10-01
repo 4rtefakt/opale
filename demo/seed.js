@@ -40,6 +40,7 @@ export function seed() {
     const status = age > 168 ? 'offline' : disk >= 90 ? 'critical' : disk >= 80 ? 'warn' : 'online'
     return {
       id: uid('d', i), hostname: o.hostname, model: o.model || MODELS[i % MODELS.length], manufacturer: (o.model || MODELS[i % MODELS.length]).startsWith('ThinkPad') ? 'Lenovo' : (o.model || '').startsWith('Surface') ? 'Microsoft' : 'Dell',
+      platform: 'windows', managed_by: null, profile: null, ring: null, last_apply_status: null, last_apply_at: null,
       os: OS[i % OS.length], os_build: '26100.2033', ram_gb: i % 4 === 0 ? 32 : 16, cpu: i % 3 ? 'Intel Core i7-1365U' : 'Intel Core Ultra 7 155U',
       disk_used_pct: disk, user: o.user ? { id: byName[o.user].entra_id, name: o.user, email: byName[o.user].email, job_title: byName[o.user].job_title } : null,
       user_name: o.user || null, assigned_user_id: o.user ? byName[o.user].entra_id : null,
@@ -55,6 +56,13 @@ export function seed() {
   devices.push(mk(22, { hostname: 'PC-SALLE-REU', disk: 25, age: 400 }))
   devices.push(mk(23, { hostname: 'LT-PRET-01', disk: 18, age: 0.2 }))
   devices.push(mk(24, { hostname: 'LT-PRET-02', disk: 21, age: 60 }))
+  // Un poste Debian dans l'inventaire commun ; la file Linux reste désactivée.
+  Object.assign(devices.find(d => d.hostname === 'LT-PRET-02'), {
+    platform: 'linux', managed_by: 'pull', os: 'Debian 13', os_build: null,
+    profile: 'field-researcher', ring: 'stable', last_apply_status: 'success', last_apply_at: H(1),
+    ip_netbird: null, agent_version: null, compliance_state: null, join_type: null, intune_last_sync: null,
+    ssh_host_key_fp: null, ssh_host_key_learned_at: null,
+  })
   const dev = (host) => devices.find(d => d.hostname === host)
 
   const tags = [

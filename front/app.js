@@ -23,6 +23,7 @@ const ROUTE_MODULE = {
   alertes:    'monitoring',
   tickets:    'tickets',
   postes:     'inventory',
+  linux:      'linux',
   conformite: 'monitoring',
   reseau:     'monitoring',
   stock:      'inventory',
@@ -130,7 +131,7 @@ window.formatRelative = (iso) => {
 
 // ─── Router ───
 const VIEWS = [
-  'today','dashboard','alertes','tickets','postes','conformite','stock',
+  'today','dashboard','alertes','tickets','postes','linux','conformite','stock',
   'users','groupes','scripts','onboarding','rapports','point','audit','parametres','packages','reseau'
 ]
 
@@ -214,6 +215,14 @@ async function router() {
       const { renderPostes } = await import('/views/postes.js')
       renderPostes(container)
     }
+  } else if (route === 'linux') {
+    if (parts[1]) {
+      container.style.display = 'none'
+      document.getElementById('view-404').style.display = 'flex'
+      return
+    }
+    const { renderLinux } = await import('/views/linux.js')
+    renderLinux(container)
   } else if (route === 'tickets') {
     // `#/tickets/<id>` : page focus du ticket ; `#/tickets/mail/<id>` :
     // page focus d'un fil de mails pas encore ticket ; sinon la liste.
@@ -279,6 +288,20 @@ async function router() {
         <p style="font-size:13px;color:var(--text-tertiary)">Vue en cours de développement</p>
       </div>`
   }
+}
+
+window.setLinuxBadge = (n) => {
+  const badge = document.getElementById('badge-linux')
+  if (!badge) return
+  badge.textContent = n
+  badge.style.display = n > 0 ? '' : 'none'
+}
+async function updateLinuxBadge() {
+  if (!window.OPALE.moduleEnabled('linux')) return
+  try {
+    const { pending } = await window.api.getLinuxEnrollmentsCount()
+    window.setLinuxBadge(pending)
+  } catch {}
 }
 
 // ─── Badge alertes ───
@@ -464,6 +487,7 @@ async function init() {
     updateTicketsBadge()
     updateProposalsBadge()
     updateInboxBadge()
+    updateLinuxBadge()
   }
   refreshBadges()
   setInterval(refreshBadges, 5 * 60 * 1000)

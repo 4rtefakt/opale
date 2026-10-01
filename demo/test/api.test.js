@@ -165,3 +165,30 @@ test('ce qui n\'existe pas dans la démo répond 403 avec un message, l\'inconnu
   assert.equal((await call(s, 'POST', '/groups/import-from-entra', {})).status, 403)
   assert.equal((await call(s, 'GET', '/nope')).status, 404)
 })
+
+test('postes : les formes liste et détail conservent la plateforme et l’état désiré', async () => {
+  const s = seed()
+  const { data: list } = await call(s, 'GET', '/devices')
+  const linux = list.devices.filter(d => d.platform === 'linux')
+  assert.equal(linux.length, 1)
+  const d = linux[0]
+  assert.equal(d.managed_by, 'pull')
+  assert.equal(d.profile, 'field-researcher')
+  assert.equal(d.ring, 'stable')
+  assert.equal(d.last_apply_status, 'success')
+  assert.ok(Number.isFinite(Date.parse(d.last_apply_at)))
+  const { data: detail } = await call(s, 'GET', '/devices/' + d.id)
+  for (const key of ['platform', 'managed_by', 'profile', 'ring', 'last_apply_status', 'last_apply_at']) {
+    assert.equal(detail[key], d[key], key)
+  }
+  assert.equal(detail.health_signals, null)
+  assert.equal(detail.laps, null)
+  assert.equal(detail.disks[0].letter, '/')
+  const windows = list.devices.filter(row => row.id !== d.id)
+  assert.ok(windows.every(row => row.platform === 'windows' && row.managed_by === null))
+  const { data: winDetail } = await call(s, 'GET', '/devices/' + windows[0].id)
+  assert.equal(winDetail.platform, 'windows')
+  assert.equal(winDetail.managed_by, null)
+  assert.ok(winDetail.health_signals.bitlocker)
+  assert.equal(winDetail.disks[0].letter, 'C:')
+})
