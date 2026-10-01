@@ -15,7 +15,7 @@
 
 Opale est un outil de gestion de parc informatique à usage strictement
 interne à une organisation. Il collecte des données techniques sur les
-postes Windows managés afin de :
+postes Windows et Linux managés afin de :
 
 - Surveiller l'état de santé du parc (disques, RAM, OS, réseau)
 - Déployer des logiciels et scripts à distance
@@ -73,8 +73,8 @@ de mise en balance (intérêt vs. droits des personnes concernées).
 | `audit_logs` | Toutes les actions admin (action, by_user, target) | Moyen |
 | `script_executions` | Qui a lancé quel script, sur quel poste, output complet | **Élevé** — output peut contenir des données personnelles |
 | `device_admin_credentials` | Mot de passe local recovery (chiffré RSA-OAEP) + journal des consultations | Élevé |
-| `linux_apply_reports` | error_summary, log_tail, révision et résultat d'application | Élevé — les extraits de logs peuvent contenir des noms d'utilisateurs et des chemins |
-| `device_recovery_keys` | Secrets de récupération LUKS / TPM chiffrés au repos, label, last_viewed_by | Élevé — déchiffrement uniquement lors d'une consultation auditée, motivée et « fail-closed » (§4.6) |
+| `linux_apply_reports` | error_summary (1 024 caractères max), log_tail (8 Kio max, uniquement pour failed / partial), révision et résultat d'application | Élevé — les extraits de logs peuvent contenir des noms d'utilisateurs et des chemins |
+| `device_recovery_keys` | Secrets de récupération LUKS chiffrés au repos (type TPM réservé dans le schéma), label, last_viewed_by | Élevé — déchiffrement uniquement lors d'une consultation auditée, motivée et « fail-closed » (§4.6) |
 
 Les ouvertures et fermetures de console-via-agent (transport
 `agent_console`) sont en plus tracées dans `audit_logs` sous les actions

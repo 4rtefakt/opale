@@ -31,6 +31,8 @@ after editing `api/`. PostgreSQL migrations are applied by the API at startup
 
 For the Windows agent, see [agent-go/RECAP-pour-UI.md](agent-go/RECAP-pour-UI.md).
 
+The `linux` module's routes take their schemas from [api/modules/linux/openapi.yaml](api/modules/linux/openapi.yaml); edit the spec first.
+
 ## Pull requests
 
 - **Branch from `main`** unless the maintainer asks otherwise.

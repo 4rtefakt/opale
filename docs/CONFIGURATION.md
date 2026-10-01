@@ -35,8 +35,9 @@ consumer; the frontend gets a curated subset via `GET /env.js`.
 
 **Effectively required in production behind Caddy/nginx.** Without it, every
 request carries the proxy's IP, so all clients share the same rate-limit
-buckets: `/api/agent/exchange-token` becomes 10/min and
-`/api/agent/setup-log` 60/min **for the whole fleet**, and anyone on the
+buckets: `/api/agent/exchange-token` becomes 10/min,
+`/api/agent/setup-log` 60/min and `/api/linux/agent/enroll` 30/min
+**for the whole fleet**, and anyone on the
 Internet can exhaust the enrolment bucket with junk requests (enrolment DoS).
 
 **Only safe if port 3010 is reachable solely through the proxy.** Otherwise a
@@ -143,7 +144,7 @@ The image needs `git`, `git-http-backend` (Alpine package `git-daemon`) and
 `ssh-keygen` (`openssh-keygen`); the boot self-check reports
 `binaries_ok: false` and mirror state `unavailable` in `GET /api/linux/git/status`
 when one is missing. Behind nginx, raise the limits for
-`/api/linux/agent/git/` (`client_max_body_size 5m;` — the API caps the
+`/api/linux/agent/git/` (`client_max_body_size 8m;` — the API caps the
 upload-pack body at 4 MiB — and `proxy_read_timeout 300s;` for a full clone
 of a large repo); Caddy needs nothing special.
 
@@ -250,6 +251,29 @@ own zone and an unknown name counts as always open. That difference only
 affects when the agent applies an update.
 **No UI editor today** — set via SQL.
 
+### 2.6 Linux fleet
+
+Edited in **Paramètres → Linux** via `PATCH /api/linux/settings`, which
+requires an interactive admin session (CLI `opl_` tokens are refused).
+Changes apply live; the mirror fetches upstream every 5 minutes.
+
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `linux.repo_url` | text | empty | Fleet repository URL: HTTPS only, no credentials in the URL; use `LINUX_GIT_TOKEN` / `LINUX_GIT_USER` |
+| `linux.ring.pilot` | JSON | `{"branch":"main"}` | Upstream branch followed automatically by the pilot ring after fetch |
+| `linux.ring.stable` | JSON | `{"branch":"main"}` | Upstream branch from which stable revisions may be promoted; stable advances only by explicit promotion |
+| `linux.allowed_signers` | JSON array of SSH allowed-signers lines | `[]` | Server-side signature checks for pilot advancement, promotion and the signed badge; empty disables these server checks |
+| `linux.alerts_enabled` | boolean text | `false` | Enable notifications and ticket proposals when Linux apply status changes to failed / partial |
+| `linux.escrow_backup_confirmed` | JSON | empty | `{ "key_id", "by", "at" }`, written by `POST /api/linux/escrow/confirm-backup` after an admin confirms the off-box backup; LUKS escrow requires a confirmation matching the current key |
+
+`linux.allowed_signers` is **server-side only**, never sent to devices.
+Devices pin `/etc/opale-agent/allowed_signers` in their image and rotate it
+through `.opale/allowed_signers` in an already trusted signed commit.
+Profiles are `profiles/<slug>.yml` files in the fleet repository, not
+settings. The local recovery account name reuses
+`agent.laps_recovery_username` (§2.4). See [INSTALL.md §9](../INSTALL.md#9-linux-workstations-debian-pull-based)
+for image preparation, enrolment and the escrow backup procedure.
+
 ---
 
 ## 3. Branding assets
@@ -298,6 +322,11 @@ Binary signature: ed25519 over the raw binary bytes (SHA-256 is a separate sidec
 embeds the public key at compile time and refuses any binary it can't
 verify.
 
+**Linux agent API:** see [api/modules/linux/openapi.yaml](../api/modules/linux/openapi.yaml)
+(source of truth). The pull-based module uses signed requests, Git smart
+HTTP with short-lived tokens, and escrow for local admin passwords and
+LUKS recovery keys.
+
 ---
 
 ## 5. Compatibility matrix
@@ -329,7 +358,10 @@ What works today, what's planned, what won't ever be in scope.
 | Windows 10/11 | ✅ Supported | Go agent, Windows Service, amd64 + arm64 |
 | Windows Server | 🔬 Best effort | Should work — service install logic identical |
 | macOS | ❌ Not supported | No Mac agent today |
-| Linux | ❌ Not supported | No Linux agent today |
+| Linux (Debian ≥ 12) | ✅ Supported | Pull-based module, separate Linux agent / ISO implementing the OpenAPI contract |
+
+The Go agent in `agent-go/` remains Windows-only. Linux builds of that
+agent are not supported; use the pull-based module above.
 
 ### 5.4 Mesh VPN (for in-browser SSH)
 

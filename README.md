@@ -52,6 +52,10 @@ Microsoft Entra app registration, and the Windows agent, follow
 hardware, OS, disks, network interfaces, bandwidth, ping latency. Microsoft
 Intune sync layered on top (compliance, enrollment, last-sync date).
 
+**Linux workstations (Debian ≥ 12)** — pull-based management with signed
+Ansible playbooks, enrolment approval, pilot/stable rings and LUKS recovery
+key escrow. Uses a separate Linux agent / ISO; see [INSTALL.md §9](INSTALL.md#9-linux-workstations-debian-pull-based).
+
 **Alerts** — disk thresholds, prolonged offline, non-compliant devices.
 Computed on the fly from device state. Web-Push notifications to admins
 on critical changes.
@@ -112,7 +116,8 @@ GDPR who prefer to keep technical telemetry in-house.
 
 **Not** designed for:
 - Multi-tenant SaaS deployment (one Opale instance = one organisation)
-- macOS or Linux endpoint management (the agent is Windows-only today)
+- macOS endpoint management; Linux support targets Debian ≥ 12 through
+  the pull-based module (the Go agent remains Windows-only)
 - Replacing a full ITSM (we cover the basics, not enterprise workflows)
 
 Microsoft Entra ID + Intune are currently required for SSO and MDM

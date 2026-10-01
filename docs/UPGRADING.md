@@ -2,14 +2,24 @@
 
 Étapes manuelles à faire **une fois**, lors du passage d'une instance à une
 version qui les introduit. Les versions sans étape manuelle n'apparaissent
-pas ici : `git pull` puis rebuild suffit (cf. INSTALL.md §9).
+pas ici : `git pull` puis rebuild suffit (cf. INSTALL.md §10).
 
 ---
 
-## Révélation LAPS avec motif, sauvegarde de `laps.key` avant l'escrow LUKS (module linux)
+## Parc Linux : image Docker, révélation LAPS et sauvegarde de `laps.key`
 
 ### Ce qui change
 
+- Les images Docker incluent désormais `git`, `git-daemon`
+  (`git-http-backend`) et `openssh-keygen` : **reconstruire l'image** avant
+  de démarrer le module Linux (ou récupérer l'image publiée à jour).
+- Les deux compose ajoutent le volume nommé `git_mirror`, monté sur
+  `/app/data/git` (`LINUX_GIT_DIR`). Reporter ce montage dans les compose
+  personnalisés ; le répertoire doit être inscriptible par uid/gid 1000.
+- Derrière le reverse proxy, `TRUST_PROXY` est requis pour que la limite
+  de `/api/linux/agent/enroll` (30/min par IP) s'applique à chaque client.
+  Sans lui, tout le parc partage le quota du proxy. Restreindre le port
+  3010 au proxy et configurer ses IP/CIDR (CONFIGURATION.md §1.1).
 - La consultation du mot de passe de récupération devient
   `POST /api/admin-credentials/:deviceId/reveal` avec un corps
   `{ "reason": { "category", "note" } }` (mêmes catégories que les sessions
@@ -37,7 +47,7 @@ hors site de la clé courante. Procédure :
 
    ```bash
    openssl rsa -in agent-go/keys/laps.key -pubout      # doit égaler laps.pub
-   openssl rsa -in agent-go/keys/laps.key -check       # « RSA key ok »
+   openssl rsa -in agent-go/keys/laps.key -check -noout # « RSA key ok »
    ```
 
 2. Copier `laps.key` **hors de l'hôte**, chiffrée (coffre, `age`, `gpg`…),
