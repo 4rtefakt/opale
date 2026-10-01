@@ -58,4 +58,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: demo
+          # Sans version explicite l'action installe wrangler 3.90, qui ignore
+          # wrangler.jsonc (« Missing entry-point ») ; aligné sur demo/package.json.
+          wranglerVersion: "4.43.0"
           command: deploy
