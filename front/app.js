@@ -216,13 +216,14 @@ async function router() {
       renderPostes(container)
     }
   } else if (route === 'linux') {
+    // `#/linux/<id>` : fiche du poste Linux ; sinon le parc (onglets).
     if (parts[1]) {
-      container.style.display = 'none'
-      document.getElementById('view-404').style.display = 'flex'
-      return
+      const { renderLinuxDevice } = await import('/views/linux-device.js')
+      renderLinuxDevice(container, parts[1])
+    } else {
+      const { renderLinux } = await import('/views/linux.js')
+      renderLinux(container)
     }
-    const { renderLinux } = await import('/views/linux.js')
-    renderLinux(container)
   } else if (route === 'tickets') {
     // `#/tickets/<id>` : page focus du ticket ; `#/tickets/mail/<id>` :
     // page focus d'un fil de mails pas encore ticket ; sinon la liste.

@@ -15,9 +15,8 @@ export const modulesConfig = {
   tickets:      true,
   onboarding:   true,
   groups:       true,
-  // Module en chantier, activé à la fin de la série de PR ;
-  // les tables existent quand même (migrations globales).
-  linux:        false,
+  // Parc Linux géré par état désiré (docs/linux-fleet-design.md).
+  linux:        true,
   // Pont mail ↔ tickets (issue #8). Opt-in via les settings :
   //   - lecture     : mail.poll_enabled + mail.inboxes
   //   - classif IA  : mail.classifier.enabled + url + model

@@ -66,6 +66,35 @@ class API {
   rejectLinuxEnrollmentsBulk(body) { return this._fetch('/linux/enrollments/reject-bulk', { method: 'POST', body }) }
   setDeviceUser(id, assigned_user_id) { return this._fetch(`/devices/${id}`, { method: 'PATCH', body: { assigned_user_id } }) }
 
+  // Linux — parc géré par état désiré (api/modules/linux/openapi.yaml)
+  _linuxQs(params) {
+    const qs = params ? new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))).toString() : ''
+    return qs ? '?' + qs : ''
+  }
+  getLinuxDevices(params)             { return this._fetch(`/linux/devices${this._linuxQs(params)}`) }
+  getLinuxDevice(id)                  { return this._fetch(`/linux/devices/${id}`) }
+  updateLinuxDevice(id, body)         { return this._fetch(`/linux/devices/${id}`, { method: 'PATCH', body }) }
+  revokeLinuxDevice(id, reason)       { return this._fetch(`/linux/devices/${id}/revoke`, { method: 'POST', body: { reason } }) }
+  assignLinuxDevicesBulk(body)        { return this._fetch('/linux/devices/assign-bulk', { method: 'POST', body }) }
+  getLinuxDeviceReports(id, params)   { return this._fetch(`/linux/devices/${id}/reports${this._linuxQs(params)}`) }
+  getLinuxRecoveryKeys(id)            { return this._fetch(`/linux/devices/${id}/recovery-keys`) }
+  // Motif { category, note } obligatoire : même contrat que revealAdminCredential.
+  revealLinuxRecoveryKey(id, kid, reason) { return this._fetch(`/linux/devices/${id}/recovery-keys/${kid}/reveal`, { method: 'POST', body: { reason } }) }
+  getLinuxPreregistrations(params)    { return this._fetch(`/linux/preregistrations${this._linuxQs(params)}`) }
+  createLinuxPreregistrations(rows)   { return this._fetch('/linux/preregistrations', { method: 'POST', body: { rows } }) }
+  preregisterLinuxFromDevices(body)   { return this._fetch('/linux/preregistrations/from-devices', { method: 'POST', body }) }
+  deleteLinuxPreregistration(id)      { return this._fetch(`/linux/preregistrations/${id}`, { method: 'DELETE' }) }
+  getLinuxProfiles()                  { return this._fetch('/linux/profiles') }
+  getLinuxRings()                     { return this._fetch('/linux/rings') }
+  promoteLinuxStable(body)            { return this._fetch('/linux/rings/stable/promote', { method: 'POST', body }) }
+  getLinuxGitStatus()                 { return this._fetch('/linux/git/status') }
+  syncLinuxGit()                      { return this._fetch('/linux/git/sync', { method: 'POST' }) }
+  getLinuxSettings()                  { return this._fetch('/linux/settings') }
+  updateLinuxSettings(body)           { return this._fetch('/linux/settings', { method: 'PATCH', body }) }
+  getLinuxEscrowStatus()              { return this._fetch('/linux/escrow/status') }
+  confirmLinuxEscrowBackup(key_id)    { return this._fetch('/linux/escrow/confirm-backup', { method: 'POST', body: { key_id, confirmed: true } }) }
+  getLinuxDashboard()                 { return this._fetch('/linux/dashboard') }
+
   // Tickets
   getTickets(params)   {
     const qs = params ? '?' + new URLSearchParams(params).toString() : ''

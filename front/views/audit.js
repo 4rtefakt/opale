@@ -153,6 +153,17 @@ const _BADGE = {
   linux_device_rejected: ['b-closed', 'ti-x'],
   linux_device_revoked: ['b-closed', 'ti-key-off'],
   linux_preregistrations_imported: ['b-done', 'ti-file-import'],
+  linux_assignment_changed: ['b-open', 'ti-file-settings'],
+  linux_apply_failed: ['b-closed', 'ti-alert-octagon'],
+  linux_apply_recovered: ['b-done', 'ti-circle-check'],
+  linux_recovery_key_escrowed: ['b-done', 'ti-lock'],
+  linux_recovery_key_viewed: ['b-prog', 'ti-eye'],
+  linux_escrow_backup_confirmed: ['b-done', 'ti-shield-check'],
+  linux_settings_changed: ['b-open', 'ti-settings'],
+  linux_ring_promoted: ['b-open', 'ti-arrow-up-circle'],
+  linux_git_synced: ['b-open', 'ti-git-branch'],
+  laps_viewed: ['b-prog', 'ti-eye'],
+  laps_rotated: ['b-done', 'ti-lock'],
   device_assigned: ['b-done', 'ti-user-check'],
 
   agent_checkin:             ['b-done',   'ti-device-laptop'],
@@ -199,6 +210,17 @@ const _ACTION_LABEL = {
   get linux_device_rejected() { return t('dashboard.activity.action.linux_device_rejected') },
   get linux_device_revoked() { return t('dashboard.activity.action.linux_device_revoked') },
   get linux_preregistrations_imported() { return t('dashboard.activity.action.linux_preregistrations_imported') },
+  get linux_assignment_changed() { return t('dashboard.activity.action.linux_assignment_changed') },
+  get linux_apply_failed() { return t('dashboard.activity.action.linux_apply_failed') },
+  get linux_apply_recovered() { return t('dashboard.activity.action.linux_apply_recovered') },
+  get linux_recovery_key_escrowed() { return t('dashboard.activity.action.linux_recovery_key_escrowed') },
+  get linux_recovery_key_viewed() { return t('dashboard.activity.action.linux_recovery_key_viewed') },
+  get linux_escrow_backup_confirmed() { return t('dashboard.activity.action.linux_escrow_backup_confirmed') },
+  get linux_settings_changed() { return t('dashboard.activity.action.linux_settings_changed') },
+  get linux_ring_promoted() { return t('dashboard.activity.action.linux_ring_promoted') },
+  get linux_git_synced() { return t('dashboard.activity.action.linux_git_synced') },
+  get laps_viewed() { return t('dashboard.activity.action.laps_viewed') },
+  get laps_rotated() { return t('dashboard.activity.action.laps_rotated') },
   get device_assigned() { return t('dashboard.activity.action.device_assigned') },
 
   agent_console_open:     'console ouverte',
@@ -262,6 +284,20 @@ function _summary(action, details) {
   if (['linux_device_enrolled', 'linux_enroll_serial_conflict', 'linux_device_approved', 'linux_device_converted', 'linux_device_reenrolled', 'linux_device_rejected', 'linux_device_revoked'].includes(action)) {
     return [details.hostname, details.serial_claimed || details.serial, details.profile, details.ring, details.reason].filter(Boolean).join(' · ')
   }
+  // Transitions d'application, escrow, réglages et rings (PR 6). Les motifs
+  // des révélations suivent le format des sessions distantes.
+  const sha = s => (s ? String(s).slice(0, 7) : '')
+  const assignment = a => (a ? [a.profile, a.ring].filter(Boolean).join('/') : '')
+  if (action === 'linux_assignment_changed')      return [details.hostname, `${assignment(details.before) || '—'} → ${assignment(details.after) || '—'}`].filter(Boolean).join(' · ')
+  if (action === 'linux_apply_failed')            return [details.hostname, sha(details.revision), _truncate(details.error_summary, 120)].filter(Boolean).join(' · ')
+  if (action === 'linux_apply_recovered')         return [details.hostname, sha(details.revision)].filter(Boolean).join(' · ')
+  if (action === 'linux_recovery_key_escrowed')   return [details.label, sha(details.key_id)].filter(Boolean).join(' · ')
+  if (action === 'linux_recovery_key_viewed')     return [_reasonShort(details.reason), details.label, details.outcome].filter(Boolean).join(' · ')
+  if (action === 'linux_escrow_backup_confirmed') return sha(details.key_id)
+  if (action === 'linux_settings_changed')        return Object.keys(details.changes || {}).join(', ')
+  if (action === 'linux_ring_promoted')           return [`${sha(details.before) || '—'} → ${sha(details.after) || '—'}`, details.allow_rollback ? t('linux.audit.rollback') : ''].filter(Boolean).join(' · ')
+  if (action === 'laps_viewed')                   return [_reasonShort(details.reason), details.outcome].filter(Boolean).join(' · ')
+  if (action === 'laps_rotated')                  return details.username || ''
   if (action === 'intune_sync')   return t('audit.summary.intune', { ok: details.upserted ?? 0, errors: details.errors ?? 0 })
   if (action === 'agent_checkin') {
     let s = t('audit.summary.agent_checkin', { disks: details.disks ?? 0 })

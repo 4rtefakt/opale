@@ -64,6 +64,7 @@ export async function renderPostes(container) {
         <button class="btn" data-push-action onclick="bulkRunScript()"><i class="ti ti-player-play"></i> Lancer script</button>
         <button class="btn" data-push-action onclick="bulkForceCheckin()"><i class="ti ti-refresh"></i> Forcer sync</button>
         <button class="btn" data-push-action onclick="bulkForceSync()"><i class="ti ti-brand-azure"></i> Sync Intune</button>
+        ${window.OPALE.moduleEnabled('linux') ? `<button class="btn" data-push-action onclick="bulkPrepareLinux()"><i class="ti ti-brand-debian"></i> ${esc(t('linux.migrate.button'))}</button>` : ''}
         <button class="btn btn-danger" onclick="clearSelection()"><i class="ti ti-x"></i> Désélectionner</button>
       </div>
     </div>
@@ -122,6 +123,7 @@ export async function renderPostes(container) {
   window.bulkRunScriptConfirm = bulkRunScriptConfirm
   window.bulkForceSync        = bulkForceSync
   window.bulkForceCheckin     = bulkForceCheckin
+  window.bulkPrepareLinux     = bulkPrepareLinux
 
   await loadDevices()
 }
@@ -485,6 +487,49 @@ async function bulkForceSync() {
       showToast(parts.join(', '), res.errors?.length ? 'error' : 'success')
     } catch (err) {
       showToast(err.message || 'Erreur sync', 'error')
+    }
+  })
+}
+
+// « Préparer la migration Linux » : une pré-inscription par poste Windows
+// sélectionné (série, nom, utilisateur) → POST /api/linux/preregistrations/from-devices.
+// Le poste ré-imagé arrive ensuite dans la file Linux comme conversion.
+async function bulkPrepareLinux() {
+  if (_devices.some(d => _selected.has(d.id) && isPullManaged(d))) return
+  const ids = [..._selected]
+  if (!ids.length) return
+  const { loadProfiles, profileDatalist, codeLabel } = await import('/views/linux.js')
+  await loadProfiles()
+  showModal(`
+    <form id="bulk-linux-form">
+      <div class="modal-title"><i class="ti ti-brand-debian"></i> ${esc(t('linux.migrate.button'))}</div>
+      <p class="modal-sub">${esc(t('linux.migrate.desc', { n: ids.length }))}</p>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="form-row"><label class="form-label" for="bulk-linux-profile">${esc(t('linux.queue.profile'))}</label>
+          <input class="form-input" id="bulk-linux-profile" list="bulk-linux-profiles" required maxlength="64" pattern="^[a-z0-9][a-z0-9\\-]{0,63}$" title="${esc(t('linux.queue.profile_hint'))}">${profileDatalist('bulk-linux-profiles')}</div>
+        <div class="form-row"><label class="form-label" for="bulk-linux-ring">${esc(t('linux.queue.ring'))}</label>
+          <select class="form-select" id="bulk-linux-ring"><option value="pilot">${esc(t('linux.queue.ring.pilot'))}</option><option value="stable">${esc(t('linux.queue.ring.stable'))}</option></select></div>
+        <p id="bulk-linux-error" role="alert" style="color:var(--red);margin:0;font-size:12px"></p>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn" onclick="closeModal()">${esc(t('btn.cancel'))}</button><button type="submit" class="btn btn-primary">${esc(t('linux.migrate.confirm'))}</button></div>
+    </form>`)
+  const form = document.getElementById('bulk-linux-form')
+  form.addEventListener('submit', async event => {
+    event.preventDefault()
+    const button = form.querySelector('button[type=submit]')
+    button.disabled = true
+    try {
+      const res = await window.api.preregisterLinuxFromDevices({ device_ids: ids, profile: form.querySelector('#bulk-linux-profile').value.trim(), ring: form.querySelector('#bulk-linux-ring').value })
+      closeModal()
+      // Résumé des ignorés par code (PULL_MANAGED, NO_SERIAL, ALREADY_PREREGISTERED…).
+      const byCode = {}
+      for (const e of res.errors || []) byCode[e.code] = (byCode[e.code] || 0) + 1
+      const skipped = Object.entries(byCode).map(([code, n]) => `${n} ${codeLabel(code)}`).join(', ')
+      showToast(t('linux.migrate.result', { ok: res.ok }) + (skipped ? ` · ${skipped}` : ''), res.errors?.length ? 'info' : 'success')
+      clearSelection()
+    } catch (err) {
+      form.querySelector('#bulk-linux-error').textContent = err.message || t('error.generic')
+      button.disabled = false
     }
   })
 }

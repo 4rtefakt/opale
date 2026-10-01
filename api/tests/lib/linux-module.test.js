@@ -5,10 +5,10 @@ import linux, { SPEC_COMPLETE } from '../../modules/linux/index.js'
 import { modulesConfig } from '../../modules.config.js'
 import { operations } from '../../modules/linux/lib/spec.js'
 
-test('module Linux : contrat du chargeur, désactivé par défaut et enregistrable sans DB', async (t) => {
+test('module Linux : contrat du chargeur, activé par défaut et enregistrable sans DB', async (t) => {
   assert.equal(linux.name, 'linux')
   assert.deepEqual(linux.requires, ['core', 'inventory'])
-  assert.equal(modulesConfig.linux, false)
+  assert.equal(modulesConfig.linux, true)
   // PR 5 : toutes les opérations de la spec sont enregistrées (parité spec ⊆ routes).
   assert.equal(SPEC_COMPLETE, true)
   const app = Fastify({ logger: false })
