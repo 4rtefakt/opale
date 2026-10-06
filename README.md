@@ -99,6 +99,12 @@ the next agent checkin.
 **LAPS-like recovery** — local admin password rotated by the agent,
 escrowed RSA-OAEP encrypted; admins decrypt one-shot from the UI.
 
+**Hardware requests** — a dedicated *Hardware* page to follow equipment
+requests and orders outside tickets: status from request to delivery
+(quote, approval, ordered, received, to install…), requester follow-ups,
+planned date and next action, supplier / order number / amount / budget
+code, an optional link to the originating ticket, and a per-request history.
+
 **Onboarding** — guided checklists for new device / new collaborator,
 with optional Microsoft Entra group assignment via Graph.
 

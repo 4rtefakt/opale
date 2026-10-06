@@ -260,3 +260,22 @@ test('parc Linux : liste, fiche, rapports, file, pré-inscriptions et réglages 
   for (const k of ['devices_total', 'lagging', 'failed_applies', 'pending_approvals', 'not_escrowed']) assert.equal(typeof dash[k], 'number', k)
   assert.equal(dash.pending_approvals, 0); assert.equal(dash.devices_total, 3)
 })
+
+test('matériel : liste filtrée, création, changement de statut, relance, note', async () => {
+  const s = seed()
+  const { data: open } = await call(s, 'GET', '/hardware-requests?state=open')
+  assert.ok(open.length >= 5 && open.every(r => !['done', 'cancelled'].includes(r.status)))
+  assert.ok(open.every(r => !('events' in r)), 'la liste ne porte pas l\'historique')
+
+  const { status, data: r } = await call(s, 'POST', '/hardware-requests', { title: 'Souris ergonomique', requester_entra_id: 'u-001', status: 'to_order' })
+  assert.equal(status, 201)
+  assert.equal(r.requester_name, 'Alice Martin')
+
+  const { data: done } = await call(s, 'PATCH', `/hardware-requests/${r.id}`, { status: 'done' })
+  assert.ok(done.closed_at)
+  const { data: rem } = await call(s, 'POST', `/hardware-requests/${r.id}/reminders`, {})
+  assert.equal(rem.reminder_count, 1)
+  await call(s, 'POST', `/hardware-requests/${r.id}/notes`, { note: 'Livrée' })
+  const { data: detail } = await call(s, 'GET', `/hardware-requests/${r.id}`)
+  assert.deepEqual(detail.events.map(e => e.kind), ['note', 'reminder', 'status', 'created'])
+})

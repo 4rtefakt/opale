@@ -27,6 +27,7 @@ const ROUTE_MODULE = {
   conformite: 'monitoring',
   reseau:     'monitoring',
   stock:      'inventory',
+  materiel:   'hardware',
   users:      'core',
   groupes:    'groups',
   packages:   'inventory',
@@ -131,7 +132,7 @@ window.formatRelative = (iso) => {
 
 // ─── Router ───
 const VIEWS = [
-  'today','dashboard','alertes','tickets','postes','linux','conformite','stock',
+  'today','dashboard','alertes','tickets','postes','linux','conformite','stock','materiel',
   'users','groupes','scripts','onboarding','rapports','point','audit','parametres','packages','reseau'
 ]
 
@@ -241,6 +242,9 @@ async function router() {
     const ruleId = parts[1]
     const { renderConformite } = await import('/views/conformite.js')
     renderConformite(container, { ruleId })
+  } else if (route === 'materiel') {
+    const { renderMateriel } = await import('/views/materiel.js')
+    renderMateriel(container, parts[1])
   } else if (route === 'stock') {
     const { renderStock } = await import('/views/stock.js')
     renderStock(container)

@@ -433,6 +433,46 @@ on('POST', '/deployments/cancel-bulk', ({ s, b }) => { let n = 0; s.deployments.
 on('POST', '/deployments/retry-bulk', ({ s, b }) => { let n = 0; s.deployments.forEach(d => { if ((b.ids || []).includes(d.id)) { d.status = 'pending'; d.completed_at = null; n++ } }); return { retried: n } })
 
 // Stock
+// ── Demandes de matériel (module hardware) ──
+const HW_CLOSED = ['done', 'cancelled']
+const hwGet = (s, id) => s.hardware.find(r => r.id === id) || notFound('Demande introuvable')
+const hwRow = ({ events, ...r }) => r
+const hwEvent = (r, kind, extra = {}) => r.events.unshift({ id: `hwe-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, kind, from_status: null, to_status: null, note: null, by_name: ME.displayName, created_at: now(), ...extra })
+function hwApply(s, r, b) {
+  const keys = ['title', 'category', 'status', 'priority', 'requester_entra_id', 'requester_label', 'ticket_id', 'requested_at', 'planned_for', 'next_action',
+    'supplier', 'order_ref', 'amount_eur', 'budget_code', 'ordered_at', 'received_at', 'notes']
+  for (const k of keys) if (b[k] !== undefined) r[k] = b[k]
+  const u = s.users.find(x => x.entra_id === r.requester_entra_id)
+  r.requester_name = u?.display_name || null
+  const tk = s.tickets.find(x => x.id === r.ticket_id)
+  r.ticket_title = tk?.title || null; r.ticket_status = tk?.status || null
+  r.updated_at = now()
+}
+on('GET', '/hardware-requests', ({ s, q }) => {
+  const search = lc(q.q)
+  return s.hardware.filter(r => (q.state === 'open' ? !HW_CLOSED.includes(r.status) : q.state === 'closed' ? HW_CLOSED.includes(r.status) : true)
+    && (!search || [r.title, r.category, r.requester_name, r.requester_label, r.supplier].some(v => lc(v).includes(search)))).map(hwRow)
+})
+on('GET', '/hardware-requests/:id', ({ s, p }) => hwGet(s, p.id))
+on('POST', '/hardware-requests', ({ s, b }) => {
+  if (!String(b.title || '').trim()) throw new ApiErr(400, 'Titre requis')
+  const r = { id: nextId(s, 'hw'), status: 'new', priority: 'normal', reminder_count: 0, last_reminder_at: null, created_by_name: ME.displayName, created_at: now(), closed_at: null, events: [] }
+  hwApply(s, r, b)
+  if (HW_CLOSED.includes(r.status)) r.closed_at = now()
+  hwEvent(r, 'created', { to_status: r.status })
+  s.hardware.push(r)
+  return hwRow(r)
+})
+on('PATCH', '/hardware-requests/:id', ({ s, p, b }) => {
+  const r = hwGet(s, p.id); const from = r.status
+  hwApply(s, r, b)
+  if (b.status && b.status !== from) { r.closed_at = HW_CLOSED.includes(b.status) ? (r.closed_at || now()) : null; hwEvent(r, 'status', { from_status: from, to_status: b.status }) }
+  return hwRow(r)
+})
+on('POST', '/hardware-requests/:id/reminders', ({ s, p, b }) => { const r = hwGet(s, p.id); r.reminder_count++; r.last_reminder_at = now().slice(0, 10); hwEvent(r, 'reminder', { note: b.note || null }); return hwRow(r) })
+on('POST', '/hardware-requests/:id/notes', ({ s, p, b }) => { const r = hwGet(s, p.id); if (!String(b.note || '').trim()) throw new ApiErr(400, 'Note requise'); hwEvent(r, 'note', { note: b.note }); return r.events[0] })
+on('DELETE', '/hardware-requests/:id', ({ s, p }) => { hwGet(s, p.id); s.hardware = s.hardware.filter(r => r.id !== p.id); return null })
+
 on('GET', '/stock', ({ s, q }) => { const search = lc(q.q || q.search); return s.stock.filter(i => !search || lc(i.name).includes(search) || lc(i.category).includes(search)) })
 on('POST', '/stock', ({ s, b }) => { const it = { id: nextId(s, 'st'), name: String(b.name || '').trim(), category: b.category || 'Divers', quantity: num(b.quantity, 0), threshold: num(b.threshold ?? b.alert_threshold, 0), alert_threshold: num(b.threshold ?? b.alert_threshold, 0), unit: b.unit || 'pcs', description: b.description || '', last_movement_at: null }; if (!it.name) throw new ApiErr(400, 'Nom requis'); s.stock.unshift(it); return it })
 on('GET', '/stock/:id/movements', ({ s, p }) => s.movements[p.id] || [])
@@ -664,7 +704,7 @@ export async function handleApi(request, url, state) {
       const out = await r.fn({ s: state, p: params, q: query, b: body || {} })
       if (out === null) return new Response(null, { status: 204 })
       if (out instanceof Response) return out
-      return json(out, method === 'POST' && ['/tickets', '/tickets/tags', '/groups', '/scripts', '/packages', '/onboarding', '/reviews', '/stock', '/settings/tokens', '/settings/ssh-keys', '/alert-snoozes'].includes(path) ? 201 : 200)
+      return json(out, method === 'POST' && ['/tickets', '/tickets/tags', '/groups', '/scripts', '/packages', '/onboarding', '/reviews', '/stock', '/hardware-requests', '/settings/tokens', '/settings/ssh-keys', '/alert-snoozes'].includes(path) ? 201 : 200)
     } catch (err) {
       if (err instanceof ApiErr) return json({ error: err.message, ...err.extra }, err.status)
       return json({ error: 'Erreur interne de la démo : ' + (err?.message || err) }, 500)

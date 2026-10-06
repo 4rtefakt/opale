@@ -15,6 +15,8 @@ export const modulesConfig = {
   tickets:      true,
   onboarding:   true,
   groups:       true,
+  // Demandes de matériel et commandes, suivies à part des tickets.
+  hardware:     true,
   // Parc Linux géré par état désiré (docs/linux-fleet-design.md).
   linux:        true,
   // Pont mail ↔ tickets (issue #8). Opt-in via les settings :

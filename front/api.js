@@ -293,6 +293,18 @@ class API {
   // Alertes
   getAlerts()              { return this._fetch('/alerts') }
 
+  // Demandes de matériel et commandes (module hardware)
+  getHardwareRequests(params) {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : ''
+    return this._fetch(`/hardware-requests${qs}`)
+  }
+  getHardwareRequest(id)            { return this._fetch(`/hardware-requests/${id}`) }
+  createHardwareRequest(body)       { return this._fetch('/hardware-requests', { method: 'POST', body }) }
+  updateHardwareRequest(id, body)   { return this._fetch(`/hardware-requests/${id}`, { method: 'PATCH', body }) }
+  deleteHardwareRequest(id)         { return this._fetch(`/hardware-requests/${id}`, { method: 'DELETE' }) }
+  addHardwareReminder(id, body = {}) { return this._fetch(`/hardware-requests/${id}/reminders`, { method: 'POST', body }) }
+  addHardwareNote(id, note)         { return this._fetch(`/hardware-requests/${id}/notes`, { method: 'POST', body: { note } }) }
+
   // Stock
   getStock(params)     {
     const qs = params ? '?' + new URLSearchParams(params).toString() : ''
