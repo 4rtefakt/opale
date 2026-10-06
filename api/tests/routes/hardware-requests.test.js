@@ -79,7 +79,13 @@ test('POST — validation : titre manquant, statut inconnu, références introuv
   assert.equal((await create({ title: 'A', requested_at: '15/09/2026' })).statusCode, 400)
   assert.equal((await create({ title: 'A', requester_entra_id: 'oid-inconnu' })).statusCode, 400)
   assert.equal((await create({ title: 'A', ticket_id: '00000000-0000-0000-0000-000000000000' })).statusCode, 400)
-  assert.equal((await create({ title: 'A', pirate: true })).statusCode, 400)
+  // Champ inconnu : retiré par Ajv (removeAdditional, réglage par défaut de
+  // Fastify), jamais écrit.
+  const extra = await create({ title: 'Champ inconnu', pirate: true })
+  assert.equal(extra.statusCode, 201)
+  assert.equal(extra.json().pirate, undefined)
+  const { rows } = await db.query(`SELECT 1 FROM hardware_requests WHERE title = 'A'`)
+  assert.equal(rows.length, 0, 'aucune demande invalide créée')
 })
 
 test('PATCH — changement de statut : événement, closed_at posé puis retiré', { skip: SKIP }, async () => {
