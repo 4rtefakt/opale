@@ -211,6 +211,32 @@ export function seed() {
   ]
   const movements = { 'st-1': [{ id: 'mv-1', type: 'out', quantity: 1, by_name: ME.displayName, recipient_name: 'Sophie Durand', note: 'Onboarding', created_at: H(5) }, { id: 'mv-2', type: 'in', quantity: 10, by_name: ME.displayName, note: 'Commande LDLC', created_at: H(200) }] }
 
+  // Demandes de matériel (module hardware) : mêmes formes que l'API réelle.
+  const hw = (i, o) => {
+    const u = o.requester ? byName[o.requester] : null
+    return {
+      id: `hw-${i}`, title: o.title, category: o.category, status: o.status, priority: o.priority || 'normal',
+      requester_entra_id: u?.entra_id || null, requester_name: u?.display_name || null, requester_label: o.label || null,
+      ticket_id: null, ticket_title: null, ticket_status: null,
+      requested_at: D(o.age), planned_for: o.planned != null ? D(-o.planned) : null, next_action: o.next || null,
+      reminder_count: o.reminders || 0, last_reminder_at: o.reminders ? D(Math.max(0, o.age - 7)) : null,
+      supplier: o.supplier || null, order_ref: o.ref || null, amount_eur: o.amount ?? null, budget_code: o.budget || null,
+      ordered_at: o.ordered != null ? D(o.ordered) : null, received_at: null, notes: null,
+      created_by_name: ME.displayName, created_at: H(o.age * 24), updated_at: H(o.age * 12),
+      closed_at: ['done', 'cancelled'].includes(o.status) ? H(24) : null,
+      events: [{ id: `hwe-${i}`, kind: 'created', from_status: null, to_status: o.status, note: null, by_name: ME.displayName, created_at: H(o.age * 24) }],
+    }
+  }
+  const hardware = [
+    hw(1, { title: 'PC portable pour l\'arrivée de Yanis Petit', category: 'Poste de travail', status: 'to_prepare', priority: 'high', requester: 'Lucie Perrin', age: 6, planned: 2, next: 'Préparer et enrôler un Latitude 5540 du stock.' }),
+    hw(2, { title: 'Casque Jabra pour l\'accueil', category: 'Accessoire', status: 'to_order', requester: 'Paul Ricard', age: 21, reminders: 1, planned: 1, next: 'Commander un Evolve2 40 (stock épuisé).' }),
+    hw(3, { title: 'Disques durs USB-C pour le marketing', category: 'Stockage', status: 'awaiting_choice', requester: 'Chloé Fontaine', age: 14, next: 'Faire confirmer 1 + 2 To ou 2 × 2 To.' }),
+    hw(4, { title: 'Station de travail pour la data', category: 'Poste de travail', status: 'quote', requester: 'Antoine Rey', age: 18, reminders: 2, planned: -2, supplier: 'Dell', next: 'Relancer Dell pour le devis.' }),
+    hw(5, { title: 'Facture écrans de septembre', category: 'Facture fournisseur', status: 'approval', label: 'LDLC Pro + Mehdi Garnier', age: 25, reminders: 1, supplier: 'LDLC Pro', ref: 'FA-2026-0912', amount: 1489.5, budget: 'IT-2026-EQ', next: 'Valider la facture et la transmettre à la compta.' }),
+    hw(6, { title: 'Écran 27" pour Sarah Klein', category: 'Accessoire', status: 'ordered', requester: 'Sarah Klein', age: 30, supplier: 'LDLC Pro', ref: 'CMD-44871', amount: 289, ordered: 4, next: 'Installer à réception.' }),
+    hw(7, { title: 'Batterie de remplacement Latitude 7440', category: 'Pièce / réparation', status: 'done', requester: 'Karim Benali', age: 45 }),
+  ]
+
   const groups = [
     { id: 'g-1', name: 'Finance', color: 'green', source: 'entra', entra_group_id: 'entra-finance', description: 'Service financier', created_at: H(3000) },
     { id: 'g-2', name: 'Portables', color: 'blue', source: 'native', description: 'Tous les portables', created_at: H(2500) },
@@ -325,7 +351,7 @@ export function seed() {
   }
 
   return {
-    users, devices, tags, tickets: T, inbox, proposals, snoozes, scripts, executions, packages, deployments, stock, movements,
+    users, devices, tags, tickets: T, inbox, proposals, snoozes, scripts, executions, packages, deployments, stock, movements, hardware,
     groups, groupMembers, onboardings, reviews, audit, settings, linux, prefs: {}, nextId: 1000,
   }
 }

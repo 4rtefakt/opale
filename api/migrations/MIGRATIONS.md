@@ -162,6 +162,7 @@ L'ordre alphabétique du nom de fichier détermine l'ordre d'exécution.
   `ip_netbird_cleared` par poste dans `audit_logs`).
 - `080_linux_fleet.sql` : socle Linux (clés, préinscriptions, rapports, récupération chiffrée), colonnes de gestion pull et paramètres initiaux.
 - `081_linux_key_luks_root.sql` : `linux_device_keys.luks_root` (racine LUKS déclarée au check-in, filtre « non escrowé »).
+- `082_hardware_requests.sql` : module hardware, demandes de matériel et commandes (`hardware_requests`) et leur historique (`hardware_request_events`).
 
 ## Note sur les retouches de 010, 043, 046 et 060
 

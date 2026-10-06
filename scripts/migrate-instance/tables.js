@@ -80,9 +80,11 @@ export const TABLES = [
   { name: 'ticket_devices',            conflictTarget: ['ticket_id', 'device_id'] },
   // Métadonnées seulement : les FICHIERS (volume ATTACHMENTS_DIR) se copient à part.
   { name: 'ticket_attachments',        conflictTarget: ['id'] },
+  { name: 'hardware_requests',         conflictTarget: ['id'] },
 
-  // === Layer 4 : FK → tickets + ticket_proposals ===
+  // === Layer 4 : FK → tickets + ticket_proposals / hardware_requests ===
   { name: 'email_thread_mapping',      conflictTarget: ['internet_message_id'] },
+  { name: 'hardware_request_events',   conflictTarget: ['id'] },
 ];
 
 // Tables du schéma volontairement NON copiées.
