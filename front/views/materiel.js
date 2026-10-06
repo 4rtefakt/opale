@@ -336,8 +336,9 @@ function openForm(id) {
   if (r?.requester_entra_id && r.requester_name) _requesterMap[r.requester_name] = r.requester_entra_id
   const v = (k) => esc(r?.[k] ?? '')
   const cats = [...new Set(_items.map(x => x.category).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+  // Nouvelle demande : « demandée le » = aujourd'hui par défaut.
   const date = (key, label) => `<div class="form-row"><label class="form-label" for="hw-f-${key}">${esc(label)}</label>
-    <input class="form-input" type="date" id="hw-f-${key}" value="${v(key)}"></div>`
+    <input class="form-input" type="date" id="hw-f-${key}" value="${!r && key === 'requested_at' ? today() : v(key)}"></div>`
   const text = (key, label, extra = '', value = v(key)) => `<div class="form-row"><label class="form-label" for="hw-f-${key}">${esc(label)}</label>
     <input class="form-input" id="hw-f-${key}" value="${value}" ${extra}></div>`
 
