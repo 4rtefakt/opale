@@ -180,7 +180,15 @@ export default async function emailRoute(fastify) {
         -- match best-effort sur l'expéditeur pour suggérer un user/device
         -- côté UI (l'admin peut ré-attribuer manuellement après création).
         LEFT JOIN users_cache u ON LOWER(u.email) = LOWER(etm.from_address)
-        LEFT JOIN devices d     ON d.assigned_user_id = u.entra_id
+        -- Un seul poste suggéré par expéditeur (le plus récemment vu) : une
+        -- jointure simple renvoyait le mail une fois par poste assigné, d'où
+        -- des doublons dans la liste et des places de LIMIT perdues.
+        LEFT JOIN LATERAL (
+          SELECT dv.id, dv.hostname FROM devices dv
+          WHERE dv.assigned_user_id = u.entra_id
+          ORDER BY dv.last_seen DESC NULLS LAST, dv.id
+          LIMIT 1
+        ) d ON true
         LEFT JOIN LATERAL (
           SELECT COUNT(*)::int AS n FROM email_thread_mapping s
           WHERE s.conversation_id = etm.conversation_id

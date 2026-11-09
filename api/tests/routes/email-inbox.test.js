@@ -605,6 +605,27 @@ test('GET /inbox — thread_count = mails du même fil encore rattachables',
   }
 )
 
+test('GET /inbox — un expéditeur avec plusieurs postes : le mail n\'apparaît qu\'une fois',
+  { skip: SKIP }, async () => {
+    const { token } = await adminAuth('oid-inbox-multidev')
+    const sender = await seedNonAdmin(db, { entraId: 'oid-multidev-sender', displayName: 'Multi Postes', email: 'multi.postes@ex.fr' })
+    const { rows: devs } = await db.query(`
+      INSERT INTO devices (hostname, last_seen, assigned_user_id) VALUES
+        ('PC-MULTIDEV-ANCIEN', now() - interval '30 days', $1),
+        ('PC-MULTIDEV-RECENT', now() - interval '1 hour',  $1)
+      RETURNING id, hostname`, [sender.entraId])
+    const id = await seedInboxMapping(db, { fromAddress: 'Multi.Postes@ex.fr', subject: 'Deux postes' })
+
+    const res = await fastify.inject({ method: 'GET', url: '/api/email/inbox', headers: { authorization: `Bearer ${token}` } })
+    assert.equal(res.statusCode, 200)
+    const mine = res.json().filter(r => r.id === id)
+    assert.equal(mine.length, 1, 'une ligne par mail, pas une par poste assigné')
+    assert.equal(mine[0].suggested_user_id, sender.entraId)
+    assert.equal(mine[0].suggested_device_hostname, 'PC-MULTIDEV-RECENT')
+    assert.equal(mine[0].suggested_device_id, devs.find(d => d.hostname === 'PC-MULTIDEV-RECENT').id)
+  }
+)
+
 test('GET /inbox/:id/thread — mails du fil dans l\'ordre chronologique',
   { skip: SKIP }, async () => {
     const { token } = await adminAuth('oid-inbox-threadlist')
